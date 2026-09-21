@@ -2,18 +2,21 @@
 <ui version="4.0">
  <class>Widget</class>
  <widget class="QWidget" name="Widget">
-  <property name="geometry">
-   <rect>
-    <x>0</x>
-    <y>0</y>
-    <width>800</width>
-    <height>600</height>
-   </rect>
-  </property>
-  <property name="windowTitle">
-   <string>Widget</string>
-  </property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>760</width><height>620</height></rect></property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item><widget class="QLabel" name="demoLabel"><property name="text"><string>演示协议验证（非趋盛正式协议）</string></property><property name="styleSheet"><string>font-weight:bold;color:#b05000</string></property></widget></item>
+   <item><widget class="QLabel" name="commandLabel"><property name="text"><string>客户指令（演示：PING motor1 / FAIL motor1 / TIMEOUT motor1）</string></property></widget></item>
+   <item><layout class="QHBoxLayout" name="commandLayout"><item><widget class="QLineEdit" name="commandEdit"><property name="text"><string>PING motor1</string></property></widget></item><item><widget class="QPushButton" name="sendButton"><property name="text"><string>发送</string></property></widget></item><item><widget class="QPushButton" name="cancelButton"><property name="text"><string>取消最近请求</string></property></widget></item></layout></item>
+   <item><widget class="QLabel" name="sentLabel"><property name="text"><string>转换后的发送报文（十六进制）</string></property></widget></item>
+   <item><widget class="QTextEdit" name="sentEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>70</number></property></widget></item>
+   <item><widget class="QLabel" name="receivedLabel"><property name="text"><string>接收原始报文分段（十六进制）</string></property></widget></item>
+   <item><widget class="QTextEdit" name="receivedEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>90</number></property></widget></item>
+   <item><widget class="QLabel" name="replyLabel"><property name="text"><string>翻译后的客户回告</string></property></widget></item>
+   <item><widget class="QTextEdit" name="replyEdit"><property name="readOnly"><bool>true</bool></property><property name="maximumHeight"><number>70</number></property></widget></item>
+   <item><widget class="QLabel" name="statusLabel"><property name="text"><string>当前状态：空闲</string></property></widget></item>
+   <item><widget class="QLabel" name="logLabel"><property name="text"><string>日志（最多 200 行）</string></property></widget></item>
+   <item><widget class="QTextEdit" name="logEdit"><property name="readOnly"><bool>true</bool></property></widget></item>
+  </layout>
  </widget>
- <resources/>
- <connections/>
+ <resources/><connections/>
 </ui>
