@@ -74,7 +74,8 @@ Thumbs.db
 
 # Out-of-source build directories
 build-*/
-/build/
+/build/*
+!/build/.gitkeep
 
 # Windows / MSVC build outputs
 *.exp

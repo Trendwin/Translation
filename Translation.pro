@@ -1,20 +1,33 @@
-QT       += core gui
+# Translation project skeleton (Qt 5.14.2 / C++11).
+TEMPLATE = app
+TARGET = Translation
 
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
-
+QT += core gui widgets
 CONFIG += c++11
-
-# The following define makes your compiler emit warnings if you use
-# any Qt feature that has been marked deprecated (the exact warnings
-# depend on your compiler). Please consult the documentation of the
-# deprecated API in order to know how to port your code away from it.
 DEFINES += QT_DEPRECATED_WARNINGS
 
-# You can also make your code fail to compile if it uses deprecated APIs.
-# In order to do so, uncomment the following line.
-# You can also select to disable deprecated APIs only up to a certain version of Qt.
-#DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
+# Enable these modules when QML/serial-port implementation is added:
+# QT += quick qml serialport
 
+# Follow FreControl's output layout; separate Debug and Release products.
+CONFIG(debug, debug|release) {
+    DESTDIR     = "$$PWD/bin/debug"
+    OBJECTS_DIR = "$$PWD/build/debug/obj"
+    MOC_DIR     = "$$PWD/build/debug/moc"
+    RCC_DIR     = "$$PWD/build/debug/rcc"
+    UI_DIR      = "$$PWD/build/debug/ui"
+} else {
+    DESTDIR     = "$$PWD/bin/release"
+    OBJECTS_DIR = "$$PWD/build/release/obj"
+    MOC_DIR     = "$$PWD/build/release/moc"
+    RCC_DIR     = "$$PWD/build/release/rcc"
+    UI_DIR      = "$$PWD/build/release/ui"
+}
+
+INCLUDEPATH += "$$PWD/src"
+
+# Keep the existing QWidget entry point.
+# Add real source/header files here as the src modules are implemented.
 SOURCES += \
     main.cpp \
     widget.cpp
@@ -24,6 +37,26 @@ HEADERS += \
 
 FORMS += \
     widget.ui
+
+# Reserved for future QML pages and reusable components.
+QML_IMPORT_PATH += "$$PWD/qml"
+QML_DESIGNER_IMPORT_PATH += "$$PWD/qml"
+
+# Empty directory placeholders are project files, not compilation inputs.
+DISTFILES += \
+    bin/debug/.gitkeep \
+    bin/release/.gitkeep \
+    build/.gitkeep \
+    config/.gitkeep \
+    docs/.gitkeep \
+    qml/components/.gitkeep \
+    qml/pages/.gitkeep \
+    src/adapter/.gitkeep \
+    src/model/.gitkeep \
+    src/protocol/.gitkeep \
+    src/service/.gitkeep \
+    src/viewmodel/.gitkeep \
+    src/worker/.gitkeep
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
