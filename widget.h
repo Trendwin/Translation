@@ -20,6 +20,9 @@ public:
     ~Widget() override;
 private:
     void appendLog(const QString &text);
+    void refreshPorts();
+    void updateConnectionUi(bool connected, const QString &reason);
+    void updateSendEnabled();
     static QString stateText(RequestState state);
     Ui::Widget *ui;
     DtClientProtocol *m_client;
@@ -28,5 +31,6 @@ private:
     RequestManager *m_requests;
     TranslationService *m_service;
     quint64 m_lastRequestId = 0;
+    bool m_requestActive = false;
 };
 #endif
