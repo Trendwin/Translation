@@ -28,7 +28,7 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
 {
     if (!frame || !error) return false;
     if (command.operation != QStringLiteral("ABSOLUTE_MOVE")) {
-        *error = {"QUSHENG_UNSUPPORTED", QStringLiteral("趋盛协议仅支持 DT A<n> 绝对定位")};
+        *error = {"QUSHENG_UNSUPPORTED", QString::fromUtf8(u8"趋盛协议仅支持 DT A<n> 绝对定位")};
         return false;
     }
     const qlonglong signedPosition = command.parameters.value("position").toLongLong();
@@ -63,14 +63,14 @@ QList<ProtocolMessage> QushengProtocol::feedReceivedData(const QByteArray &data,
     m_buffer.append(data);
     if (m_buffer.size() > 4096) {
         m_buffer.clear();
-        if (errors) errors->append({"RX_OVERFLOW", QStringLiteral("接收缓存超过 4096 字节，已清空")});
+        if (errors) errors->append({"RX_OVERFLOW", QString::fromUtf8(u8"接收缓存超过 4096 字节，已清空")});
         return messages;
     }
     while (m_buffer.size() >= ReplySize) {
         const QByteArray frame = m_buffer.left(ReplySize);
         if (readLe16(frame, ReplySize - 2) != crc16(frame.left(ReplySize - 2))) {
             m_buffer.remove(0, 1); // re-synchronise without discarding a possible following frame
-            if (errors) errors->append({"QUSHENG_CRC", QStringLiteral("趋盛回告 CRC16 校验失败")});
+            if (errors) errors->append({"QUSHENG_CRC", QString::fromUtf8(u8"趋盛回告 CRC16 校验失败")});
             continue;
         }
         m_buffer.remove(0, ReplySize);
@@ -94,13 +94,13 @@ bool QushengProtocol::decodeReply(const UnifiedCommand &command, const ProtocolM
                                   UnifiedResult *result, TranslationError *error) const
 {
     if (!result || !error || !matchesReply(command, message)) {
-        if (error) *error = {"QUSHENG_NOT_MATCHED", QStringLiteral("回告与当前请求地址或命令不匹配")};
+        if (error) *error = {"QUSHENG_NOT_MATCHED", QString::fromUtf8(u8"回告与当前请求地址或命令不匹配")};
         return false;
     }
     result->requestId = command.requestId;
     result->success = quint8(message.payload.at(4)) == 0;
     result->data.insert("axis", command.parameters.value("axis"));
     if (!result->success)
-        result->error = {"QUSHENG_REJECTED", QStringLiteral("趋盛设备返回状态 %1").arg(quint8(message.payload.at(4)))};
+        result->error = {"QUSHENG_REJECTED", QString::fromUtf8(u8"趋盛设备返回状态 %1").arg(quint8(message.payload.at(4)))};
     return true;
 }

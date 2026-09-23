@@ -13,7 +13,7 @@ RequestManager::RequestManager(IInternalProtocol *protocol, ITransport *transpor
 void RequestManager::enqueue(const UnifiedCommand &command)
 {
     m_queue.enqueue(command);
-    emit stateChanged(command.requestId, RequestState::Queued, QStringLiteral("已排队"));
+    emit stateChanged(command.requestId, RequestState::Queued, QString::fromUtf8(u8"已排队"));
     QTimer::singleShot(0, this, &RequestManager::startNext);
 }
 
@@ -22,16 +22,16 @@ void RequestManager::startNext()
     if (m_active || m_queue.isEmpty()) return;
     m_current = m_queue.dequeue();
     m_active = true;
-    if (!m_transport->isConnected()) { finishFailure(RequestState::Failed, "DISCONNECTED", QStringLiteral("通信未连接")); return; }
+    if (!m_transport->isConnected()) { finishFailure(RequestState::Failed, "DISCONNECTED", QString::fromUtf8(u8"通信未连接")); return; }
     QByteArray frame;
     TranslationError error;
     if (!m_protocol->encodeCommand(m_current, &frame, &error)) {
         finishFailure(RequestState::Failed, error.code.isEmpty() ? "ENCODE_FAILED" : error.code,
-                      error.message.isEmpty() ? QStringLiteral("协议编码失败") : error.message);
+                      error.message.isEmpty() ? QString::fromUtf8(u8"协议编码失败") : error.message);
         return;
     }
     emit frameReady(m_current.requestId, frame);
-    emit stateChanged(m_current.requestId, RequestState::Sending, QStringLiteral("正在发送；尚未表示下位机执行成功"));
+    emit stateChanged(m_current.requestId, RequestState::Sending, QString::fromUtf8(u8"正在发送；尚未表示下位机执行成功"));
     m_transport->sendBytes(m_current.requestId, frame);
 }
 
@@ -39,7 +39,7 @@ void RequestManager::onSendFinished(quint64 requestId, bool success, const QStri
 {
     if (!m_active || requestId != m_current.requestId) return; // 丢弃上一请求的迟到发送回调。
     if (!success) { finishFailure(RequestState::Failed, "SEND_FAILED", reason); return; }
-    emit stateChanged(requestId, RequestState::WaitingReply, QStringLiteral("发送成功，等待下位机执行回告"));
+    emit stateChanged(requestId, RequestState::WaitingReply, QString::fromUtf8(u8"发送成功，等待下位机执行回告"));
     m_timer.start(m_timeoutMs);
 }
 
@@ -63,7 +63,7 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         m_timer.stop();
         m_active = false;
         emit stateChanged(result.requestId, result.success ? RequestState::Succeeded : RequestState::Failed,
-                          result.success ? QStringLiteral("下位机执行成功") : result.error.message);
+                          result.success ? QString::fromUtf8(u8"下位机执行成功") : result.error.message);
         emit completed(result);
         QTimer::singleShot(0, this, &RequestManager::startNext);
     }
@@ -72,12 +72,12 @@ void RequestManager::onBytesReceived(const QByteArray &data)
 void RequestManager::cancel(quint64 requestId)
 {
     if (m_active && m_current.requestId == requestId) {
-        finishFailure(RequestState::Cancelled, "CANCELLED", QStringLiteral("请求已取消"));
+        finishFailure(RequestState::Cancelled, "CANCELLED", QString::fromUtf8(u8"请求已取消"));
         return;
     }
     for (int i = 0; i < m_queue.size(); ++i) if (m_queue.at(i).requestId == requestId) {
         const UnifiedCommand command = m_queue.takeAt(i);
-        UnifiedResult result; result.requestId = command.requestId; result.error = {"CANCELLED", QStringLiteral("排队请求已取消")};
+        UnifiedResult result; result.requestId = command.requestId; result.error = {"CANCELLED", QString::fromUtf8(u8"排队请求已取消")};
         emit stateChanged(requestId, RequestState::Cancelled, result.error.message); emit completed(result); return;
     }
 }
@@ -87,7 +87,7 @@ void RequestManager::onConnectionChanged(bool connected, const QString &reason)
     if (!connected && m_active) finishFailure(RequestState::Failed, "DISCONNECTED", reason);
 }
 
-void RequestManager::onTimeout() { if (m_active) finishFailure(RequestState::TimedOut, "TIMEOUT", QStringLiteral("等待设备回告超时")); }
+void RequestManager::onTimeout() { if (m_active) finishFailure(RequestState::TimedOut, "TIMEOUT", QString::fromUtf8(u8"等待设备回告超时")); }
 
 void RequestManager::finishFailure(RequestState state, const QString &code, const QString &message)
 {

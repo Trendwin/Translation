@@ -18,7 +18,7 @@ bool DemoInternalProtocol::encodeCommand(const UnifiedCommand &command, QByteArr
     if (!frame || !error) return false;
     const QByteArray payload = command.operation.toUtf8() + '|' + command.targetDevice.toUtf8();
     *frame = makeFrame(0x01, payload);
-    if (frame->isEmpty()) { *error = {"DEMO_TOO_LONG", QStringLiteral("演示报文负载过长")}; return false; }
+    if (frame->isEmpty()) { *error = {"DEMO_TOO_LONG", QString::fromUtf8(u8"演示报文负载过长")}; return false; }
     return true;
 }
 
@@ -28,7 +28,7 @@ QList<ProtocolMessage> DemoInternalProtocol::feedReceivedData(const QByteArray &
     m_buffer.append(data);
     if (m_buffer.size() > MaxBufferSize) {
         m_buffer.clear();
-        if (errors) errors->append({"RX_OVERFLOW", QStringLiteral("接收缓存超过 4096 字节，已清空")});
+        if (errors) errors->append({"RX_OVERFLOW", QString::fromUtf8(u8"接收缓存超过 4096 字节，已清空")});
         return out;
     }
     const QByteArray header("\xAA\x55", 2);
@@ -45,7 +45,7 @@ QList<ProtocolMessage> DemoInternalProtocol::feedReceivedData(const QByteArray &
         m_buffer.remove(0, frameLength);
         quint8 check = 0;
         for (int i = 2; i < frame.size() - 1; ++i) check ^= quint8(frame.at(i));
-        if (check != quint8(frame.back())) { if (errors) errors->append({"DEMO_CHECKSUM", QStringLiteral("演示帧校验失败")}); continue; }
+        if (check != quint8(frame.back())) { if (errors) errors->append({"DEMO_CHECKSUM", QString::fromUtf8(u8"演示帧校验失败")}); continue; }
         ProtocolMessage message;
         message.messageType = quint8(frame.at(3));
         message.payload = frame.mid(4, bodyLength - 1);
@@ -67,13 +67,13 @@ bool DemoInternalProtocol::decodeReply(const UnifiedCommand &command, const Prot
                                        UnifiedResult *result, TranslationError *error) const
 {
     if (!result || !error || !matchesReply(command, message)) {
-        if (error) *error = {"DEMO_NOT_MATCHED", QStringLiteral("演示回告与当前请求不匹配")};
+        if (error) *error = {"DEMO_NOT_MATCHED", QString::fromUtf8(u8"演示回告与当前请求不匹配")};
         return false;
     }
     const QList<QByteArray> fields = message.payload.split('|');
     result->requestId = command.requestId;
     result->success = fields.size() >= 3 && fields.at(2) == "OK";
     if (result->success) result->data.insert("value", QString::fromUtf8(fields.value(3, "PONG")));
-    else result->error = {"DEVICE_REJECTED", QStringLiteral("演示下位机返回失败")};
+    else result->error = {"DEVICE_REJECTED", QString::fromUtf8(u8"演示下位机返回失败")};
     return true;
 }
