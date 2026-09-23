@@ -19,8 +19,10 @@ SerialTransport::SerialTransport(QObject *parent) : ITransport(parent)
             emit sendFinished(id, false, m_port.errorString());
         }
         if (value == QSerialPort::ResourceError) {
+            const QString reason = m_port.errorString();
             m_port.close();
-            emit connectionChanged(false, m_port.errorString());
+            m_pendingBytes = 0;
+            emit connectionChanged(false, reason);
         }
     });
 }
@@ -43,6 +45,8 @@ void SerialTransport::close()
 {
     if (!m_port.isOpen()) return;
     m_port.close();
+    m_pendingRequest = 0;
+    m_pendingBytes = 0;
     emit connectionChanged(false, QStringLiteral("串口已关闭"));
 }
 
