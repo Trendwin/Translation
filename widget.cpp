@@ -18,7 +18,8 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
     m_service(new TranslationService(m_client, m_requests, this))
 {
     ui->setupUi(this);
-    setWindowTitle(QStringLiteral("DT / 趋盛指令翻译"));
+    //setWindowTitle(QStringLiteral("DT / 趋盛指令翻译"));
+    setWindowTitle(QString::fromUtf8(u8"DT / 趋盛指令翻译"));
     connect(ui->connectButton, &QPushButton::clicked, this, [this]() {
         if (m_transport->isConnected()) {
             m_transport->close();
