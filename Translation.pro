@@ -6,6 +6,11 @@ TARGET = Translation
 
 DEFINES += QT_DEPRECATED_WARNINGS
 
+win32-msvc {
+    QMAKE_CFLAGS += /utf-8
+    QMAKE_CXXFLAGS += /utf-8
+}
+
 CONFIG(debug, debug|release) {
     DESTDIR = $$PWD/bin/debug
 } else {
