@@ -18,7 +18,6 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
     m_service(new TranslationService(m_client, m_requests, this))
 {
     ui->setupUi(this);
-    //setWindowTitle(QStringLiteral("DT / 趋盛指令翻译"));
     setWindowTitle(QString::fromUtf8(u8"DT / 趋盛指令翻译"));
     connect(ui->connectButton, &QPushButton::clicked, this, [this]() {
         if (m_transport->isConnected()) {
@@ -53,14 +52,14 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
         m_requestActive = state == RequestState::Queued || state == RequestState::Sending
                 || state == RequestState::WaitingReply;
         updateSendEnabled();
-        ui->statusLabel->setText(QStringLiteral("请求 %1：%2").arg(id).arg(stateText(state)));
-        appendLog(QStringLiteral("请求 %1 %2：%3").arg(id).arg(stateText(state), detail));
+        ui->statusLabel->setText(QString::fromUtf8(u8"请求 %1：%2").arg(id).arg(stateText(state)));
+        appendLog(QString::fromUtf8(u8"请求 %1 %2：%3").arg(id).arg(stateText(state), detail));
     });
     connect(m_service, &TranslationService::errorOccurred, this, [this](quint64 id, const TranslationError &e) {
-        appendLog(QStringLiteral("错误 请求=%1 [%2] %3").arg(id).arg(e.code, e.message));
+        appendLog(QString::fromUtf8(u8"错误 请求=%1 [%2] %3").arg(id).arg(e.code, e.message));
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this, [this](const ProtocolMessage &m) {
-        appendLog(QStringLiteral("主动上报/无关帧 type=0x%1（已分发，不缓存）")
+        appendLog(QString::fromUtf8(u8"主动上报/无关帧 type=0x%1（已分发，不缓存）")
                   .arg(m.messageType, 2, 16, QLatin1Char('0')));
     });
     connect(m_transport, &SerialTransport::connectionChanged,
@@ -71,7 +70,7 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
     ui->baudCombo->setCurrentIndex(ui->baudCombo->findData(115200));
     refreshPorts();
     updateConnectionUi(false, QString());
-    appendLog(QStringLiteral("输入示例：/1A2000。默认 dst=02、src=01、DevID=11、速度=1000。"));
+    appendLog(QString::fromUtf8(u8"输入示例：/1A2000。默认 dst=02、src=01、DevID=11、速度=1000。"));
 }
 
 Widget::~Widget() { delete ui; }
@@ -94,12 +93,12 @@ void Widget::refreshPorts()
     for (const QSerialPortInfo &port : ports) {
         QString displayName = port.portName();
         if (!port.description().isEmpty())
-            displayName += QStringLiteral(" — ") + port.description();
+            displayName += QString::fromUtf8(u8" — ") + port.description();
         ui->portCombo->addItem(displayName, port.portName());
     }
 
     if (ui->portCombo->count() == 0) {
-        ui->portCombo->addItem(QStringLiteral("未发现串口"), QString());
+        ui->portCombo->addItem(QString::fromUtf8(u8"未发现串口"), QString());
         ui->portCombo->setEnabled(false);
     } else {
         const int previousIndex = ui->portCombo->findData(previousPort);
@@ -112,7 +111,7 @@ void Widget::refreshPorts()
 
 void Widget::updateConnectionUi(bool connected, const QString &reason)
 {
-    ui->connectButton->setText(connected ? QStringLiteral("断开") : QStringLiteral("连接"));
+    ui->connectButton->setText(connected ? QString::fromUtf8(u8"断开") : QString::fromUtf8(u8"连接"));
     ui->portCombo->setEnabled(!connected && !ui->portCombo->currentData().toString().isEmpty());
     ui->baudCombo->setEnabled(!connected);
     ui->refreshButton->setEnabled(!connected);
@@ -121,11 +120,11 @@ void Widget::updateConnectionUi(bool connected, const QString &reason)
 
     if (!reason.isEmpty()) {
         ui->statusLabel->setText(connected
-                ? QStringLiteral("当前状态：已连接")
-                : QStringLiteral("当前状态：未连接（%1）").arg(reason));
+                ? QString::fromUtf8(u8"当前状态：已连接")
+                : QString::fromUtf8(u8"当前状态：未连接（%1）").arg(reason));
         appendLog(reason);
     } else if (!connected) {
-        ui->statusLabel->setText(QStringLiteral("当前状态：未连接"));
+        ui->statusLabel->setText(QString::fromUtf8(u8"当前状态：未连接"));
     }
 }
 
@@ -137,13 +136,13 @@ void Widget::updateSendEnabled()
 QString Widget::stateText(RequestState state)
 {
     switch (state) {
-    case RequestState::Queued: return QStringLiteral("排队");
-    case RequestState::Sending: return QStringLiteral("发送中");
-    case RequestState::WaitingReply: return QStringLiteral("等待回告");
-    case RequestState::Succeeded: return QStringLiteral("完成");
-    case RequestState::Failed: return QStringLiteral("失败");
-    case RequestState::TimedOut: return QStringLiteral("超时");
-    case RequestState::Cancelled: return QStringLiteral("已取消");
+    case RequestState::Queued: return QString::fromUtf8(u8"排队");
+    case RequestState::Sending: return QString::fromUtf8(u8"发送中");
+    case RequestState::WaitingReply: return QString::fromUtf8(u8"等待回告");
+    case RequestState::Succeeded: return QString::fromUtf8(u8"完成");
+    case RequestState::Failed: return QString::fromUtf8(u8"失败");
+    case RequestState::TimedOut: return QString::fromUtf8(u8"超时");
+    case RequestState::Cancelled: return QString::fromUtf8(u8"已取消");
     }
-    return QStringLiteral("未知");
+    return QString::fromUtf8(u8"未知");
 }

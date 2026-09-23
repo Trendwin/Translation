@@ -37,7 +37,7 @@ bool SerialTransport::open(const QString &portName, qint32 baudRate)
     m_port.setStopBits(QSerialPort::OneStop);
     m_port.setFlowControl(QSerialPort::NoFlowControl);
     const bool opened = m_port.open(QIODevice::ReadWrite);
-    emit connectionChanged(opened, opened ? QStringLiteral("串口已连接") : m_port.errorString());
+    emit connectionChanged(opened, opened ? QString::fromUtf8(u8"串口已连接") : m_port.errorString());
     return opened;
 }
 
@@ -47,13 +47,13 @@ void SerialTransport::close()
     m_port.close();
     m_pendingRequest = 0;
     m_pendingBytes = 0;
-    emit connectionChanged(false, QStringLiteral("串口已关闭"));
+    emit connectionChanged(false, QString::fromUtf8(u8"串口已关闭"));
 }
 
 void SerialTransport::sendBytes(quint64 requestId, const QByteArray &data)
 {
-    if (!m_port.isOpen()) { emit sendFinished(requestId, false, QStringLiteral("串口未连接")); return; }
-    if (m_pendingRequest) { emit sendFinished(requestId, false, QStringLiteral("串口仍在发送上一报文")); return; }
+    if (!m_port.isOpen()) { emit sendFinished(requestId, false, QString::fromUtf8(u8"串口未连接")); return; }
+    if (m_pendingRequest) { emit sendFinished(requestId, false, QString::fromUtf8(u8"串口仍在发送上一报文")); return; }
     m_pendingRequest = requestId;
     m_pendingBytes = data.size();
     const qint64 accepted = m_port.write(data);

@@ -8,12 +8,12 @@ void MockTransport::setConnected(bool connected)
 {
     if (m_connected == connected) return;
     m_connected = connected;
-    emit connectionChanged(connected, connected ? QStringLiteral("演示通信已连接") : QStringLiteral("演示通信已断开"));
+    emit connectionChanged(connected, connected ? QString::fromUtf8(u8"演示通信已连接") : QString::fromUtf8(u8"演示通信已断开"));
 }
 
 void MockTransport::sendBytes(quint64 requestId, const QByteArray &data)
 {
-    if (!m_connected) { emit sendFinished(requestId, false, QStringLiteral("演示通信未连接")); return; }
+    if (!m_connected) { emit sendFinished(requestId, false, QString::fromUtf8(u8"演示通信未连接")); return; }
     QTimer::singleShot(20, this, [this, requestId, data]() {
         emit sendFinished(requestId, true, QString());
         if (data.size() < 5) return;
