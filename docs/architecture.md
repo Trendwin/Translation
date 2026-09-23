@@ -41,3 +41,13 @@
 4. 在应用组装处将演示对象替换成真实对象。界面、`TranslationService` 和整体流程无需重写。
 
 下一阶段至少需要：客户指令及回告语法、趋盛帧头/长度/转义/校验定义、命令与结果字段映射、设备寻址规则、回告与主动上报类型、请求—回告关联依据、超时建议，以及通信接口的线程和连接语义。在资料到位前，正式接口应保持未实现/不支持，不能使用演示结果冒充真实结果。
+# DT / 趋盛实现
+
+生产入口复用本项目第一阶段的 `TranslationService` 和串行 `RequestManager`：
+
+* `DtClientProtocol` 解析 `/<axis>A<position>`，并在成功时生成 DT 原始回告
+  `/<axis>@ ETX CR LF`；
+* `QushengProtocol` 使用默认地址 `dst=0x02`、`src=0x01`、`DevID=0x11`，编码
+  `0x11` 绝对定位报文并执行 Modbus CRC16 校验；
+* `SerialTransport` 提供真实的 115200/8N1 异步串口收发，发送完成与设备执行成功
+  仍是两个独立状态。

@@ -2,21 +2,28 @@
 #include "ui_widget.h"
 #include "src/core/requestmanager.h"
 #include "src/core/translationservice.h"
-#include "src/demo/democlientprotocol.h"
-#include "src/demo/demointernalprotocol.h"
-#include "src/demo/mocktransport.h"
+#include "src/dt/dtclientprotocol.h"
+#include "src/qusheng/qushengprotocol.h"
+#include "src/transport/serialtransport.h"
 #include <QDateTime>
 #include <QPushButton>
 #include <QTextCursor>
 #include <QTextEdit>
 
 Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
-    m_client(new DemoClientProtocol(this)), m_protocol(new DemoInternalProtocol(this)),
-    m_transport(new MockTransport(this)), m_requests(new RequestManager(m_protocol, m_transport, this)),
+    m_client(new DtClientProtocol(this)), m_protocol(new QushengProtocol(this)),
+    m_transport(new SerialTransport(this)), m_requests(new RequestManager(m_protocol, m_transport, this)),
     m_service(new TranslationService(m_client, m_requests, this))
 {
     ui->setupUi(this);
-    setWindowTitle(QStringLiteral("指令翻译框架（演示协议）"));
+    setWindowTitle(QStringLiteral("DT / 趋盛指令翻译"));
+    connect(ui->connectButton, &QPushButton::clicked, this, [this]() {
+        if (m_transport->isConnected()) {
+            m_transport->close(); ui->connectButton->setText(QStringLiteral("连接"));
+        } else if (m_transport->open(ui->portEdit->text(), ui->baudEdit->text().toInt())) {
+            ui->connectButton->setText(QStringLiteral("断开"));
+        } else appendLog(QStringLiteral("串口打开失败：") + m_transport->errorString());
+    });
     connect(ui->sendButton, &QPushButton::clicked, this, [this]() {
         m_lastRequestId = m_service->submitCommand(ui->commandEdit->text());
     });
@@ -30,7 +37,10 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
         ui->receivedEdit->append(data.toHex(' ').toUpper());
     });
     connect(m_service, &TranslationService::customerReply, this, [this](quint64, const QString &reply) {
-        ui->replyEdit->setPlainText(reply);
+        Q_UNUSED(reply)
+    });
+    connect(m_service, &TranslationService::customerReplyBytes, this, [this](quint64, const QByteArray &reply) {
+        ui->replyEdit->setPlainText(reply.toHex(' ').toUpper());
     });
     connect(m_service, &TranslationService::requestStateChanged, this,
             [this](quint64 id, RequestState state, const QString &detail) {
@@ -41,10 +51,10 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
         appendLog(QStringLiteral("错误 请求=%1 [%2] %3").arg(id).arg(e.code, e.message));
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this, [this](const ProtocolMessage &m) {
-        appendLog(QStringLiteral("演示主动上报/无关帧 type=0x%1（已分发，不缓存）")
+        appendLog(QStringLiteral("主动上报/无关帧 type=0x%1（已分发，不缓存）")
                   .arg(m.messageType, 2, 16, QLatin1Char('0')));
     });
-    appendLog(QStringLiteral("当前全部为演示实现。可输入：PING motor1、FAIL motor1、TIMEOUT motor1"));
+    appendLog(QStringLiteral("输入示例：/1A2000。默认 dst=02、src=01、DevID=11、速度=1000。"));
 }
 
 Widget::~Widget() { delete ui; }

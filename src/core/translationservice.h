@@ -16,6 +16,7 @@ signals:
     void outgoingFrame(quint64 requestId, const QByteArray &frame);
     void rawDataReceived(const QByteArray &data);
     void customerReply(quint64 requestId, const QString &reply);
+    void customerReplyBytes(quint64 requestId, const QByteArray &reply);
     void errorOccurred(quint64 requestId, const TranslationError &error);
     void unsolicitedMessage(const ProtocolMessage &message);
 private slots:
