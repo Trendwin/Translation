@@ -1,4 +1,4 @@
-QT += core gui widgets
+QT += core gui widgets serialport
 
 CONFIG += c++11
 TEMPLATE = app
@@ -19,6 +19,9 @@ SOURCES += \
     widget.cpp \
     src/core/requestmanager.cpp \
     src/core/translationservice.cpp \
+    src/dt/dtclientprotocol.cpp \
+    src/qusheng/qushengprotocol.cpp \
+    src/transport/serialtransport.cpp \
     src/demo/democlientprotocol.cpp \
     src/demo/demointernalprotocol.cpp \
     src/demo/mocktransport.cpp
@@ -31,6 +34,9 @@ HEADERS += \
     src/transport/itransport.h \
     src/core/requestmanager.h \
     src/core/translationservice.h \
+    src/dt/dtclientprotocol.h \
+    src/qusheng/qushengprotocol.h \
+    src/transport/serialtransport.h \
     src/demo/democlientprotocol.h \
     src/demo/demointernalprotocol.h \
     src/demo/mocktransport.h

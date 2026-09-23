@@ -6,9 +6,9 @@
 QT_BEGIN_NAMESPACE
 namespace Ui { class Widget; }
 QT_END_NAMESPACE
-class DemoClientProtocol;
-class DemoInternalProtocol;
-class MockTransport;
+class DtClientProtocol;
+class QushengProtocol;
+class SerialTransport;
 class RequestManager;
 class TranslationService;
 
@@ -22,9 +22,9 @@ private:
     void appendLog(const QString &text);
     static QString stateText(RequestState state);
     Ui::Widget *ui;
-    DemoClientProtocol *m_client;
-    DemoInternalProtocol *m_protocol;
-    MockTransport *m_transport;
+    DtClientProtocol *m_client;
+    QushengProtocol *m_protocol;
+    SerialTransport *m_transport;
     RequestManager *m_requests;
     TranslationService *m_service;
     quint64 m_lastRequestId = 0;

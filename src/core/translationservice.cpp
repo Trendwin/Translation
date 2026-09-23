@@ -27,8 +27,9 @@ quint64 TranslationService::submitCommand(const QString &text)
 
 void TranslationService::onCompleted(const UnifiedResult &result)
 {
-    QString reply;
+    QByteArray rawReply;
     TranslationError error;
-    if (!m_client->buildReply(result, &reply, &error)) { emit errorOccurred(result.requestId, error); return; }
-    emit customerReply(result.requestId, reply);
+    if (!m_client->buildReplyBytes(result, &rawReply, &error)) { emit errorOccurred(result.requestId, error); return; }
+    emit customerReply(result.requestId, QString::fromLatin1(rawReply));
+    emit customerReplyBytes(result.requestId, rawReply);
 }

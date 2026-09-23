@@ -87,7 +87,7 @@ void RequestManager::onConnectionChanged(bool connected, const QString &reason)
     if (!connected && m_active) finishFailure(RequestState::Failed, "DISCONNECTED", reason);
 }
 
-void RequestManager::onTimeout() { if (m_active) finishFailure(RequestState::TimedOut, "TIMEOUT", QStringLiteral("等待演示回告超时")); }
+void RequestManager::onTimeout() { if (m_active) finishFailure(RequestState::TimedOut, "TIMEOUT", QStringLiteral("等待设备回告超时")); }
 
 void RequestManager::finishFailure(RequestState state, const QString &code, const QString &message)
 {
