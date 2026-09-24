@@ -12,7 +12,12 @@ private slots:
     void overflowIsReported();
     void dtACommandToQushengFrame();
     void splitQushengSuccessReplyToDtBytes();
+    void stickyFramesAndNoiseAreResynchronised();
+    void unrelatedSequenceDoesNotMatch();
     void badCrcIsRejected();
+    void deviceErrorDoesNotBuildSuccessReply();
+    void sequenceIncrementsAndWraps();
+    void distanceRangeIsValidated();
 };
 
 void FrameworkTest::splitAndStickyFrames()
@@ -57,23 +62,27 @@ void FrameworkTest::dtACommandToQushengFrame()
     QVERIFY(client.parseCommand("/1A2000", &command, &error));
     QCOMPARE(command.parameters.value("axis").toUInt(), 1u);
     QCOMPARE(command.parameters.value("speed").toUInt(), 1000u);
-    QCOMPARE(command.parameters.value("position").toLongLong(), 2000LL);
+    QCOMPARE(command.operation, QString("FORWARD_POSITION_MOVE"));
+    QCOMPARE(command.parameters.value("distance").toLongLong(), 2000LL);
     QByteArray frame;
     QVERIFY(protocol.encodeCommand(command, &frame, &error));
-    QCOMPARE(frame.left(6).toHex(), QByteArray("020111110001"));
-    QCOMPARE(frame.mid(6, 4).toHex(), QByteArray("e8030000"));
-    QCOMPARE(frame.mid(10, 4).toHex(), QByteArray("d0070000"));
-    const quint16 wireCrc = quint8(frame.at(14)) | (quint16(quint8(frame.at(15))) << 8);
-    QCOMPARE(wireCrc, QushengProtocol::crc16(frame.left(14)));
+    // Protocol acceptance vector, not assembled by the implementation under test.
+    QCOMPARE(frame, QByteArray::fromHex("aaaa020108f700111121e80300d00700e513"));
 }
 
 void FrameworkTest::splitQushengSuccessReplyToDtBytes()
 {
     QushengProtocol protocol;
     DtClientProtocol client;
-    UnifiedCommand command; command.requestId = 7; command.operation = "ABSOLUTE_MOVE";
+    UnifiedCommand command; command.requestId = 7; command.operation = "FORWARD_POSITION_MOVE";
     command.parameters.insert("axis", 1);
-    const QByteArray wire = QushengProtocol::makeReply(0x01, 0x02, 0x11, 0x11, 0);
+    command.parameters.insert("speed", 1000);
+    command.parameters.insert("distance", 2000);
+    QByteArray request;
+    TranslationError error;
+    QVERIFY(protocol.encodeCommand(command, &request, &error));
+    // Independent successful reply vector: D0=ERR_CODE, D1..D3=basic status.
+    const QByteArray wire = QByteArray::fromHex("aaaa010204fb00110000000010a4");
     QList<TranslationError> errors;
     QCOMPARE(protocol.feedReceivedData(wire.left(3), &errors).size(), 0);
     const QList<ProtocolMessage> messages = protocol.feedReceivedData(wire.mid(3), &errors);
@@ -81,21 +90,99 @@ void FrameworkTest::splitQushengSuccessReplyToDtBytes()
     QCOMPARE(messages.size(), 1);
     QVERIFY(protocol.matchesReply(command, messages.first()));
     UnifiedResult result;
-    TranslationError error;
     QVERIFY(protocol.decodeReply(command, messages.first(), &result, &error));
     QByteArray reply;
     QVERIFY(client.buildReplyBytes(result, &reply, &error));
     QCOMPARE(reply, QByteArray::fromHex("2f3140030d0a"));
 }
 
+void FrameworkTest::stickyFramesAndNoiseAreResynchronised()
+{
+    QushengProtocol protocol;
+    const QByteArray first = QByteArray::fromHex("aaaa010204fb00110000000010a4");
+    const QByteArray second = QushengProtocol::makeReply(1, 0, QByteArray::fromHex("010203"));
+    QList<TranslationError> errors;
+    QCOMPARE(protocol.feedReceivedData(QByteArray::fromHex("9988") + first.left(1), &errors).size(), 0);
+    QCOMPARE(protocol.feedReceivedData(first.mid(1, 4), &errors).size(), 0);
+    const QList<ProtocolMessage> messages = protocol.feedReceivedData(first.mid(5) + second, &errors);
+    QCOMPARE(errors.size(), 0);
+    QCOMPARE(messages.size(), 2);
+    QCOMPARE(messages.at(0).payload, QByteArray::fromHex("00000000"));
+    QCOMPARE(messages.at(1).payload, QByteArray::fromHex("00010203"));
+}
+
+void FrameworkTest::unrelatedSequenceDoesNotMatch()
+{
+    DtClientProtocol client;
+    QushengProtocol protocol;
+    UnifiedCommand command;
+    TranslationError error;
+    QVERIFY(client.parseCommand("/1A2000", &command, &error));
+    command.requestId = 42;
+    QByteArray request;
+    QVERIFY(protocol.encodeCommand(command, &request, &error));
+    const QList<ProtocolMessage> messages = protocol.feedReceivedData(
+                QushengProtocol::makeReply(1, 0), nullptr);
+    QCOMPARE(messages.size(), 1);
+    QVERIFY(!protocol.matchesReply(command, messages.first()));
+}
+
 void FrameworkTest::badCrcIsRejected()
 {
     QushengProtocol protocol;
-    QByteArray wire = QushengProtocol::makeReply(1, 2, 0x11, 0x11, 0);
-    wire[6] ^= 1;
+    QByteArray wire = QByteArray::fromHex("aaaa010204fb00110000000010a4");
+    wire[13] ^= 1;
     QList<TranslationError> errors;
     QCOMPARE(protocol.feedReceivedData(wire, &errors).size(), 0);
     QCOMPARE(errors.first().code, QString("QUSHENG_CRC"));
+}
+
+void FrameworkTest::deviceErrorDoesNotBuildSuccessReply()
+{
+    DtClientProtocol client;
+    QushengProtocol protocol;
+    UnifiedCommand command;
+    TranslationError error;
+    QVERIFY(client.parseCommand("/1A2000", &command, &error));
+    command.requestId = 8;
+    QByteArray request;
+    QVERIFY(protocol.encodeCommand(command, &request, &error));
+    const QList<ProtocolMessage> messages = protocol.feedReceivedData(
+                QushengProtocol::makeReply(0, 5), nullptr);
+    QCOMPARE(messages.size(), 1);
+    UnifiedResult result;
+    QVERIFY(protocol.decodeReply(command, messages.first(), &result, &error));
+    QVERIFY(!result.success);
+    QByteArray reply;
+    QVERIFY(!client.buildReplyBytes(result, &reply, &error));
+    QVERIFY(reply.isEmpty());
+}
+
+void FrameworkTest::sequenceIncrementsAndWraps()
+{
+    DtClientProtocol client;
+    QushengProtocol protocol;
+    UnifiedCommand command;
+    TranslationError error;
+    QVERIFY(client.parseCommand("/1A1", &command, &error));
+    QByteArray frame;
+    for (int sequence = 0; sequence <= 256; ++sequence) {
+        command.requestId = quint64(sequence + 1);
+        QVERIFY(protocol.encodeCommand(command, &frame, &error));
+        QCOMPARE(quint8(frame.at(6)), quint8(sequence));
+    }
+}
+
+void FrameworkTest::distanceRangeIsValidated()
+{
+    DtClientProtocol client;
+    UnifiedCommand command;
+    TranslationError error;
+    QVERIFY(!client.parseCommand("/1A-1", &command, &error));
+    QCOMPARE(error.code, QString("DT_RANGE"));
+    QVERIFY(!client.parseCommand("/1A16777215", &command, &error));
+    QCOMPARE(error.code, QString("DT_RANGE"));
+    QVERIFY(client.parseCommand("/1A16777214", &command, &error));
 }
 
 QTEST_APPLESS_MAIN(FrameworkTest)
