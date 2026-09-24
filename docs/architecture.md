@@ -1,6 +1,6 @@
 # 第一阶段架构说明
 
-> 当前客户协议、内部帧格式和通信行为全部是**演示实现**，不代表趋盛正式协议。
+> demo 目录中的协议和通信行为仅用于演示；DT / 趋盛路径按已确认的趋盛帧格式实现。
 
 ## 目录和职责
 
@@ -40,14 +40,14 @@
 3. 实现 `ITransport`，在 `sendBytes()` 接入现有发送代码，并把接收字节、发送结果和连接变化转成对应信号。不要在通信实现中翻译协议。
 4. 在应用组装处将演示对象替换成真实对象。界面、`TranslationService` 和整体流程无需重写。
 
-下一阶段至少需要：客户指令及回告语法、趋盛帧头/长度/转义/校验定义、命令与结果字段映射、设备寻址规则、回告与主动上报类型、请求—回告关联依据、超时建议，以及通信接口的线程和连接语义。在资料到位前，正式接口应保持未实现/不支持，不能使用演示结果冒充真实结果。
 # DT / 趋盛实现
 
 生产入口复用本项目第一阶段的 `TranslationService` 和串行 `RequestManager`：
 
-* `DtClientProtocol` 解析 `/<axis>A<position>`，并在成功时生成 DT 原始回告
+* `DtClientProtocol` 将 `/1A<distance>` 解析为“前进＋位置模式”，并在成功时生成 DT 原始回告
   `/<axis>@ ETX CR LF`；
-* `QushengProtocol` 使用默认地址 `dst=0x02`、`src=0x01`、`DevID=0x11`，编码
-  `0x11` 绝对定位报文并执行 Modbus CRC16 校验；
+* `QushengProtocol` 使用固定地址 `dst=0x02`、`src=0x01`、`DevID=0x11`，编码
+  `AA AA | dst | src | len | nel | seq | cmd | dat | CRC_H | CRC_L` 完整帧；CRC 为
+  CRC-16/CCITT-FALSE（多项式 `0x1021`、初值 `0xFFFF`），序号按 8 位递增回绕；
 * `SerialTransport` 提供真实的 115200/8N1 异步串口收发，发送完成与设备执行成功
   仍是两个独立状态。

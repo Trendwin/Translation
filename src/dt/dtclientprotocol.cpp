@@ -9,23 +9,22 @@ bool DtClientProtocol::parseCommand(const QString &text, UnifiedCommand *command
     static const QRegularExpression syntax(QStringLiteral("^/(\\d+)A([+-]?\\d+)(?:\\r?\\n)?$"));
     const QRegularExpressionMatch match = syntax.match(text);
     if (!match.hasMatch()) {
-        *error = {"DT_BAD_COMMAND", QString::fromUtf8(u8"DT 绝对定位指令格式应为 /<轴号>A<位置>，例如 /1A2000")};
+        *error = {"DT_BAD_COMMAND", QString::fromUtf8(u8"DT 前进位置模式指令格式应为 /<轴号>A<距离>，例如 /1A2000")};
         return false;
     }
     bool axisOk = false;
-    bool positionOk = false;
+    bool distanceOk = false;
     const uint axis = match.captured(1).toUInt(&axisOk);
-    const qlonglong position = match.captured(2).toLongLong(&positionOk);
-    if (!axisOk || axis == 0 || axis > 255 || !positionOk
-            || position < -2147483648LL || position > 2147483647LL) {
-        *error = {"DT_RANGE", QString::fromUtf8(u8"轴号须为 1..255，位置须为 32 位有符号整数")};
+    const qlonglong distance = match.captured(2).toLongLong(&distanceOk);
+    if (!axisOk || axis != 1 || !distanceOk || distance < 0 || distance > 0xfffffeLL) {
+        *error = {"DT_RANGE", QString::fromUtf8(u8"本阶段轴号须为 1，普通前进距离须为 0..0xFFFFFE")};
         return false;
     }
     command->targetDevice = QString::number(axis);
     command->action = ActionType::Execute;
-    command->operation = QStringLiteral("ABSOLUTE_MOVE");
+    command->operation = QStringLiteral("FORWARD_POSITION_MOVE");
     command->parameters.insert("axis", axis);
-    command->parameters.insert("position", position);
+    command->parameters.insert("distance", distance);
     command->parameters.insert("speed", 1000u);
     return true;
 }

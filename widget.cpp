@@ -70,7 +70,7 @@ Widget::Widget(QWidget *parent) : QWidget(parent), ui(new Ui::Widget),
     ui->baudCombo->setCurrentIndex(ui->baudCombo->findData(115200));
     refreshPorts();
     updateConnectionUi(false, QString());
-    appendLog(QString::fromUtf8(u8"输入示例：/1A2000。默认 dst=02、src=01、DevID=11、速度=1000。"));
+    appendLog(QString::fromUtf8(u8"输入示例：/1A2000（前进＋位置模式）。固定 dst=02、src=01、DevID=11、速度=1000。"));
 }
 
 Widget::~Widget() { delete ui; }

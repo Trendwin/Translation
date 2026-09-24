@@ -6,7 +6,7 @@
 #include <QString>
 #include <QVariant>
 
-// 与任何具体协议无关的数据模型。requestId 只在本进程内跟踪请求，绝不暗示线上的报文含流水号。
+// 与任何具体协议无关的数据模型。requestId 只在本进程内跟踪请求，不等同于具体协议的线上序号。
 enum class ActionType { Unknown, Query, Execute };
 enum class RequestState { Queued, Sending, WaitingReply, Succeeded, Failed, TimedOut, Cancelled };
 

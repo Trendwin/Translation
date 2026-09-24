@@ -3,7 +3,7 @@
 
 #include "protocol/iclientprotocol.h"
 
-// Delta Tau A<n>: /<axis>A<absolute-position>.  The terminator is optional on
+// DT A<n> is mapped to Qusheng's forward action in position mode. The terminator is optional on
 // input because a line editor normally removes it.
 class DtClientProtocol : public IClientProtocol
 {
