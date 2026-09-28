@@ -6,11 +6,13 @@ const int FrameOverhead = 10;
 const quint32 Maximum24Bit = 0xffffffu;
 const quint32 ContinuousMoveDistance = 0xffffffu;
 
-void appendLe24(QByteArray *out, quint32 value)
+// Command 0x11 encodes every 24-bit unsigned field in network (big-endian)
+// byte order.  Each field always occupies exactly three bytes.
+void appendBe24(QByteArray *out, quint32 value)
 {
-    out->append(char(value));
-    out->append(char(value >> 8));
     out->append(char(value >> 16));
+    out->append(char(value >> 8));
+    out->append(char(value));
 }
 
 quint16 readBe16(const QByteArray &data, int at)
@@ -86,8 +88,8 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     QByteArray payload;
     payload.append(char(0x11)); // D0: DevID
     payload.append(char(0x21)); // D1: 高半字节位置模式 2，低半字节前进动作 1
-    appendLe24(&payload, speed);
-    appendLe24(&payload, distance);
+    appendBe24(&payload, speed);    // D2..D4: 24-bit unsigned, high byte first
+    appendBe24(&payload, distance); // D5..D7: 24-bit unsigned, high byte first
 
     const quint8 sequence = m_nextSequence++;
     *frame = makeFrame(0x02, 0x01, sequence, 0x11, payload);

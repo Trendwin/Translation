@@ -67,7 +67,9 @@ void FrameworkTest::dtACommandToQushengFrame()
     QByteArray frame;
     QVERIFY(protocol.encodeCommand(command, &frame, &error));
     // Protocol acceptance vector, not assembled by the implementation under test.
-    QCOMPARE(frame, QByteArray::fromHex("aaaa020108f700111121e80300d00700e513"));
+    // Command 0x11 uses fixed-width, big-endian uint24 values:
+    // speed 1000 = 00 03 E8, distance 2000 = 00 07 D0.
+    QCOMPARE(frame, QByteArray::fromHex("aaaa020108f7001111210003e80007d0cca9"));
 }
 
 void FrameworkTest::splitQushengSuccessReplyToDtBytes()
