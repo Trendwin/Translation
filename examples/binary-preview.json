@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "Binary preview example - illustrative values only",
+  "enabled": false,
+  "external": {
+    "format":"binary", "headerHex":"aa55", "fixedLength":7,
+    "fields":[
+      {"name":"command","type":"uint","offset":2,"length":1,"endian":"little","constant":1},
+      {"name":"position","type":"uint","offset":3,"length":2,"endian":"little","min":0,"max":6000}
+    ],
+    "crc":{"algorithm":"crc16-ccitt-false","polynomial":4129,"initial":65535,"xorOut":0,"reflectIn":false,"reflectOut":false,"from":0,"toExclusive":5,"offset":5,"endian":"big"}
+  },
+  "mappings":[{
+    "when":{"command":1},"operation":"ABSOLUTE_MOVE","responsePolicy":"ack",
+    "parameters":{"positionUm":{"kind":"linear","field":"position","numerator":10,"denominator":1,"round":"exact"}}
+  }],
+  "responses":{"ack":"4f4b01","complete":"4f4b00","reject":"455252"},
+  "device":{
+    "destination":2,"source":1,"devId":17,"absoluteAction":1,
+    "speedUmPerS":1000,"minPositionUm":0,"maxPositionUm":60000,
+    "confirmed":false,"conversionConfirmed":false,"crcConfirmed":false
+  }
+}

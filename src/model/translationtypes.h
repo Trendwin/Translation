@@ -8,7 +8,7 @@
 
 // 与任何具体协议无关的数据模型。requestId 只在本进程内跟踪请求，不等同于具体协议的线上序号。
 enum class ActionType { Unknown, Query, Execute };
-enum class RequestState { Queued, Sending, WaitingReply, Succeeded, Failed, TimedOut, Cancelled };
+enum class RequestState { Queued, Sending, Written, WaitingReply, Acknowledged, InMotion, Succeeded, Failed, TimedOut, Cancelled };
 
 struct TranslationError
 {
@@ -20,10 +20,13 @@ struct TranslationError
 struct UnifiedCommand
 {
     quint64 requestId = 0;
+    QString configVersion;
     QString targetDevice;
     ActionType action = ActionType::Unknown;
     QString operation;
     QMap<QString, QVariant> parameters;
+    QMap<QString, QString> parameterUnits;
+    QString responsePolicy;
 };
 
 struct UnifiedResult

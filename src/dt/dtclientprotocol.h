@@ -3,8 +3,8 @@
 
 #include "protocol/iclientprotocol.h"
 
-// DT A<n> is mapped to Qusheng's forward action in position mode. The terminator is optional on
-// input because a line editor normally removes it.
+// Compatibility adapter for semantic DT parsing. Production conversion uses
+// ConversionEngine with an explicit device calibration profile.
 class DtClientProtocol : public IClientProtocol
 {
     Q_OBJECT
@@ -16,7 +16,7 @@ public:
                     TranslationError *error) const override;
     bool buildReplyBytes(const UnifiedResult &result, QByteArray *reply,
                          TranslationError *error) const override;
-    static QByteArray successReply(int axis);
+    static QByteArray statusReply(bool busy,int errorCode=0);
 };
 
 #endif

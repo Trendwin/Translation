@@ -8,6 +8,8 @@ class QushengProtocol : public IInternalProtocol
     Q_OBJECT
 public:
     using IInternalProtocol::IInternalProtocol;
+    void setAddresses(quint8 destination, quint8 source) { m_destination=destination; m_source=source; }
+    void resetSession() { m_nextSequence=0; m_hasPendingSequence=false; m_buffer.clear(); }
     bool encodeCommand(const UnifiedCommand &, QByteArray *, TranslationError *) const override;
     QList<ProtocolMessage> feedReceivedData(const QByteArray &, QList<TranslationError> *) override;
     bool matchesReply(const UnifiedCommand &, const ProtocolMessage &) const override;
@@ -20,7 +22,9 @@ public:
                                 const QByteArray &basicStatus = QByteArray(3, '\0'));
 private:
     QByteArray m_buffer;
-    mutable quint8 m_nextSequence = 0;
+    quint8 m_destination = 0;
+    quint8 m_source = 0;
+    mutable quint16 m_nextSequence = 0;
     mutable quint8 m_pendingSequence = 0;
     mutable quint64 m_pendingRequestId = 0;
     mutable bool m_hasPendingSequence = false;

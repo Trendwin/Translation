@@ -10,6 +10,7 @@ class TranslationService : public QObject
 public:
     TranslationService(IClientProtocol *client, RequestManager *requests, QObject *parent = nullptr);
     quint64 submitCommand(const QString &text);
+    quint64 submitUnifiedCommand(UnifiedCommand command);
     void cancelRequest(quint64 requestId) { m_requests->cancel(requestId); }
 signals:
     void requestStateChanged(quint64 requestId, RequestState state, const QString &detail);
@@ -17,6 +18,7 @@ signals:
     void rawDataReceived(const QByteArray &data);
     void customerReply(quint64 requestId, const QString &reply);
     void customerReplyBytes(quint64 requestId, const QByteArray &reply);
+    void completed(const UnifiedResult &result);
     void errorOccurred(quint64 requestId, const TranslationError &error);
     void unsolicitedMessage(const ProtocolMessage &message);
 private slots:

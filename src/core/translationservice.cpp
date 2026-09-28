@@ -14,6 +14,12 @@ TranslationService::TranslationService(IClientProtocol *client, RequestManager *
 quint64 TranslationService::submitCommand(const QString &text)
 {
     const quint64 id = m_nextRequestId++;
+    if (!m_client) {
+        const TranslationError error={"NO_CLIENT_ADAPTER",QStringLiteral("text adapter is not configured")};
+        emit requestStateChanged(id,RequestState::Failed,error.message);
+        emit errorOccurred(id,error);
+        return id;
+    }
     UnifiedCommand command; command.requestId = id;
     TranslationError error;
     if (!m_client->parseCommand(text, &command, &error)) {
@@ -25,8 +31,17 @@ quint64 TranslationService::submitCommand(const QString &text)
     return id;
 }
 
+quint64 TranslationService::submitUnifiedCommand(UnifiedCommand command)
+{
+    command.requestId=m_nextRequestId++;
+    m_requests->enqueue(command);
+    return command.requestId;
+}
+
 void TranslationService::onCompleted(const UnifiedResult &result)
 {
+    emit completed(result);
+    if (!m_client) return;
     QByteArray rawReply;
     TranslationError error;
     if (!m_client->buildReplyBytes(result, &rawReply, &error)) { emit errorOccurred(result.requestId, error); return; }

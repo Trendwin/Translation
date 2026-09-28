@@ -24,6 +24,8 @@ SOURCES += \
     widget.cpp \
     src/core/requestmanager.cpp \
     src/core/translationservice.cpp \
+    src/core/conversionengine.cpp \
+    src/config/protocolconfig.cpp \
     src/dt/dtclientprotocol.cpp \
     src/qusheng/qushengprotocol.cpp \
     src/transport/serialtransport.cpp \
@@ -39,6 +41,8 @@ HEADERS += \
     src/transport/itransport.h \
     src/core/requestmanager.h \
     src/core/translationservice.h \
+    src/core/conversionengine.h \
+    src/config/protocolconfig.h \
     src/dt/dtclientprotocol.h \
     src/qusheng/qushengprotocol.h \
     src/transport/serialtransport.h \

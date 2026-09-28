@@ -1,62 +1,48 @@
 #include "dtclientprotocol.h"
-
 #include <QRegularExpression>
 
-bool DtClientProtocol::parseCommand(const QString &text, UnifiedCommand *command,
-                                    TranslationError *error) const
+bool DtClientProtocol::parseCommand(const QString &text,UnifiedCommand *command,TranslationError *error) const
 {
-    if (!command || !error) return false;
-    static const QRegularExpression syntax(QStringLiteral("^/(\\d+)A([+-]?\\d+)(?:\\r?\\n)?$"));
-    const QRegularExpressionMatch match = syntax.match(text);
-    if (!match.hasMatch()) {
-        *error = {"DT_BAD_COMMAND", QString::fromUtf8(u8"DT 前进位置模式指令格式应为 /<轴号>A<距离>，例如 /1A2000")};
+    if(!command || !error) return false;
+    static const QRegularExpression move(QStringLiteral("^/([1-9])([Aa])([0-9]+)R\\r$"));
+    static const QRegularExpression query(QStringLiteral("^/([1-9])Q\\r$"));
+    const auto mm=move.match(text),qm=query.match(text);
+    if(qm.hasMatch()) {
+        command->targetDevice=qm.captured(1);
+        command->action=ActionType::Query; command->operation="QUERY_MOTOR";
+        command->responsePolicy="query"; return true;
+    }
+    if(!mm.hasMatch()) {
+        *error={"DT_UNSUPPORTED",QString::fromUtf8(u8"仅支持单条 A/a...R 或 Q，且以 CR 结束；组合、广播与其他命令拒绝")};
         return false;
     }
-    bool axisOk = false;
-    bool distanceOk = false;
-    const uint axis = match.captured(1).toUInt(&axisOk);
-    const qlonglong distance = match.captured(2).toLongLong(&distanceOk);
-    if (!axisOk || axis != 1 || !distanceOk || distance < 0 || distance > 0xfffffeLL) {
-        *error = {"DT_RANGE", QString::fromUtf8(u8"本阶段轴号须为 1，普通前进距离须为 0..0xFFFFFE")};
-        return false;
-    }
-    command->targetDevice = QString::number(axis);
-    command->action = ActionType::Execute;
-    command->operation = QStringLiteral("FORWARD_POSITION_MOVE");
-    command->parameters.insert("axis", axis);
-    command->parameters.insert("distance", distance);
-    command->parameters.insert("speed", 1000u);
+    bool ok=false; const qlonglong position=mm.captured(3).toLongLong(&ok);
+    if(!ok) { *error={"DT_RANGE",QString::fromUtf8(u8"位置数值溢出")}; return false; }
+    command->targetDevice=mm.captured(1);
+    command->action=ActionType::Execute; command->operation="ABSOLUTE_MOVE";
+    command->parameters.insert("dtPosition",position);
+    command->parameterUnits.insert("dtPosition","DT position unit (N mode dependent)");
+    command->responsePolicy=mm.captured(2)=="A"?"ack":"complete";
     return true;
 }
 
-QByteArray DtClientProtocol::successReply(int axis)
-{
-    return QByteArray("/") + QByteArray::number(axis) + QByteArray("@\x03\r\n", 4);
-}
+QByteArray DtClientProtocol::statusReply(bool busy,int errorCode)
+{ return QByteArray("/0")+char(0x40|(busy?0x20:0)|(errorCode&0x0f))+QByteArray("\x03\r\n",3); }
 
-bool DtClientProtocol::buildReplyBytes(const UnifiedResult &result, QByteArray *reply,
-                                       TranslationError *error) const
+bool DtClientProtocol::buildReplyBytes(const UnifiedResult &result,QByteArray *reply,TranslationError *error) const
 {
-    if (!reply || !error) return false;
-    if (!result.success) {
-        *error = result.error.isValid() ? result.error
-                                       : TranslationError{"DT_DEVICE_ERROR", QString::fromUtf8(u8"设备执行失败")};
+    if(!reply || !error) return false;
+    if(!result.success) {
+        *error=result.error.isValid()?result.error:TranslationError{"DT_DEVICE_ERROR",QString::fromUtf8(u8"设备结果未确认")};
         return false;
     }
-    const int axis = result.data.value("axis").toInt();
-    if (axis < 1 || axis > 255) {
-        *error = {"DT_REPLY_AXIS", QString::fromUtf8(u8"回告缺少有效轴号")};
-        return false;
-    }
-    *reply = successReply(axis);
+    *reply=statusReply(result.data.value("deviceBusy").toBool());
     return true;
 }
 
-bool DtClientProtocol::buildReply(const UnifiedResult &result, QString *reply,
-                                  TranslationError *error) const
+bool DtClientProtocol::buildReply(const UnifiedResult &result,QString *reply,TranslationError *error) const
 {
     QByteArray bytes;
-    if (!reply || !buildReplyBytes(result, &bytes, error)) return false;
-    *reply = QString::fromLatin1(bytes);
-    return true;
+    if(!reply || !buildReplyBytes(result,&bytes,error)) return false;
+    *reply=QString::fromLatin1(bytes); return true;
 }

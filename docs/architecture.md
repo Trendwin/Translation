@@ -1,57 +1,11 @@
-# 第一阶段架构说明
+# Architecture
 
-> demo 目录中的协议和通信行为仅用于演示；DT / 趋盛路径按已确认的趋盛帧格式实现。
+See [phase1.md](phase1.md) for requirements, source conflicts, interfaces and acceptance gates.
 
-## 目录和职责
+`ProtocolConfig` validates versioned JSON and provides a stable value snapshot. `ConversionEngine` owns the upstream stream cache, parses a complete external frame, evaluates bounded mapping expressions and produces a protocol neutral `UnifiedCommand`. Its preview uses a fresh `QushengProtocol`, so it cannot alter the sequence number of a live connection. `Widget` holds the enabled configuration and one `ConversionEngine` per upstream serial connection; editing the JSON text changes only the draft.
 
-- `src/model`：与具体协议无关的统一命令、结果、错误和请求状态。本地 `requestId` 只在软件内部使用。
-- `src/protocol`：客户协议和内部协议的抽象接口。前者转换文本与统一模型；后者负责编码、缓存、分帧、校验、解析以及回告匹配。
-- `src/transport`：只收发 `QByteArray` 的通信抽象，不解释数据。
-- `src/core`：`RequestManager` 串行管理请求生命周期，`TranslationService` 是界面的唯一业务入口。
-- `src/demo`：独立的演示客户适配器、演示帧编解码器和模拟通信。
-- 根目录 `Widget`：用于框架验证的 QWidget 界面，不直接操作协议或通信对象。
+`TranslationService::submitUnifiedCommand` submits a mapped command to `RequestManager`. The manager writes through `ITransport` and separates write completion, 0x11 command acceptance, and motor completion. After 0x11 acceptance it polls 0x12 and checks both idle state and requested absolute position. A 0x17 report updates busy status but cannot complete a request because it has no request sequence. Commands are serialized and motions are never retried automatically. Cancelling a local wait leaves the motor state busy/unknown until a query confirms idle.
 
-对象在 `Widget` 中组装并由 Qt 父子关系管理。接口引用是非拥有指针，具体对象必须比服务和请求管理器存活更久。解析与编码接口同步返回；发送完成、接收、状态和结果则通过 Qt 信号异步通知。
+`Widget` owns separate serial transports for the upstream external connection and downstream device connection. It records an upstream connection generation and configuration snapshot per accepted request, so a reply returns to the original live connection and a config edit cannot change its format. The bridge and real send controls require explicit enabling and confirmed device/calibration/CRC flags. Preview never sends.
 
-## 处理流程
-
-发送链路为：界面 → `TranslationService::submitCommand()` → 客户适配器 → 统一命令 → 请求管理器 → 内部编码器 → 通信接口。通信层的“发送成功”只会令状态进入“等待回告”，只有匹配且解析成功的设备回告才能完成请求。
-
-接收链路为：通信接口 → 内部协议缓存、分帧和校验 → 匹配当前统一命令 → 统一结果 → 客户适配器生成回告 → 界面。无关回告和主动上报通过 `unsolicitedMessage` 立即分发，不长期保存。
-
-请求管理器当前严格串行，不自动重发。超时、取消、断线和发送失败都会停止定时器并结束当前请求，失败路径也清空残留半帧。由于正式协议未知，**迟到回告的可靠识别尚未解决**：如果线上协议没有可匹配的地址、动作、序列或上下文字段，旧请求的完整迟到帧仍可能与新请求混淆，必须等协议资料明确后完善。
-
-## 模拟验证
-
-运行程序后可输入：
-
-1. `PING motor1`：模拟通信把一个回告拆成两段，并把第二段与主动上报粘连；最终显示成功回告，主动上报只写日志。
-2. `FAIL motor1`：收到匹配的失败回告，请求进入失败而不是伪造成功。
-3. `TIMEOUT motor1`：模拟发送成功但不返回回告，约 800 ms 后进入超时。
-4. 其他文本：客户适配器立即报告格式错误或不支持，不进入通信层。
-5. 等待期间点击取消：停止该请求；其后的异步发送回调按本地请求号过滤。
-
-发送和接收原始数据均以十六进制显示，日志限制为 200 个文本块，不用弹窗报告普通状态。
-
-## 接入真实实现
-
-1. 实现 `IClientProtocol::parseCommand()` 和 `buildReply()`，在这里落实客户文本格式和映射规则。
-2. 实现 `IInternalProtocol` 全部接口。`feedReceivedData()` 必须限制缓存、支持半包/粘包并校验；`matchesReply()` 必须依据正式协议严格判断回告，不能把任意接收帧视为成功。
-3. 实现 `ITransport`，在 `sendBytes()` 接入现有发送代码，并把接收字节、发送结果和连接变化转成对应信号。不要在通信实现中翻译协议。
-4. 在应用组装处将演示对象替换成真实对象。界面、`TranslationService` 和整体流程无需重写。
-
-# DT / 趋盛实现
-
-生产入口复用本项目第一阶段的 `TranslationService` 和串行 `RequestManager`：
-
-* `DtClientProtocol` 将 `/1A<distance>` 解析为“前进＋位置模式”，并在成功时生成 DT 原始回告
-  `/<axis>@ ETX CR LF`；
-* `QushengProtocol` 使用固定地址 `dst=0x02`、`src=0x01`、`DevID=0x11`，编码
-  `AA AA | dst | src | len | nel | seq | cmd | dat | CRC_H | CRC_L` 完整帧；CRC 为
-  CRC-16/CCITT-FALSE（多项式 `0x1021`、初值 `0xFFFF`），序号按 8 位递增回绕；
-  `0x11` 命令数据区中的速度和距离均为固定 3 字节的 24 位无符号数，并按大端序
-  （高字节在前）发送。比如速度 1000 为 `00 03 E8`，距离 2000 为 `00 07 D0`；
-  `/1A2000` 的数据区为 `11 21 00 03 E8 00 07 D0`，帧序号为 `00` 时完整报文为
-  `AA AA 02 01 08 F7 00 11 11 21 00 03 E8 00 07 D0 CC A9`；
-* `SerialTransport` 提供真实的 115200/8N1 异步串口收发，发送完成与设备执行成功
-  仍是两个独立状态。
+`src/demo` and `DtClientProtocol` remain as compatibility/test components. The application uses the configuration engine as its production input path. TCP transport, complex action orchestration and editable downstream templates are extension points, not supported by this phase.

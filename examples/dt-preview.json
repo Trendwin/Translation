@@ -1,0 +1,12 @@
+{
+  "schemaVersion":1,
+  "name":"HMD6 DT preview - calibration required",
+  "enabled":false,
+  "external":{"format":"dt","fields":[]},
+  "mappings":[
+    {"when":{"command":"A","address":1},"operation":"ABSOLUTE_MOVE","responsePolicy":"ack","parameters":{"positionUm":{"kind":"linear","field":"position","numerator":10,"denominator":1,"round":"exact"}}},
+    {"when":{"command":"a","address":1},"operation":"ABSOLUTE_MOVE","responsePolicy":"complete","parameters":{"positionUm":{"kind":"linear","field":"position","numerator":10,"denominator":1,"round":"exact"}}},
+    {"when":{"command":"Q","address":1},"operation":"QUERY_MOTOR","responsePolicy":"query","parameters":{}}
+  ],
+  "device":{"destination":2,"source":1,"devId":17,"absoluteAction":1,"speedUmPerS":1000,"minPositionUm":0,"maxPositionUm":60000,"confirmed":false,"conversionConfirmed":false,"crcConfirmed":false}
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "ASCII preview example - illustrative values only",
+  "enabled": false,
+  "external": {
+    "format": "ascii",
+    "template": "!MOVE,{position}\r",
+    "fields": [{"name":"position","type":"uint","min":0,"max":6000}]
+  },
+  "mappings": [{
+    "operation":"ABSOLUTE_MOVE", "responsePolicy":"ack",
+    "parameters":{"positionUm":{"kind":"linear","field":"position","numerator":10,"denominator":1,"round":"exact"}}
+  }],
+  "responses":{"ack":"OK,BUSY\r\n","complete":"OK,IDLE\r\n","reject":"ERR,{code}\r\n"},
+  "device":{
+    "destination":2,"source":1,"devId":17,"absoluteAction":1,
+    "speedUmPerS":1000,"minPositionUm":0,"maxPositionUm":60000,
+    "confirmed":false,"conversionConfirmed":false,"crcConfirmed":false
+  }
+}

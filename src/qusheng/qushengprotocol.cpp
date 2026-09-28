@@ -67,32 +67,46 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
                                     TranslationError *error) const
 {
     if (!frame || !error) return false;
-    if (command.operation != QStringLiteral("FORWARD_POSITION_MOVE")
-            || command.parameters.value("axis").toUInt() != 1u) {
-        *error = {"QUSHENG_UNSUPPORTED", QString::fromUtf8(u8"趋盛协议本阶段仅支持 /1A<n> 前进位置模式指令")};
+    if (m_destination==0 || m_source==0 || m_destination==m_source) {
+        *error = {"QUSHENG_ADDRESS", QString::fromUtf8(u8"趋盛地址未配置或冲突")};
         return false;
     }
-
-    quint32 speed = 0;
-    quint32 distance = 0;
-    if (!readUnsigned24Parameter(command, "speed", &speed)
-            || !readUnsigned24Parameter(command, "distance", &distance)) {
-        *error = {"QUSHENG_RANGE", QString::fromUtf8(u8"速度和距离须为 0..0xFFFFFF 的 24 位无符号整数")};
+    if (m_nextSequence>255) {
+        *error={"QUSHENG_SEQUENCE_EXHAUSTED",QString::fromUtf8(u8"本次连接已用完 8 位序号；重新连接后再发送，避免迟到帧回绕匹配")};
         return false;
     }
-    if (distance == ContinuousMoveDistance) {
-        *error = {"QUSHENG_CONTINUOUS_RESERVED", QString::fromUtf8(u8"普通距离不能使用连续运动保留值 0xFFFFFF")};
+    bool idOk=false;
+    const uint devId=command.targetDevice.toUInt(&idOk);
+    if (!idOk || devId<0x11 || devId>0x1c) {
+        *error = {"QUSHENG_DEVID", QString::fromUtf8(u8"电机 DevID 无效")};
         return false;
     }
-
+    if (command.operation==QStringLiteral("QUERY_MOTOR")) {
+        const quint8 sequence=quint8(m_nextSequence++);
+        *frame=makeFrame(m_destination,m_source,sequence,0x12,QByteArray(1,char(devId)));
+        m_pendingRequestId=command.requestId; m_pendingSequence=sequence; m_hasPendingSequence=true;
+        return true;
+    }
+    if (command.operation!=QStringLiteral("ABSOLUTE_MOVE")) {
+        *error = {"QUSHENG_UNSUPPORTED", QString::fromUtf8(u8"只支持绝对定位及电机查询")};
+        return false;
+    }
+    quint32 speed=0, position=0, action=0;
+    if (!readUnsigned24Parameter(command,"speedUmPerS",&speed)
+            || !readUnsigned24Parameter(command,"positionUm",&position)
+            || !readUnsigned24Parameter(command,"absoluteAction",&action)
+            || speed==0 || position==ContinuousMoveDistance || (action!=1 && action!=3)) {
+        *error = {"QUSHENG_RANGE", QString::fromUtf8(u8"速度、绝对位置或方向不在有效范围")};
+        return false;
+    }
     QByteArray payload;
-    payload.append(char(0x11)); // D0: DevID
-    payload.append(char(0x21)); // D1: 高半字节位置模式 2，低半字节前进动作 1
+    payload.append(char(devId));
+    payload.append(char(0x40 | action)); // AbsolutePosition mode=4; action from confirmed profile.
     appendBe24(&payload, speed);    // D2..D4: 24-bit unsigned, high byte first
-    appendBe24(&payload, distance); // D5..D7: 24-bit unsigned, high byte first
+    appendBe24(&payload, position); // D5..D7: absolute target, high byte first
 
-    const quint8 sequence = m_nextSequence++;
-    *frame = makeFrame(0x02, 0x01, sequence, 0x11, payload);
+    const quint8 sequence = quint8(m_nextSequence++);
+    *frame = makeFrame(m_destination, m_source, sequence, 0x11, payload);
     m_pendingRequestId = command.requestId;
     m_pendingSequence = sequence;
     m_hasPendingSequence = true;
@@ -162,11 +176,13 @@ QList<ProtocolMessage> QushengProtocol::feedReceivedData(const QByteArray &data,
 bool QushengProtocol::matchesReply(const UnifiedCommand &command, const ProtocolMessage &message) const
 {
     const QByteArray &frame = message.wireData;
-    return m_hasPendingSequence && command.requestId == m_pendingRequestId
-            && frame.size() == 14 && quint8(frame.at(2)) == 0x01
-            && quint8(frame.at(3)) == 0x02 && quint8(frame.at(4)) == 0x04
-            && quint8(frame.at(6)) == m_pendingSequence && quint8(frame.at(7)) == 0x11
-            && message.messageType == 0x11 && message.payload.size() == 4;
+    const int expectedCmd=command.operation==QStringLiteral("QUERY_MOTOR") ? 0x12 : 0x11;
+    const int expectedLength=expectedCmd==0x12 ? 11 : 4;
+    return m_hasPendingSequence && command.requestId==m_pendingRequestId
+            && frame.size()==expectedLength+FrameOverhead && quint8(frame.at(2))==m_source
+            && quint8(frame.at(3))==m_destination && quint8(frame.at(4))==expectedLength
+            && quint8(frame.at(6))==m_pendingSequence && quint8(frame.at(7))==expectedCmd
+            && message.payload.size()==expectedLength;
 }
 
 bool QushengProtocol::decodeReply(const UnifiedCommand &command, const ProtocolMessage &message,
@@ -179,8 +195,14 @@ bool QushengProtocol::decodeReply(const UnifiedCommand &command, const ProtocolM
     result->requestId = command.requestId;
     const quint8 errorCode = quint8(message.payload.at(0)); // D0 是 ERR_CODE，不是 DevID。
     result->success = errorCode == 0;
-    result->data.insert("axis", command.parameters.value("axis"));
     result->data.insert("basicStatus", message.payload.mid(1, 3));
+    if (command.operation==QStringLiteral("QUERY_MOTOR") && result->success) {
+        const int state=(quint8(message.payload.at(4))>>4)&0x0f;
+        const quint32 position=(quint32(quint8(message.payload.at(5)))<<16)
+                | (quint32(quint8(message.payload.at(6)))<<8) | quint8(message.payload.at(7));
+        result->data.insert("motorState",state);
+        result->data.insert("positionUm",position);
+    }
     if (!result->success)
         result->error = {"QUSHENG_REJECTED", QString::fromUtf8(u8"趋盛设备返回错误码 0x%1").arg(errorCode, 2, 16, QLatin1Char('0'))};
     return true;
