@@ -22,6 +22,32 @@ QByteArray configuredBytes(const QJsonObject &external, const char *name)
     return bytes;
 }
 
+QJsonObject mappingForInput(const ProtocolConfig &config, const QByteArray &input)
+{
+    const QJsonObject external = config.root.value("external").toObject();
+    int cursor = configuredBytes(external, "header").size();
+    for (const QJsonValue &value : external.value("fields").toArray()) {
+        const QJsonObject field = value.toObject();
+        if (field.value("lengthMode").toString() == "mappedCommand") {
+            QJsonObject selected;
+            int longest = 0;
+            // 候选来自保存的配置。选择最长前缀让多字符命令不会被短命令吞掉；
+            // 后续仍必须严格核对字段和帧尾，不能把含额外数据的查询当成功。
+            for (const QJsonValue &candidate : config.root.value("mappings").toArray()) {
+                const QJsonObject mapping = candidate.toObject();
+                const QByteArray code = mapping.value("commandCode").toString().toLatin1();
+                if (code.size() > longest && input.mid(cursor).startsWith(code)) {
+                    selected = mapping; longest = code.size();
+                }
+            }
+            return selected;
+        }
+        if (field.value("lengthMode").toString() != "fixed") break;
+        cursor += field.value("length").toInt();
+    }
+    return QJsonObject();
+}
+
 quint64 readUnsigned(const QByteArray &bytes, bool littleEndian)
 {
     quint64 result = 0;
@@ -101,7 +127,8 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
     fields->clear();
     if (input.size() > 4096)
         return fail(error, "INPUT_OVERFLOW", QString::fromUtf8(u8"完整输入报文超过 4096 字节上限"));
-    const QJsonObject external = m_config.root.value("external").toObject();
+    const QJsonObject matchedInput = mappingForInput(m_config, input);
+    const QJsonObject external = m_config.inputFormat(matchedInput);
     const QByteArray header = configuredBytes(external, "header");
     const QByteArray footer = configuredBytes(external, "footer");
     if (!input.startsWith(header))
@@ -121,6 +148,11 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
         const QString name = field.value("name").toString();
         int length = field.value("lengthMode").toString() == "toFooter"
                 ? payload.size() - cursor : field.value("length").toInt();
+        if (field.value("lengthMode").toString() == "mappedCommand") {
+            if (matchedInput.isEmpty())
+                return fail(error, "COMMAND_UNSUPPORTED", QString::fromUtf8(u8"输入命令没有匹配的命令映射"));
+            length = matchedInput.value("commandCode").toString().toLatin1().size();
+        }
         if (length <= 0 || cursor + length > payload.size())
             return fail(error, "FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的实际长度不符合配置").arg(name));
         const QByteArray raw = payload.mid(cursor, length);
@@ -212,7 +244,9 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     command->configVersion = m_config.version;
     command->targetDevice = QString::number(device.value("devId").toInt());
     command->operation = matched.value("operation").toString();
-    command->action = ActionType::Execute;
+    const bool query = command->operation == "QUERY_MOTOR" || command->operation == "QUERY_DEVICE_INFO";
+    const bool relative = command->operation == "RELATIVE_FORWARD" || command->operation == "RELATIVE_BACKWARD";
+    command->action = query ? ActionType::Query : ActionType::Execute;
     command->responsePolicy = matched.value("responsePolicy").toString();
     command->parameters.clear();
     command->parameterUnits.clear();
@@ -228,15 +262,23 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         preview->parameterTrace.insert(it.key(), trace);
     }
 
-    // 位置统一为微米，速度统一为微米/秒。设备行程约束在组帧前再次阻止越界动作。
+    if (query) return true;
+    // 客户输入是否带单位只由配置的表达式决定，本轮示例直接引用数值。
+    // 参数名保留趋盛线上的单位约定；没有配置换算时不擅自乘以客户设备的步距。
     bool positionOk = false;
-    const qlonglong positionUm = command->parameters.value("positionUm").toLongLong(&positionOk);
-    if (!positionOk || positionUm < device.value("minPositionUm").toInt()
-            || positionUm > device.value("maxPositionUm").toInt())
+    const QString positionKey = relative ? QStringLiteral("distanceUm") : QStringLiteral("positionUm");
+    const qlonglong positionUm = command->parameters.value(positionKey).toLongLong(&positionOk);
+    if (!positionOk || (relative ? (positionUm < 0 || positionUm > device.value("maxPositionUm").toInt() - device.value("minPositionUm").toInt())
+                                : (positionUm < device.value("minPositionUm").toInt() || positionUm > device.value("maxPositionUm").toInt())))
         return fail(error, "POSITION_LIMIT", QString::fromUtf8(u8"换算后的位置超出已配置设备行程"));
+    if (relative) {
+        // 相对动作的最终位置依赖实机当前值，预览只能检查距离；真实发送由请求管理器先查询再核对终点。
+        command->parameters.insert("minPositionUm", device.value("minPositionUm").toInt());
+        command->parameters.insert("maxPositionUm", device.value("maxPositionUm").toInt());
+    }
     command->parameters.insert("speedUmPerS", device.value("speedUmPerS").toInt());
-    command->parameters.insert("absoluteAction", device.value("absoluteAction").toInt());
-    command->parameterUnits.insert("positionUm", QStringLiteral("um"));
+    command->parameters.insert("absoluteAction", relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3) : device.value("absoluteAction").toInt());
+    command->parameterUnits.insert(positionKey, QStringLiteral("um"));
     command->parameterUnits.insert("speedUmPerS", QStringLiteral("um/s"));
     return true;
 }
@@ -251,11 +293,13 @@ bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPre
     if (!m_config.validate(error)) return false;
     ConversionPreview result;
     result.input = input;
-    for (const QJsonValue &field : m_config.root.value("external").toObject().value("fields").toArray())
-        result.fieldOrder << field.toObject().value("name").toString();
     if (!parse(input, &result.fields, error)
             || !map(result.fields, &result.command, &result, error))
         return false;
+    for (const QJsonValue &field : m_config.root.value("external").toObject().value("fields").toArray()) {
+        const QString name = field.toObject().value("name").toString();
+        if (result.fields.contains(name)) result.fieldOrder << name;
+    }
 
     const QJsonObject device = m_config.root.value("device").toObject();
     QushengProtocol codec;
@@ -278,20 +322,12 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
     m_buffer.append(chunk);
     const QJsonObject external = m_config.root.value("external").toObject();
     const QByteArray header = configuredBytes(external, "header");
-    const QByteArray footer = configuredBytes(external, "footer");
     if (m_buffer.size() > 4096) {
         m_buffer.clear();
         if (errors) errors->append({"INPUT_OVERFLOW", QString::fromUtf8(u8"输入缓存超过 4096 字节，已清空")});
         return frames;
     }
 
-    int fixedPayloadLength = 0;
-    bool hasTailField = false;
-    for (const QJsonValue &value : external.value("fields").toArray()) {
-        const QJsonObject field = value.toObject();
-        if (field.value("lengthMode").toString() == "toFooter") hasTailField = true;
-        else fixedPayloadLength += field.value("length").toInt();
-    }
     // 通用分帧仅依赖配置边界：保留可能被拆开的帧头，丢弃帧头前噪声，并逐个取出粘连帧。
     for (;;) {
         const int start = m_buffer.indexOf(header);
@@ -300,6 +336,20 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
             break;
         }
         if (start > 0) m_buffer.remove(0, start);
+        const QJsonObject selected = mappingForInput(m_config, m_buffer);
+        const QJsonObject format = m_config.inputFormat(selected);
+        const QByteArray footer = configuredBytes(format, "footer");
+        int fixedPayloadLength = 0;
+        bool hasTailField = false;
+        for (const QJsonValue &value : format.value("fields").toArray()) {
+            const QJsonObject field = value.toObject();
+            const QString mode = field.value("lengthMode").toString();
+            if (mode == "toFooter") hasTailField = true;
+            else if (mode == "mappedCommand") {
+                fixedPayloadLength += selected.value("commandCode").toString().size();
+                if (selected.isEmpty()) hasTailField = true;
+            } else fixedPayloadLength += field.value("length").toInt();
+        }
         // 全部固定长度时按配置长度定位帧尾，HEX 参数中的同值字节不能被当成结束符。
         // 读取到帧尾则从固定字段之后搜索；此模式要求尾字段不含未转义的完整帧尾。
         const int end = hasTailField ? m_buffer.indexOf(footer, header.size() + fixedPayloadLength)

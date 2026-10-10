@@ -170,14 +170,21 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (!QStringList({"ascii", "uint", "int"}).contains(type))
             return fail(error, "CONFIG_FIELD_TYPE", QString::fromUtf8(u8"字段“%1”的数据类型无效").arg(name));
         const QString lengthMode = field.value("lengthMode").toString();
-        if (!QStringList({"fixed", "toFooter"}).contains(lengthMode))
+        if (!QStringList({"fixed", "toFooter", "mappedCommand"}).contains(lengthMode))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的长度方式无效").arg(name));
+        if (lengthMode == "mappedCommand") {
+            if (encoding != "ascii" || type != "ascii" || role != "command")
+                return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"按命令码识别仅适用于 ASCII 命令码字段"));
+            for (int before = 0; before < index; ++before)
+                if (fields.at(before).toObject().value("lengthMode").toString() != "fixed")
+                    return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"可变命令码之前只能放固定长度字段"));
+        }
         if (metTailField)
             return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"读取到帧尾的字段必须排在最后"));
         if (lengthMode == "fixed" && !integer(field.value("length"), 1, 4096))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的固定长度必须大于 0").arg(name));
         if (lengthMode == "toFooter") metTailField = true;
-        else fixedBytes += field.value("length").toInt();
+        else fixedBytes += lengthMode == "mappedCommand" ? 1 : field.value("length").toInt();
         if (encoding == "hex" && type != "ascii"
                 && (lengthMode != "fixed" || field.value("length").toInt() > 8))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"HEX 整数字段必须固定为 1 至 8 字节"));
@@ -225,17 +232,72 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (code.isEmpty() || commandCodes.contains(code))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码不能为空或重复"));
         commandCodes.insert(code);
-        if (mapping.value("operation").toString() != "ABSOLUTE_MOVE")
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"第一阶段只支持“绝对位置运动”"));
+        const QString operation = mapping.value("operation").toString();
+        const bool query = operation == "QUERY_MOTOR" || operation == "QUERY_DEVICE_INFO";
+        const bool relative = operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
+        if (!query && !relative && operation != "ABSOLUTE_MOVE")
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"目标操作不在本轮支持的单条运动或查询模板中"));
         if (!QStringList({"ack", "complete"}).contains(mapping.value("responsePolicy").toString()))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"响应方式只能是“命令应答”或“动作完成”"));
+        if (!mapping.value("parameters").isObject())
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"参数关系必须为对象；查询使用空对象"));
         const QJsonObject parameters = mapping.value("parameters").toObject();
-        if (parameters.size() != 1)
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"首版参数关系只开放目标位置；速度和动作值在设备参数中设置"));
-        if (!parameters.contains("positionUm"))
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"绝对位置运动必须映射 positionUm"));
+        if (query ? (!parameters.isEmpty() || mapping.value("responsePolicy").toString() != "ack")
+                  : (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm")))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离；查询无参数且收到回告后返回"));
+        // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
+        if (mapping.contains("input") && !mapping.value("input").isObject())
+            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
+        const QJsonObject input = mapping.value("input").toObject();
+        QSet<QString> available = names, omitted;
+        if (input.contains("omitFields") && !input.value("omitFields").isArray())
+            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段必须是字段名称列表"));
+        for (const QJsonValue &omittedValue : input.value("omitFields").toArray()) {
+            const QString omittedName = omittedValue.toString();
+            if (!omittedValue.isString() || !available.contains(omittedName) || omitted.contains(omittedName))
+                return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段不存在或重复：%1").arg(omittedName));
+            bool beforeCommand = true;
+            for (const QJsonValue &f : fields) {
+                const QJsonObject declaredField = f.toObject();
+                if (declaredField.value("role").toString() == "command") {
+                    if (declaredField.value("name").toString() == omittedName)
+                        return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"不能省略命令码字段"));
+                    beforeCommand = false;
+                }
+                // 定位命令必须有稳定前缀，首版不做可选地址或多套前缀布局，避免不同命令错位匹配。
+                if (beforeCommand && declaredField.value("name").toString() == omittedName)
+                    return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令码之前的字段不能按映射省略"));
+            }
+            omitted.insert(omittedName); available.remove(omittedName);
+        }
+        if (!input.isEmpty()) {
+            bool mapped = false;
+            for (const QJsonValue &f : fields) mapped |= f.toObject().value("lengthMode").toString() == "mappedCommand";
+            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"独立输入格式需要将命令码长度方式设为“按命令码识别”"));
+        }
+        QByteArray codeBytes;
+        if (code.size() > 128) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码超过 128 字符"));
+        if (encoding == "ascii") {
+            for (QChar ch : code)
+                if (ch.unicode() < 0x21 || ch.unicode() > 0x7e || ch == '\\')
+                    return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"ASCII 客户命令码需为可见字符，不能含空格、控制符或转义"));
+        }
+        if (input.contains("footer") && (!input.value("footer").isString()
+                || input.value("footer").toString().isEmpty()
+                || !decodeBytes(input.value("footer").toString(), encoding, &codeBytes, error)))
+            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令帧尾为空或格式无效"));
+        const QJsonObject effective = inputFormat(mapping);
+        const int effectiveFooterLength = input.contains("footer") ? codeBytes.size() : footerBytes.size();
+        int minimumLength = headerBytes.size() + effectiveFooterLength;
+        for (const QJsonValue &f : effective.value("fields").toArray()) {
+            const QJsonObject effectiveField = f.toObject();
+            const QString mode = effectiveField.value("lengthMode").toString();
+            minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : 1;
+        }
+        if (minimumLength > 4096)
+            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));
         for (auto it = parameters.begin(); it != parameters.end(); ++it)
-            if (!validExpression(it.value().toObject(), names))
+            if (!validExpression(it.value().toObject(), available))
                 return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的关系无效").arg(it.key()));
     }
 
@@ -258,4 +320,17 @@ bool ProtocolConfig::liveReady(TranslationError *error) const
 {
     // 配置层只检查设备参数完整性。人工确认、显式启用和串口连接由界面在发送瞬间共同检查。
     return validate(error);
+}
+
+QJsonObject ProtocolConfig::inputFormat(const QJsonObject &mapping) const
+{
+    QJsonObject format = root.value("external").toObject();
+    const QJsonObject input = mapping.value("input").toObject();
+    if (input.contains("footer")) format.insert("footer", input.value("footer"));
+    const QJsonArray omitted = input.value("omitFields").toArray();
+    QJsonArray selected;
+    for (const QJsonValue &field : format.value("fields").toArray())
+        if (!omitted.contains(field.toObject().value("name"))) selected.append(field);
+    format.insert("fields", selected);
+    return format;
 }

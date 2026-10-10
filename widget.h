@@ -12,6 +12,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QGroupBox;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
@@ -52,6 +53,13 @@ private:
     void appendLog(const QString &text);
     void addFieldRow(const QJsonObject &field = QJsonObject());
     void addMappingRow(const QJsonObject &mapping = QJsonObject());
+    void loadMappingEditor(int row);
+    bool saveMappingEditor();
+    void updateMappingSummary(int row, const QJsonObject &mapping);
+    void updateMappingSources();
+    void updateMappingControls();
+    void mappingEdited();
+    bool inputIsQuery() const;
     static QString stateText(RequestState state);
 
     QushengProtocol *m_protocol = nullptr;
@@ -80,6 +88,26 @@ private:
     QComboBox *m_byteOrder = nullptr;
     QTableWidget *m_fieldTable = nullptr;
     QTableWidget *m_mappingTable = nullptr;
+    QGroupBox *m_mappingEditor = nullptr;
+    QLineEdit *m_mappingCode = nullptr;
+    QComboBox *m_mappingOperation = nullptr;
+    QComboBox *m_mappingSource = nullptr;
+    QLineEdit *m_mappingValue = nullptr;
+    QLineEdit *m_mappingMultiplier = nullptr;
+    QComboBox *m_mappingResponse = nullptr;
+    QLabel *m_mappingParameterHint = nullptr;
+    QCheckBox *m_mappingDefaultFooter = nullptr;
+    QLineEdit *m_mappingFooter = nullptr;
+    QGroupBox *m_mappingMore = nullptr;
+    QWidget *m_mappingMoreContent = nullptr;
+    QLineEdit *m_mappingOffset = nullptr;
+    QComboBox *m_mappingRounding = nullptr;
+    QGroupBox *m_mappingOmissions = nullptr;
+    int m_mappingEditorRow = -1;
+    bool m_loadingMapping = false;
+    bool m_mappingEditorDirty = false;
+    bool m_multiplierChanged = false;
+    QString m_editorOperation;
     QTextEdit *m_advancedJson = nullptr;
 
     QSpinBox *m_destination = nullptr;
