@@ -59,6 +59,10 @@ private:
     void updateMappingSources();
     void updateMappingControls();
     void mappingEdited();
+    void filterMappingCommands();
+    void browseCommandCatalog();
+    void loadCatalogParameters(const QJsonObject &parameters);
+    bool catalogParameters(QJsonObject *parameters, QString *reason) const;
     bool inputIsQuery() const;
     static QString stateText(RequestState state);
 
@@ -91,6 +95,13 @@ private:
     QGroupBox *m_mappingEditor = nullptr;
     QLineEdit *m_mappingCode = nullptr;
     QComboBox *m_mappingOperation = nullptr;
+    QLineEdit *m_mappingSearch = nullptr;
+    QComboBox *m_mappingCategory = nullptr;
+    QLabel *m_mappingSearchResult = nullptr;
+    QLabel *m_mappingCommandInfo = nullptr;
+    QGroupBox *m_mappingProtocolMore = nullptr;
+    QLabel *m_mappingProtocolDetail = nullptr;
+    QTableWidget *m_mappingParameters = nullptr;
     QComboBox *m_mappingSource = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;

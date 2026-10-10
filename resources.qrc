@@ -1,4 +1,7 @@
 <RCC>
+  <qresource prefix="/protocol">
+    <file alias="qusheng-commands.json">data/qusheng-commands.json</file>
+  </qresource>
   <qresource prefix="/translations">
     <file alias="qt_zh_CN.qm">translations/qt_zh_CN.qm</file>
   </qresource>

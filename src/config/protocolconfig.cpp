@@ -1,4 +1,5 @@
 #include "protocolconfig.h"
+#include "qusheng/qushengcommandcatalog.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -32,10 +33,11 @@ bool validHex(const QString &text)
             && QByteArray::fromHex(compact).toHex() == compact.toLower();
 }
 
-bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNames)
+bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNames,
+                     qint64 constantMin = 0, qint64 constantMax = 0xfffffe)
 {
     const QString kind = expression.value("kind").toString();
-    if (kind == "constant") return integer(expression.value("value"), 0, 0xfffffe);
+    if (kind == "constant") return integer(expression.value("value"), constantMin, constantMax);
     if (kind == "field") return fieldNames.contains(expression.value("field").toString());
     if (kind != "linear" || !fieldNames.contains(expression.value("field").toString())) return false;
     return integer(expression.value("numerator"), -1000000000, 1000000000)
@@ -235,16 +237,22 @@ bool ProtocolConfig::validate(TranslationError *error) const
         const QString operation = mapping.value("operation").toString();
         const bool query = operation == "QUERY_MOTOR" || operation == "QUERY_DEVICE_INFO";
         const bool relative = operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
-        if (!query && !relative && operation != "ABSOLUTE_MOVE")
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"目标操作不在本轮支持的单条运动或查询模板中"));
+        const QJsonObject catalogEntry = QushengCommandCatalog::find(operation);
+        const bool executable = QushengCommandCatalog::isExecutable(operation);
+        if (catalogEntry.isEmpty())
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"目标指令不在趋盛协议目录中"));
+        if (QushengCommandCatalog::isReceiveOnly(operation))
+            return fail(error, "CONFIG_RECEIVE_ONLY", QString::fromUtf8(u8"“%1”是设备主动上报指令，只接收，不能创建下发映射").arg(catalogEntry.value("name").toString()));
         if (!QStringList({"ack", "complete"}).contains(mapping.value("responsePolicy").toString()))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"响应方式只能是“命令应答”或“动作完成”"));
         if (!mapping.value("parameters").isObject())
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"参数关系必须为对象；查询使用空对象"));
         const QJsonObject parameters = mapping.value("parameters").toObject();
-        if (query ? (!parameters.isEmpty() || mapping.value("responsePolicy").toString() != "ack")
-                  : (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm")))
+        if (executable && (query ? (!parameters.isEmpty() || mapping.value("responsePolicy").toString() != "ack")
+                  : (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm"))))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离；查询无参数且收到回告后返回"));
+        if (!executable && mapping.value("responsePolicy").toString() != "ack")
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"待实现指令仅保存“命令应答”意图；动作完成机制尚未实现"));
         // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
@@ -296,9 +304,42 @@ bool ProtocolConfig::validate(TranslationError *error) const
         }
         if (minimumLength > 4096)
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));
-        for (auto it = parameters.begin(); it != parameters.end(); ++it)
-            if (!validExpression(it.value().toObject(), available))
-                return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的关系无效").arg(it.key()));
+        QSet<QString> numericParameters;
+        for (const QJsonValue &fieldValue : fields) {
+            const QJsonObject field = fieldValue.toObject();
+            if (available.contains(field.value("name").toString())
+                    && field.value("role").toString() == "parameter"
+                    && field.value("type").toString() != "ascii")
+                numericParameters.insert(field.value("name").toString());
+        }
+        // 待实现指令可以先保存部分参数关系；这只验证编辑意图，不能冒充完整发送配置。
+        // 标量按自身表示范围检查，例如有符号PWM和32位固件长度，不能套用运动的24位位置范围。
+        // 位结构、嵌套命令和可变字节串仍只读，首版不通过数值表达式伪造复杂协议布局。
+        for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+            qint64 minimum = 0, maximum = 0xfffffe;
+            QString parameterName = relative ? QString::fromUtf8(u8"移动距离") : QString::fromUtf8(u8"目标位置");
+            if (!executable) {
+                QJsonObject parameterSpec;
+                for (const QJsonValue &parameter : catalogEntry.value("parameters").toArray())
+                    if (parameter.toObject().value("key").toString() == it.key()) {
+                        parameterSpec = parameter.toObject(); break;
+                    }
+                if (parameterSpec.isEmpty() || !parameterSpec.value("editable").toBool())
+                    return fail(error, "CONFIG_PARAMETER", QString::fromUtf8(u8"“%1”没有可编辑的数值参数“%2”").arg(catalogEntry.value("name").toString(), it.key()));
+                minimum = qint64(parameterSpec.value("min").toDouble());
+                maximum = qint64(parameterSpec.value("max").toDouble());
+                parameterName = parameterSpec.value("label").toString();
+                // 枚举取值不是连续范围：例如模式只允许1、2、4，不能把范围内的3保存为合法模式。
+                // 客户字段引用在编辑时还没有具体值，只验证来源；发送未实现前绝不会据此组帧。
+                const QJsonObject expression = it.value().toObject();
+                if (expression.value("kind").toString() == "constant" && parameterSpec.contains("allowedValues")
+                        && !parameterSpec.value("allowedValues").toArray().contains(expression.value("value")))
+                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的固定值不在协议允许的枚举中").arg(parameterSpec.value("label").toString()));
+            }
+            if (!it.value().isObject() || !validExpression(it.value().toObject(),
+                    executable ? available : numericParameters, minimum, maximum))
+                return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的关系无效；请检查客户数值字段和固定值范围").arg(parameterName));
+        }
     }
 
     // 这些值直接参与真实设备组帧，所以即使仅预览也必须是合法数值；是否已经人工核对由界面单独确认。

@@ -1,0 +1,1838 @@
+{
+  "catalogVersion": 1,
+  "protocolVersion": "V0.1.7",
+  "source": "TW-RD-0XX功率驱动板通信协议V0.1.7.pdf",
+  "scope": "完整56条命令目录；参数定义用于中文编辑说明，不授予发送许可。",
+  "commands": [
+    {
+      "operation": "QUSHENG_01",
+      "code": "0x01",
+      "name": "设备功能使能",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "设置设备功能使能位，包含步进电机、直流电机、风扇、电磁阀、模数和数模模块。",
+      "section": "3.2.1",
+      "parameters": [
+        {
+          "key": "enableMask",
+          "label": "功能使能位",
+          "type": "structure",
+          "description": "D0～D1；位15～10：步进电机1～6，位9～7：直流电机1～3，位6～4：风扇1～3，位3：电磁阀，位2：模数采样，位1：数模输出，位0预留；1使能、0禁用。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "原文标题写“设备功能禁用”，数据表使用使能位；发送后板卡重启并重新初始化硬件，要求开启存储功能。实际配置及掉电保存行为需核对。"
+    },
+    {
+      "operation": "QUSHENG_03",
+      "code": "0x03",
+      "name": "基本状态查询",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "通常在基本状态报错后查询详细故障；发送无数据，回告基本状态后以每4字节记录设备编号和3字节故障码。",
+      "section": "3.2.2",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUERY_DEVICE_INFO",
+      "code": "0x04",
+      "name": "设备信息查询",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "查询硬件、引导程序和固件版本、唯一标识及可选板型。",
+      "section": "3.2.3",
+      "parameters": [
+        {
+          "key": "fixedData",
+          "label": "固定请求数据",
+          "type": "structure",
+          "description": "D0～D1 固定为 00 00，由已有执行器组帧。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "回告版本、唯一标识和板型由现有设备信息解析器处理。"
+    },
+    {
+      "operation": "QUSHENG_05",
+      "code": "0x05",
+      "name": "紧急停止",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "收到请求后立即停止指定设备或全部设备的运动。",
+      "section": "3.2.4",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "设备编号",
+          "type": "uint8",
+          "description": "D0；指定设备模块编号，0xFF表示全部设备。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        }
+      ],
+      "note": "此命令尚未实现，目录选择和保存不会执行紧急停止。"
+    },
+    {
+      "operation": "QUSHENG_08",
+      "code": "0x08",
+      "name": "心跳监控设置",
+      "category": "设备与通信",
+      "direction": "both",
+      "description": "设置监控间隔；设备使用同命令码主动发送心跳。",
+      "section": "3.2.5",
+      "parameters": [
+        {
+          "key": "intervalMs",
+          "label": "心跳间隔",
+          "type": "uint16",
+          "description": "D0～D1；监控间隔，单位毫秒；0 表示关闭。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 65535
+        }
+      ],
+      "note": "主动心跳无数据，与设置应答的布局不同，后续实现须分别处理。"
+    },
+    {
+      "operation": "QUSHENG_09",
+      "code": "0x09",
+      "name": "错误主动上报设置",
+      "category": "设备与通信",
+      "direction": "both",
+      "description": "设置错误主动上报开关；设备使用同命令码上报错误。",
+      "section": "3.2.6",
+      "parameters": [
+        {
+          "key": "enabled",
+          "label": "开启上报",
+          "type": "uint8",
+          "description": "D0；0关闭、1开启，默认开启。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "note": "主动上报按4字节错误记录描述，但原文另写D1～D2与3字节故障码冲突；不能按普通设置应答解析，须核对回告。"
+    },
+    {
+      "operation": "QUSHENG_0B",
+      "code": "0x0B",
+      "name": "主通信接口配置",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "选择 Type-C、RS485、CAN 或以太网接口，参数随接口类型变化。",
+      "section": "3.2.7",
+      "parameters": [
+        {
+          "key": "interfaceType",
+          "label": "通信接口",
+          "type": "uint8",
+          "description": "D0；0：Type-C，1：RS485，2：CAN，3：以太网。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 3
+        },
+        {
+          "key": "uartOptions",
+          "label": "串口选项",
+          "type": "structure",
+          "description": "串口分支 D1：位4～3流控（无/RTS/CTS/双向），位2～1校验（0无、2偶、3奇），位0停止位（0一位、1两位）；D2～D5为32位波特率。",
+          "editable": false,
+          "optional": true
+        },
+        {
+          "key": "canOptions",
+          "label": "CAN选项",
+          "type": "structure",
+          "description": "CAN分支 D1：波特率枚举0～19，依次1000、950、900、850、800、750、700、650、600、550、500、450、400、350、300、250、200、150、100、50千比特/秒。",
+          "editable": false,
+          "optional": true
+        },
+        {
+          "key": "networkOptions",
+          "label": "网络选项",
+          "type": "structure",
+          "description": "网络分支 D1～D4设备IP、D5～D8子网掩码、D9～D12网关、D13～D16域名服务器、D17～D20服务器IP、D21～D22端口；域名服务器可忽略。",
+          "editable": false,
+          "optional": true
+        }
+      ],
+      "note": "只提供协议目录，本轮不扩展 TCP 连接或复杂分支组帧。"
+    },
+    {
+      "operation": "QUSHENG_0C",
+      "code": "0x0C",
+      "name": "主通信配置查询",
+      "category": "设备与通信",
+      "direction": "tx",
+      "description": "发送无数据；回告 D4 为通信接口，D5起为对应串口、CAN或网络配置。",
+      "section": "3.2.8",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_11",
+      "code": "0x11",
+      "name": "步进电机运动控制",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "按电机编号、模式和动作控制步进电机。通用模式映射待实现；已有绝对位置、相对前进、相对后退预设可执行。",
+      "section": "3.2.9",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        },
+        {
+          "key": "mode",
+          "label": "工作模式",
+          "type": "uint8",
+          "description": "D1高四位；1速度模式、2位置模式、4绝对位置模式。仅保存映射意图，尚未组帧执行。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 4,
+          "allowedValues": [1, 2, 4]
+        },
+        {
+          "key": "action",
+          "label": "电机动作",
+          "type": "uint8",
+          "description": "D1低四位；1前进（远离零点）、2停止、3后退（靠近零点）、4复位到物理零点。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 4,
+          "allowedValues": [1, 2, 3, 4]
+        },
+        {
+          "key": "speed",
+          "label": "移动速度",
+          "type": "uint24",
+          "description": "D2～D4；速度数值，其作用随模式和动作变化。只保存参数关系，不推断客户单位。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 16777215
+        },
+        {
+          "key": "positionOrDistance",
+          "label": "位置或距离",
+          "type": "uint24",
+          "description": "D5～D7；位置模式表示移动距离，绝对位置模式表示目标位置；具体作用须结合模式和动作。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 16777215
+        }
+      ],
+      "note": "模式与动作最终需要合并到D1的不同半字节；本轮只保存数值关系，不进行位拼接。0xFFFFFF是模式相关的持续运动特殊值，不能直接按普通目标位置执行；现有已支持预设拒绝该值。"
+    },
+    {
+      "operation": "QUERY_MOTOR",
+      "code": "0x12",
+      "name": "电机信息查询",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "查询电机状态、位置和反馈位置；未回零或未配置的0xFFFFFF表示未知位置。",
+      "section": "3.2.10",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": false,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        }
+      ],
+      "note": "电机编号使用设备与连接页面的确认值。"
+    },
+    {
+      "operation": "QUSHENG_13",
+      "code": "0x13",
+      "name": "步进电机配置",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "设置电机硬件、细分、电流、编码器和运行极限；出厂未配置时电机不可用。",
+      "section": "3.2.11",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        },
+        {
+          "key": "hardwareFlags",
+          "label": "硬件选项",
+          "type": "structure",
+          "description": "D1～D2；位8零点仅作极限、位7反馈反向、位6反馈使能、位5电机反向、位4限位极性、位3限位使能、位2零点极性、位1零点使能、位0刹车使能。",
+          "editable": false,
+          "optional": false
+        },
+        {
+          "key": "microsteps",
+          "label": "电机细分",
+          "type": "uint16",
+          "description": "D3～D4；0～256。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 256
+        },
+        {
+          "key": "staticCurrent",
+          "label": "静态电流",
+          "type": "uint16",
+          "description": "D5～D6；原文未说明电流数值单位。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 65535
+        },
+        {
+          "key": "runningCurrent",
+          "label": "运行电流",
+          "type": "uint16",
+          "description": "D7～D8；原文未说明电流数值单位。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 65535
+        },
+        {
+          "key": "lead",
+          "label": "电机导程",
+          "type": "uint32",
+          "description": "D9～D12；一圈对应的数值。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "encoderResolution",
+          "label": "编码器分辨率",
+          "type": "uint32",
+          "description": "D13～D16；负反馈编码器分辨率。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "encoderRatio",
+          "label": "编码器与电机比值",
+          "type": "uint32",
+          "description": "D17～D20；编码器一圈与电机一圈对照比。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "feedbackThreshold",
+          "label": "反馈报错阈值",
+          "type": "uint32",
+          "description": "D21～D24；负反馈报错阈值。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "quietSpeedThreshold",
+          "label": "静音切换速度",
+          "type": "uint32",
+          "description": "D25～D28；静音与大动态模式切换阈值速度。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "maxPosition",
+          "label": "运行极限位置",
+          "type": "uint32",
+          "description": "D29～D32；0表示未配置极限。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_14",
+      "code": "0x14",
+      "name": "步进配置查询",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "查询步进硬件配置；回告D4～D35对应0x13的D1起参数。",
+      "section": "3.2.12",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_15",
+      "code": "0x15",
+      "name": "步进运行参数设置",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "设置回零和正常运动的分段加减速参数。",
+      "section": "3.2.13",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        },
+        {
+          "key": "persistent",
+          "label": "掉电保持",
+          "type": "uint8",
+          "description": "D1；1开启掉电保持。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": "homingLeaveDistance",
+          "label": "离开零点距离",
+          "type": "int32",
+          "description": "D2～D5；零点光电被遮挡时离开光电的最大距离。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingSearchDistance",
+          "label": "寻找零点距离",
+          "type": "int32",
+          "description": "D6～D9；向零点光电运行的最大寻找距离。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "mechanicalZeroDistance",
+          "label": "机械零点距离",
+          "type": "int32",
+          "description": "D10～D13；机械零点到零点光电的距离。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingAccelTargetSpeed",
+          "label": "回零分段目标速度",
+          "type": "int32",
+          "description": "D14～D17；不需分段时设置0。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingMaxSpeed",
+          "label": "回零最大速度",
+          "type": "int32",
+          "description": "D18～D21；回零最大速度。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingAcceleration1",
+          "label": "回零第一段加速度",
+          "type": "int32",
+          "description": "D22～D25；不需分段时与第二段相同。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingAcceleration2",
+          "label": "回零第二段加速度",
+          "type": "int32",
+          "description": "D26～D29；第二段加速度。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingDeceleration2",
+          "label": "回零第二段减速度",
+          "type": "int32",
+          "description": "D30～D33；不需分段时与第一段相同。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "homingDeceleration1",
+          "label": "回零第一段减速度",
+          "type": "int32",
+          "description": "D34～D37；第一段减速度。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "motionAccelTargetSpeed",
+          "label": "运动分段目标速度",
+          "type": "int32",
+          "description": "D38～D41；不需分段时设置0。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "motionAcceleration1",
+          "label": "运动第一段加速度",
+          "type": "int32",
+          "description": "D42～D45；不需分段时与第二段相同。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "motionAcceleration2",
+          "label": "运动第二段加速度",
+          "type": "int32",
+          "description": "D46～D49；第二段加速度。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "motionDeceleration2",
+          "label": "运动第二段减速度",
+          "type": "int32",
+          "description": "D50～D53；不需分段时与第一段相同。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "key": "motionDeceleration1",
+          "label": "运动第一段减速度",
+          "type": "int32",
+          "description": "D54～D57；第一段减速度。",
+          "editable": true,
+          "optional": false,
+          "min": -2147483648,
+          "max": 2147483647
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_16",
+      "code": "0x16",
+      "name": "步进运行参数查询",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "回告D4～D59为0x15的D2起56字节运行参数。",
+      "section": "3.2.14",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 28
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_17",
+      "code": "0x17",
+      "name": "电机运动完成上报",
+      "category": "步进电机",
+      "direction": "rx",
+      "description": "设备主动通知电机运动完成，不能作为主机请求发送。",
+      "section": "3.2.15",
+      "parameters": [
+        {
+          "key": "reportData",
+          "label": "上报内容",
+          "type": "structure",
+          "description": "D0电机编号；D1高四位电机状态；D2～D4电机位置；D5～D7反馈位置。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "只接收，不能创建下发映射。"
+    },
+    {
+      "operation": "QUSHENG_1A",
+      "code": "0x1A",
+      "name": "运行中速度修改",
+      "category": "步进电机",
+      "direction": "tx",
+      "description": "在运动过程中修改指定电机速度。",
+      "section": "3.2.16",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；原文限定0x11～0x13。",
+          "editable": true,
+          "optional": false,
+          "min": 17,
+          "max": 19
+        },
+        {
+          "key": "speed",
+          "label": "目标速度",
+          "type": "uint24",
+          "description": "D1～D3；新的移动速度数值。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 16777215
+        }
+      ],
+      "note": "本条原文电机编号范围小于其他步进命令，尚待设备核对。"
+    },
+    {
+      "operation": "QUSHENG_21",
+      "code": "0x21",
+      "name": "电磁阀全组控制",
+      "category": "电磁阀",
+      "direction": "tx",
+      "description": "按掩码批量打开、关闭或设置30路电磁阀状态。",
+      "section": "3.2.17",
+      "parameters": [
+        {
+          "key": "modeAndMask",
+          "label": "控制方式和阀位掩码",
+          "type": "structure",
+          "description": "D0高两位模式：0选择关闭、1选择打开、2设置所有状态；D0低六位与D1～D3组合30路阀位。",
+          "editable": false,
+          "optional": false
+        },
+        {
+          "key": "duration",
+          "label": "保持时间",
+          "type": "uint32",
+          "description": "D4～D7；0使用超时配置，超时配置也为0时持续保持。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": "原文“D4~D0”及全关闭掩码说明存在排版歧义，不能据此直接组帧；已开启阀的保持时间不能直接修改。"
+    },
+    {
+      "operation": "QUSHENG_22",
+      "code": "0x22",
+      "name": "电磁阀单路控制",
+      "category": "电磁阀",
+      "direction": "tx",
+      "description": "打开指定电磁阀并设置保持时间。",
+      "section": "3.2.18",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "阀编号",
+          "type": "uint8",
+          "description": "D0；0x31～0x4E。",
+          "editable": true,
+          "optional": false,
+          "min": 49,
+          "max": 78
+        },
+        {
+          "key": "duration",
+          "label": "保持时间",
+          "type": "uint32",
+          "description": "D1～D4；0使用超时配置，超时配置也为0时持续保持。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_23",
+      "code": "0x23",
+      "name": "电磁阀状态查询",
+      "category": "电磁阀",
+      "direction": "tx",
+      "description": "发送D0～D1固定00 00；回告D4～D7的位31～2表示阀1～30，低两位预留。",
+      "section": "3.2.19",
+      "parameters": [
+        {
+          "key": "fixedData",
+          "label": "固定请求数据",
+          "type": "structure",
+          "description": "D0～D1固定00 00；由未来执行器处理，不作为客户参数。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_24",
+      "code": "0x24",
+      "name": "电磁阀超时设置",
+      "category": "电磁阀",
+      "direction": "tx",
+      "description": "按三个十路分组设置阀超时时间。",
+      "section": "3.2.20",
+      "parameters": [
+        {
+          "key": "group1Timeout",
+          "label": "阀1～10超时",
+          "type": "uint32",
+          "description": "D0～D3；0表示不配置。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "group2Timeout",
+          "label": "阀11～20超时",
+          "type": "uint32",
+          "description": "D4～D7；0表示不配置。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "group3Timeout",
+          "label": "阀21～30超时",
+          "type": "uint32",
+          "description": "D8～D11；0表示不配置。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_25",
+      "code": "0x25",
+      "name": "电磁阀参数查询",
+      "category": "电磁阀",
+      "direction": "tx",
+      "description": "发送无数据；回告D4～D15为三个阀组的超时时间。",
+      "section": "3.2.21",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_44",
+      "code": "0x44",
+      "name": "模数采样查询",
+      "category": "模数与数模",
+      "direction": "tx",
+      "description": "查询指定模数采样通道；回告D4～D6为电压，原文单位毫伏。",
+      "section": "3.2.22",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "采样通道",
+          "type": "uint8",
+          "description": "D0；0x61～0x68。",
+          "editable": true,
+          "optional": false,
+          "min": 97,
+          "max": 104
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_45",
+      "code": "0x45",
+      "name": "模数采样主动上报",
+      "category": "模数与数模",
+      "direction": "rx",
+      "description": "设备按0x46配置的间隔上报采样值，不能作为主机请求发送。",
+      "section": "3.2.23",
+      "parameters": [
+        {
+          "key": "reportData",
+          "label": "上报内容",
+          "type": "structure",
+          "description": "D0采样通道0x61～0x68；D1～D3为电压，原文单位毫伏。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "只接收，不能创建下发映射。"
+    },
+    {
+      "operation": "QUSHENG_46",
+      "code": "0x46",
+      "name": "模数上报间隔设置",
+      "category": "模数与数模",
+      "direction": "tx",
+      "description": "设置采样通道的主动上报周期。",
+      "section": "3.2.24",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "采样通道",
+          "type": "uint8",
+          "description": "D0；0x61～0x68。",
+          "editable": true,
+          "optional": false,
+          "min": 97,
+          "max": 104
+        },
+        {
+          "key": "intervalMs",
+          "label": "上报间隔",
+          "type": "uint24",
+          "description": "D1～D3；毫秒，0关闭自动上报。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 16777215
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_54",
+      "code": "0x54",
+      "name": "数模输出设置",
+      "category": "模数与数模",
+      "direction": "tx",
+      "description": "设置指定数模输出通道的电压。",
+      "section": "3.2.25",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "输出通道",
+          "type": "uint8",
+          "description": "D0；0x71～0x78。",
+          "editable": true,
+          "optional": false,
+          "min": 113,
+          "max": 120
+        },
+        {
+          "key": "voltageMv",
+          "label": "输出电压",
+          "type": "uint24",
+          "description": "D1～D3；原文单位毫伏。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 16777215
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_63",
+      "code": "0x63",
+      "name": "电源上电时序设置",
+      "category": "电源",
+      "direction": "tx",
+      "description": "设置外设及24伏、12伏、5伏电源的上电时序。",
+      "section": "3.2.26",
+      "parameters": [
+        {
+          "key": "peripheralDelay",
+          "label": "外设上电延时",
+          "type": "uint32",
+          "description": "D0～D3；0表示立即上电。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "power24Delay",
+          "label": "24伏上电延时",
+          "type": "uint32",
+          "description": "D4～D7；0表示不使能。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "power12Delay",
+          "label": "12伏上电延时",
+          "type": "uint32",
+          "description": "D8～D11；0表示不使能。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "power5Delay",
+          "label": "5伏上电延时",
+          "type": "uint32",
+          "description": "D12～D15；0表示不使能。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": "原文未明确延时单位，需真实设备确认。"
+    },
+    {
+      "operation": "QUSHENG_64",
+      "code": "0x64",
+      "name": "电源上电时序查询",
+      "category": "电源",
+      "direction": "tx",
+      "description": "回告D4～D19为外设、24伏、12伏、5伏上电时序。",
+      "section": "3.2.27",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "模块地址",
+          "type": "uint8",
+          "description": "D0；原文列出0xC0～0xCF或0xD0～0xDF。",
+          "editable": true,
+          "optional": false,
+          "min": 192,
+          "max": 223
+        }
+      ],
+      "note": "该地址范围与0x65的电源编号并非同一写法，后续组帧须核对实际模块。"
+    },
+    {
+      "operation": "QUSHENG_65",
+      "code": "0x65",
+      "name": "电源控制",
+      "category": "电源",
+      "direction": "tx",
+      "description": "控制指定电源输出；部分24伏模块只支持开启。",
+      "section": "3.2.28",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电源编号",
+          "type": "uint8",
+          "description": "D0；0xC5为24伏、0xC6为12伏、0xC7为5伏。",
+          "editable": true,
+          "optional": false,
+          "min": 197,
+          "max": 199
+        },
+        {
+          "key": "enabled",
+          "label": "输出开关",
+          "type": "uint8",
+          "description": "D1；0关闭、1开启。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "note": "24伏能否关闭由硬件决定。"
+    },
+    {
+      "operation": "QUSHENG_71",
+      "code": "0x71",
+      "name": "固件更新启动",
+      "category": "固件更新",
+      "direction": "tx",
+      "description": "通知设备文件总长并准备擦除；应答不代表擦除完成，需要0x74查询。",
+      "section": "3.2.29",
+      "parameters": [
+        {
+          "key": "fileLength",
+          "label": "文件总长度",
+          "type": "uint32",
+          "description": "D0～D3；待更新固件字节数。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": "属于固件工作流，本轮只记录映射意图，不支持更新执行。"
+    },
+    {
+      "operation": "QUSHENG_72",
+      "code": "0x72",
+      "name": "固件更新数据",
+      "category": "固件更新",
+      "direction": "tx",
+      "description": "下发带序号的固件分块。",
+      "section": "3.2.30",
+      "parameters": [
+        {
+          "key": "frameIndex",
+          "label": "分块序号",
+          "type": "uint16",
+          "description": "D0～D1；更新数据帧索引。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 65535
+        },
+        {
+          "key": "firmwareData",
+          "label": "固件分块",
+          "type": "bytes",
+          "description": "D2起固件字节，单块最多240字节；原文另要求数据长度按8字节对齐，具体边界需核对。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "原文对D0～Dn和长度对齐的说明有歧义；未实现分块及重传流程。"
+    },
+    {
+      "operation": "QUSHENG_73",
+      "code": "0x73",
+      "name": "固件更新结束",
+      "category": "固件更新",
+      "direction": "tx",
+      "description": "提交文件校验和；提前结束会中止更新，结果由0x74查询。",
+      "section": "3.2.31",
+      "parameters": [
+        {
+          "key": "checksum",
+          "label": "文件校验和",
+          "type": "uint32",
+          "description": "D0～D3；全部文件字节累加值。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": "不能独立于完整固件更新工作流执行。"
+    },
+    {
+      "operation": "QUSHENG_74",
+      "code": "0x74",
+      "name": "固件更新状态查询",
+      "category": "固件更新",
+      "direction": "tx",
+      "description": "发送无数据；回告D4：0未更新、1更新中、2完成、3失败、4错误。",
+      "section": "3.2.32",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_81",
+      "code": "0x81",
+      "name": "风扇控制",
+      "category": "风扇",
+      "direction": "tx",
+      "description": "设置风扇输出百分比。",
+      "section": "3.2.33",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "风扇编号",
+          "type": "uint8",
+          "description": "D0；设备表风扇编号0xE0～0xE2。",
+          "editable": true,
+          "optional": false,
+          "min": 224,
+          "max": 226
+        },
+        {
+          "key": "percent",
+          "label": "输出百分比",
+          "type": "uint8",
+          "description": "D1；0～100。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 100
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_82",
+      "code": "0x82",
+      "name": "风扇配置查询",
+      "category": "风扇",
+      "direction": "tx",
+      "description": "查询指定风扇的配置参数。",
+      "section": "3.2.34",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "风扇编号",
+          "type": "uint8",
+          "description": "D0；0xE0～0xE2。",
+          "editable": true,
+          "optional": false,
+          "min": 224,
+          "max": 226
+        }
+      ],
+      "note": "0x82正文写回告D4～D12，0x84正文另写D4～D9；回告长度不一致，须核对设备。"
+    },
+    {
+      "operation": "QUSHENG_83",
+      "code": "0x83",
+      "name": "风扇速度查询",
+      "category": "风扇",
+      "direction": "tx",
+      "description": "回告D4为风扇速度百分比0～100。",
+      "section": "3.2.35",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "风扇编号",
+          "type": "uint8",
+          "description": "D0；0xE0～0xE2。",
+          "editable": true,
+          "optional": false,
+          "min": 224,
+          "max": 226
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_84",
+      "code": "0x84",
+      "name": "风扇配置设置",
+      "category": "风扇",
+      "direction": "tx",
+      "description": "配置测速方式、每转脉冲数、滤波及输出范围。",
+      "section": "3.2.36",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "风扇编号",
+          "type": "uint8",
+          "description": "D0；0xE0～0xE2。",
+          "editable": true,
+          "optional": false,
+          "min": 224,
+          "max": 226
+        },
+        {
+          "key": "speedMode",
+          "label": "测速方式",
+          "type": "uint8",
+          "description": "D1；0每分钟转数、1每秒转数。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 1
+        },
+        {
+          "key": "pulsesPerRevolution",
+          "label": "每转脉冲数",
+          "type": "uint8",
+          "description": "D2；默认1。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "filterWindow",
+          "label": "滤波窗口",
+          "type": "uint8",
+          "description": "D3；滤波窗口值。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "minOutput",
+          "label": "输出低阈值",
+          "type": "uint8",
+          "description": "D4；PWM输出低阈值。原文未明确输出尺度，实际范围需确认。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "maxOutput",
+          "label": "输出高阈值",
+          "type": "uint8",
+          "description": "D5；PWM输出高阈值。原文未明确输出尺度，实际范围需确认。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "measurementInterval",
+          "label": "测速间隔",
+          "type": "uint32",
+          "description": "D6～D9；测速时间间隔，原文未说明单位。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        }
+      ],
+      "note": "0x84末尾写配置回告D4～D9，与0x82的D4～D12不一致；测速间隔单位与PWM阈值实际尺度需核对。"
+    },
+    {
+      "operation": "QUSHENG_91",
+      "code": "0x91",
+      "name": "数字输出控制",
+      "category": "数字输入输出",
+      "direction": "tx",
+      "description": "按位掩码控制六路数字输出。",
+      "section": "3.2.37",
+      "parameters": [
+        {
+          "key": "modeAndMask",
+          "label": "控制方式和输出掩码",
+          "type": "structure",
+          "description": "D0高两位：0关闭、1开启、2全部状态；低六位为六路输出掩码。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_92",
+      "code": "0x92",
+      "name": "数字输入查询",
+      "category": "数字输入输出",
+      "direction": "tx",
+      "description": "发送无数据；按V0.1.7更新记录提供24路数字输入状态。",
+      "section": "3.2.38",
+      "parameters": [],
+      "note": "正文简介仍写D4～D5，详细表写D4～D6（24位）；部分通道编号重复，回告布局后续须用设备确认。"
+    },
+    {
+      "operation": "QUSHENG_A1",
+      "code": "0xA1",
+      "name": "直流电机控制",
+      "category": "直流电机",
+      "direction": "tx",
+      "description": "控制直流或无刷电机的方向与输出。",
+      "section": "3.2.39",
+      "parameters": [
+        {
+          "key": "devId",
+          "label": "电机编号",
+          "type": "uint8",
+          "description": "D0；0x21～0x26为直流电机、0x2E为无刷电机。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "pwm",
+          "label": "方向与输出值",
+          "type": "int8",
+          "description": "D1；有符号数，两补码表示方向；原文未明确输出百分比边界。",
+          "editable": true,
+          "optional": false,
+          "min": -128,
+          "max": 127
+        }
+      ],
+      "note": "电机编号仅允许协议列举的离散值，不能将中间所有值视为实际存在；实际输出范围待确认。"
+    },
+    {
+      "operation": "QUSHENG_C1",
+      "code": "0xC1",
+      "name": "虚拟模块控制",
+      "category": "虚拟模块",
+      "direction": "tx",
+      "description": "控制XYZ模块或阀泵模块，参数随模块类型变化。",
+      "section": "3.2.40",
+      "parameters": [
+        {
+          "key": "moduleType",
+          "label": "模块类型",
+          "type": "uint8",
+          "description": "D0；1为XYZ、2为阀泵。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 2
+        },
+        {
+          "key": "moduleIndex",
+          "label": "模块编号",
+          "type": "uint8",
+          "description": "D1；同类模块编号。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "xyzMotion",
+          "label": "XYZ运动参数",
+          "type": "structure",
+          "description": "XYZ：D2～D4 X位置、D5～D7 Y位置、D8～D10 Z位置；D11～D13 X速度、D14～D16 Y速度、D17～D19 Z速度。",
+          "editable": false,
+          "optional": true
+        },
+        {
+          "key": "valvePumpMotion",
+          "label": "阀泵动作参数",
+          "type": "structure",
+          "description": "阀泵：D2液路；D3动作1初始化、2绝对位置、3相对抽取、4相对分配、5暂停、6继续、7停止；D4～D6速度；原文另写D6～D8距离。",
+          "editable": false,
+          "optional": true
+        }
+      ],
+      "note": "阀泵速度与距离的D6重叠，原文布局有冲突；保留说明，不猜测组帧。"
+    },
+    {
+      "operation": "QUSHENG_C2",
+      "code": "0xC2",
+      "name": "虚拟模块配置",
+      "category": "虚拟模块",
+      "direction": "tx",
+      "description": "配置XYZ电机关系、优先级和限制，或阀泵液路及补偿。",
+      "section": "3.2.41",
+      "parameters": [
+        {
+          "key": "moduleType",
+          "label": "模块类型",
+          "type": "uint8",
+          "description": "D0；1为XYZ、2为阀泵。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 2
+        },
+        {
+          "key": "moduleIndex",
+          "label": "模块编号",
+          "type": "uint8",
+          "description": "D1；同类模块编号。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "xyzConfiguration",
+          "label": "XYZ配置",
+          "type": "structure",
+          "description": "D2～D4 X/Y/Z电机编号0x11～0x16；D5～D7运动优先级（0不运动，数字小先运行）；D8～D16三个最大速度；D17～D19限制优先级；D20～D37各轴左右限制位置（各3字节）。限制优先级高于运动优先级。",
+          "editable": false,
+          "optional": true
+        },
+        {
+          "key": "valvePumpConfiguration",
+          "label": "阀泵配置",
+          "type": "structure",
+          "description": "D2阀数量，随后为阀编号列表、液路数量、各液路4字节阀状态；之后为泵电机编号1字节、最大速度3字节、切换液路延时2字节、泵动作后延时2字节、背隙补偿2字节、死体积2字节、出厂设置1字节。",
+          "editable": false,
+          "optional": true
+        }
+      ],
+      "note": "可变长度列表和组合配置暂只保留说明，普通参数映射不编辑复杂位拼接。"
+    },
+    {
+      "operation": "QUSHENG_C3",
+      "code": "0xC3",
+      "name": "虚拟模块配置查询",
+      "category": "虚拟模块",
+      "direction": "tx",
+      "description": "查询模块配置；回告D4起按0xC2对应模块配置布局。",
+      "section": "3.2.42",
+      "parameters": [
+        {
+          "key": "moduleType",
+          "label": "模块类型",
+          "type": "uint8",
+          "description": "D0；1为XYZ、2为阀泵。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 2
+        },
+        {
+          "key": "moduleIndex",
+          "label": "模块编号",
+          "type": "uint8",
+          "description": "D1；同类模块编号。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D1",
+      "code": "0xD1",
+      "name": "动作编辑",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "保存按时间戳运行的指令集内容；时间戳是启动后的毫秒数。",
+      "section": "3.2.43",
+      "parameters": [
+        {
+          "key": "setId",
+          "label": "指令集合编号",
+          "type": "uint8",
+          "description": "D0；不能为0。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "sequence",
+          "label": "指令序号",
+          "type": "uint8",
+          "description": "D1；不能为0。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "timestampMs",
+          "label": "执行时间戳",
+          "type": "uint32",
+          "description": "D2～D5；指令集合开启后的时间，单位毫秒。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 4294967295
+        },
+        {
+          "key": "command",
+          "label": "内部指令码",
+          "type": "uint8",
+          "description": "D6；该条内部指令命令码。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "commandData",
+          "label": "内部指令参数",
+          "type": "bytes",
+          "description": "D7起内部指令数据，原文规定末位索引小于252。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "原文说明写按0xD2执行，命令表0xD2实际为查询、0xD3为运行；后续须核对，不实现多命令组合。"
+    },
+    {
+      "operation": "QUSHENG_D2",
+      "code": "0xD2",
+      "name": "动作内容查询",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "查询指定指令；回告D4～D7时间戳、D8指令码、D9起参数。",
+      "section": "3.2.44",
+      "parameters": [
+        {
+          "key": "setId",
+          "label": "指令集合编号",
+          "type": "uint8",
+          "description": "D0；不能为0。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "sequence",
+          "label": "指令序号",
+          "type": "uint8",
+          "description": "D1；不能为0。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D3",
+      "code": "0xD3",
+      "name": "动作运行",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "调用指令集，设备单次只支持一个指令集运行。",
+      "section": "3.2.45",
+      "parameters": [
+        {
+          "key": "setId",
+          "label": "指令集合编号",
+          "type": "uint8",
+          "description": "D0；不能为0。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "reportMode",
+          "label": "主动上报方式",
+          "type": "uint8",
+          "description": "D1；0关闭，1停止时上报，2每次状态变化均上报0xD9。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 2
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D4",
+      "code": "0xD4",
+      "name": "动作停止",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "发送无数据；停止当前指令集，回告还包含停止集合编号及当前指令序号。",
+      "section": "3.2.46",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D6",
+      "code": "0xD6",
+      "name": "动作重置",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "清除指定范围的指令集内容。",
+      "section": "3.2.47",
+      "parameters": [
+        {
+          "key": "setId",
+          "label": "指令集合编号",
+          "type": "uint8",
+          "description": "D0；指定指令集合。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "sequence",
+          "label": "删除指令序号",
+          "type": "uint8",
+          "description": "D1；0表示全部删除。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D7",
+      "code": "0xD7",
+      "name": "动作状态查询",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "发送无数据；回告状态、集合编号、总数、完成数、当前序号及时间戳。",
+      "section": "3.2.48",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D8",
+      "code": "0xD8",
+      "name": "动作列表查询",
+      "category": "动作与指令集",
+      "direction": "tx",
+      "description": "发送无数据；回告指令集合总数和各集合编号、指令个数列表。",
+      "section": "3.2.49",
+      "parameters": [],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_D9",
+      "code": "0xD9",
+      "name": "动作状态主动上报",
+      "category": "动作与指令集",
+      "direction": "rx",
+      "description": "设备主动通知指令集的状态变化。",
+      "section": "3.2.50",
+      "parameters": [
+        {
+          "key": "reportData",
+          "label": "上报内容",
+          "type": "structure",
+          "description": "D0状态0空闲/1执行中/2完成/3报错，D1集合号、D2总数、D3完成数、D4当前序号、D5～D8时间戳。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "只接收，不能创建下发映射。"
+    },
+    {
+      "operation": "QUSHENG_E1",
+      "code": "0xE1",
+      "name": "事件定义设置",
+      "category": "事件",
+      "direction": "tx",
+      "description": "定义外设数据满足条件时产生的事件；每个设备模块只允许一个事件。",
+      "section": "3.2.51",
+      "parameters": [
+        {
+          "key": "eventId",
+          "label": "事件编号",
+          "type": "uint8",
+          "description": "D0；1～255。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "devId",
+          "label": "设备模块编号",
+          "type": "uint8",
+          "description": "D1；事件来源模块。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "eventType",
+          "label": "事件类型",
+          "type": "uint8",
+          "description": "D2；电机1/2位置小于等于/大于等于阈值，3区间、4累计距离、5停止；模数0x11/0x12阈值、0x13区间；数字输入0x21上升沿/0x22下降沿/0x23电平变化。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "eventThresholds",
+          "label": "事件阈值",
+          "type": "structure",
+          "description": "D3～D5为有符号24位阈值、低阈值或累计距离；区间类型另有D6～D8高阈值；停止和数字输入事件无阈值。",
+          "editable": false,
+          "optional": true
+        }
+      ],
+      "note": "复合与/或事件暂不支持；可变阈值结构仅保留扩展说明。"
+    },
+    {
+      "operation": "QUSHENG_E2",
+      "code": "0xE2",
+      "name": "事件触发配置",
+      "category": "事件",
+      "direction": "tx",
+      "description": "配置事件触发后执行的指令及主动上报方式。",
+      "section": "3.2.52",
+      "parameters": [
+        {
+          "key": "eventId",
+          "label": "事件编号",
+          "type": "uint8",
+          "description": "D0；1～255。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "triggerFlags",
+          "label": "触发方式",
+          "type": "structure",
+          "description": "D1位2～1：0停止触发、1单次、2连续；位0：1开启事件上报，其余位预留。",
+          "editable": false,
+          "optional": false
+        },
+        {
+          "key": "sequence",
+          "label": "触发指令序号",
+          "type": "uint8",
+          "description": "D2；内部指令序号。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "command",
+          "label": "触发指令码",
+          "type": "uint8",
+          "description": "D3；内部命令码。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "commandData",
+          "label": "触发指令参数",
+          "type": "bytes",
+          "description": "D4起内部命令参数。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "连续触发须满足各事件的重新进入条件；本轮不执行事件和嵌套指令组合。"
+    },
+    {
+      "operation": "QUSHENG_E3",
+      "code": "0xE3",
+      "name": "事件重置",
+      "category": "事件",
+      "direction": "tx",
+      "description": "清除指定事件或全部事件。",
+      "section": "3.2.53",
+      "parameters": [
+        {
+          "key": "eventId",
+          "label": "事件编号",
+          "type": "uint8",
+          "description": "D0；0表示全部清除，1～255指定事件。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 255
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_E4",
+      "code": "0xE4",
+      "name": "事件定义查询",
+      "category": "事件",
+      "direction": "tx",
+      "description": "查询事件定义及触发配置；回告包含来源模块、事件类型、阈值和触发指令。",
+      "section": "3.2.54",
+      "parameters": [
+        {
+          "key": "eventId",
+          "label": "事件编号",
+          "type": "uint8",
+          "description": "D0；1～255。",
+          "editable": true,
+          "optional": false,
+          "min": 1,
+          "max": 255
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_E5",
+      "code": "0xE5",
+      "name": "事件触发枚举",
+      "category": "事件",
+      "direction": "tx",
+      "description": "枚举已开启触发的事件；回告包含事件总数及编号、模块、类型、配置。",
+      "section": "3.2.55",
+      "parameters": [
+        {
+          "key": "fixedData",
+          "label": "固定请求数据",
+          "type": "structure",
+          "description": "D0固定0xFF，由未来执行器处理。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": ""
+    },
+    {
+      "operation": "QUSHENG_E6",
+      "code": "0xE6",
+      "name": "事件触发主动上报",
+      "category": "事件",
+      "direction": "rx",
+      "description": "设备主动通知事件触发，不能作为主机请求发送。",
+      "section": "3.2.56",
+      "parameters": [
+        {
+          "key": "reportData",
+          "label": "上报内容",
+          "type": "structure",
+          "description": "D0事件编号、D1模块、D2事件类型、D3起事件参数；随后为触发配置和触发指令，布局随事件类型变化。",
+          "editable": false,
+          "optional": false
+        }
+      ],
+      "note": "只接收，不能创建下发映射。"
+    }
+  ]
+}

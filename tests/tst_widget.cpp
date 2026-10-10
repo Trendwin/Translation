@@ -10,6 +10,12 @@
 #include <QTextEdit>
 #include <QTranslator>
 #include <QMenu>
+#include <QListView>
+#include <QStandardItemModel>
+#include <QDialog>
+#include <QScrollArea>
+#include <QTimer>
+#include "qusheng/qushengcommandcatalog.h"
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -27,6 +33,11 @@ private slots:
     void simpleMappingEditorAndInvalidNumbers();
     void advancedMappingIsPreserved();
     void queryAndRelativeMappingControls();
+    void completeCatalogAndSearchPreserveSelection();
+    void pendingMappingEditorAndFieldRefresh();
+    void pendingAdvancedRelationAndTargetSwitch();
+    void browseReceiveOnlyCatalog();
+    void pendingScalarRanges();
     void renderChinesePages();
 private:
     QTranslator m_chinese;
@@ -271,6 +282,131 @@ void WidgetTest::queryAndRelativeMappingControls()
     QVERIFY(!shownReply.contains("16777215"));
 }
 
+void WidgetTest::completeCatalogAndSearchPreserveSelection()
+{
+    Widget widget;
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); auto *search = widget.findChild<QLineEdit *>("mappingSearch");
+    auto *category = widget.findChild<QComboBox *>("mappingCategory"); QVERIFY(operation && search && category);
+    QCOMPARE(operation->count(), 59); QCOMPARE(QushengCommandCatalog::commands().size(), 56);
+    auto *model = qobject_cast<QStandardItemModel *>(operation->model()); QVERIFY(model);
+    int receiveOnly = 0;
+    for (int i = 0; i < operation->count(); ++i) {
+        QVERIFY(operation->itemText(i).contains("0x"));
+        if (QushengCommandCatalog::isReceiveOnly(operation->itemData(i).toString())) { ++receiveOnly; QVERIFY(!model->item(i)->isEnabled()); }
+    }
+    QCOMPARE(receiveOnly, 4);
+    QVERIFY(operation->findData("QUSHENG_11") >= 0);
+    for (const QString &preset : {"ABSOLUTE_MOVE", "RELATIVE_FORWARD", "RELATIVE_BACKWARD"}) QVERIFY(operation->findData(preset) >= 0);
+    const QString current = operation->currentData().toString(); const QJsonObject saved = draftRoot(widget);
+    widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2.5");
+    search->setText(QString::fromUtf8(u8"不存在的指令"));
+    QCOMPARE(operation->currentData().toString(), current);
+    QVERIFY(widget.findChild<QLabel *>("mappingSearchResult")->text().contains(QString::fromUtf8(u8"没有匹配")));
+    QCOMPARE(widget.findChild<QLineEdit *>("mappingMultiplier")->text(), QString("2.5")); QCOMPARE(draftRoot(widget), saved);
+    search->setText("0x81"); auto *view = qobject_cast<QListView *>(operation->view()); QVERIFY(view);
+    QVERIFY(!view->isRowHidden(operation->findData("QUSHENG_81"))); QCOMPARE(operation->currentData().toString(), current);
+    category->setCurrentIndex(category->findData(QString::fromUtf8(u8"风扇")));
+    QCOMPARE(operation->currentData().toString(), current);
+    search->clear(); category->setCurrentIndex(0); widget.findChild<QPushButton *>("saveMappings")->click();
+    const QJsonObject expression = draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("positionUm").toObject();
+    QCOMPARE(expression.value("numerator").toInt(), 5); QCOMPARE(expression.value("denominator").toInt(), 2);
+}
+
+void WidgetTest::pendingMappingEditorAndFieldRefresh()
+{
+    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    operation->setCurrentIndex(operation->findData("QUSHENG_81"));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters"); QVERIFY(parameters);
+    QCOMPARE(parameters->rowCount(), 2); QVERIFY(!parameters->isHidden());
+    QVERIFY(widget.findChild<QComboBox *>("mappingSource")->isHidden());
+    QVERIFY(widget.findChild<QLabel *>("mappingCommandInfo")->text().contains(QString::fromUtf8(u8"发送待实现")));
+    auto *devSource = qobject_cast<QComboBox *>(parameters->cellWidget(0, 1)); auto *devValue = qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2));
+    auto *percentSource = qobject_cast<QComboBox *>(parameters->cellWidget(1, 1));
+    devSource->setCurrentIndex(devSource->findData("@constant")); devValue->setText("224");
+    percentSource->setCurrentIndex(percentSource->findData(QString::fromUtf8(u8"位置")));
+    // 字段改名只刷新候选，保留失效引用、未保存的常量及表达式。
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable"); fields->item(2, 1)->setText(QString::fromUtf8(u8"新位置"));
+    QCOMPARE(devValue->text(), QString("224")); QCOMPARE(devSource->currentData().toString(), QString("@constant"));
+    QCOMPARE(percentSource->currentData().toString(), QString::fromUtf8(u8"位置")); QVERIFY(percentSource->currentText().contains(QString::fromUtf8(u8"未找到")));
+    QVERIFY(percentSource->findData(QString::fromUtf8(u8"新位置")) >= 0);
+    fields->item(2, 1)->setText(QString::fromUtf8(u8"位置"));
+    widget.findChild<QPushButton *>("saveMappings")->click();
+    QJsonObject mapping = draftRoot(widget).value("mappings").toArray().at(0).toObject();
+    QCOMPARE(mapping.value("operation").toString(), QString("QUSHENG_81"));
+    QCOMPARE(mapping.value("parameters").toObject().value("devId").toObject().value("value").toInt(), 224);
+    QCOMPARE(mapping.value("parameters").toObject().value("percent").toObject().value("field").toString(), QString::fromUtf8(u8"位置"));
+    QVERIFY(!mapping.value("parameters").toObject().contains("positionUm"));
+    button(widget, QString::fromUtf8(u8"校验配置"))->click(); button(widget, QString::fromUtf8(u8"启用配置"))->click();
+    button(widget, QString::fromUtf8(u8"预览但不发送"))->click();
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"待实现")));
+    QVERIFY(widget.findChild<QLabel *>("liveReason")->text().contains(QString::fromUtf8(u8"发送待实现")));
+    const QJsonObject saved = draftRoot(widget); applyRoot(widget, saved);
+    QCOMPARE(draftRoot(widget), saved); QCOMPARE(operation->currentData().toString(), QString("QUSHENG_81"));
+    QCOMPARE(qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2))->text(), QString("224"));
+}
+
+void WidgetTest::pendingAdvancedRelationAndTargetSwitch()
+{
+    Widget widget; QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
+    QJsonObject mapping = mappings.at(0).toObject();
+    const QJsonObject expression{{"kind", "linear"}, {"field", QString::fromUtf8(u8"位置")}, {"numerator", 1}, {"denominator", 3}, {"offset", 4}, {"round", "floor"}, {"note", "keep"}};
+    mapping.insert("operation", "QUSHENG_81"); mapping.insert("parameters", QJsonObject{{"percent", expression}}); mappings[0] = mapping; root.insert("mappings", mappings); applyRoot(widget, root);
+    widget.findChild<QLineEdit *>("mappingCode")->setText("B"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("percent").toObject(), expression);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    operation->setCurrentIndex(operation->findData("QUSHENG_63")); widget.findChild<QPushButton *>("saveMappings")->click();
+    QVERIFY(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().isEmpty());
+    operation->setCurrentIndex(operation->findData("ABSOLUTE_MOVE"));
+    QCOMPARE(widget.findChild<QComboBox *>("mappingSource")->currentData().toString(), QString());
+    widget.findChild<QPushButton *>("saveMappings")->click();
+    // 新运动目标缺少来源时保存失败，旧草稿不会被悄悄改为可执行。
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("operation").toString(), QString("QUSHENG_63"));
+    operation->setCurrentIndex(operation->findData("QUSHENG_81"));
+    QCOMPARE(operation->currentData().toString(), QString("ABSOLUTE_MOVE"));
+}
+
+void WidgetTest::browseReceiveOnlyCatalog()
+{
+    Widget widget; bool checked = false;
+    QTimer::singleShot(0, [&widget, &checked]() {
+        auto *dialog = widget.findChild<QDialog *>("commandCatalogDialog"); if (!dialog) return;
+        auto *table = dialog->findChild<QTableWidget *>("commandCatalogTable"); auto *detail = dialog->findChild<QTextEdit *>("commandCatalogDetails");
+        if (table && detail && table->rowCount() == 56) {
+            for (int row = 0; row < table->rowCount(); ++row) if (table->item(row, 0)->text() == "0x17") {
+                table->selectRow(row); checked = detail->toPlainText().contains(QString::fromUtf8(u8"仅设备主动上报"));
+                const QString renderDir = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+                if (!renderDir.isEmpty()) { QDir().mkpath(renderDir); QCoreApplication::processEvents(); dialog->grab().save(QDir(renderDir).filePath("complete-catalog.png")); }
+            }
+        }
+        dialog->accept();
+    });
+    widget.findChild<QPushButton *>("browseCatalog")->click(); QVERIFY(checked);
+    QCOMPARE(widget.findChild<QComboBox *>("mappingOperation")->currentData().toString(), QString("ABSOLUTE_MOVE"));
+}
+
+void WidgetTest::pendingScalarRanges()
+{
+    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation"); auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    operation->setCurrentIndex(operation->findData("QUSHENG_A1"));
+    auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(1, 1)); auto *value = qobject_cast<QLineEdit *>(parameters->cellWidget(1, 2));
+    source->setCurrentIndex(source->findData("@constant")); value->setText("-20"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("pwm").toObject().value("value").toInt(), -20);
+    value = qobject_cast<QLineEdit *>(parameters->cellWidget(1, 2));
+    value->setText("128"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("pwm").toObject().value("value").toInt(), -20);
+    value->setText("-20"); operation->setCurrentIndex(operation->findData("QUSHENG_63"));
+    source = qobject_cast<QComboBox *>(parameters->cellWidget(0, 1)); value = qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2));
+    source->setCurrentIndex(source->findData("@constant")); value->setText("4294967295"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("peripheralDelay").toObject().value("value").toDouble(), 4294967295.0);
+    operation->setCurrentIndex(operation->findData("QUSHENG_11")); QCOMPARE(parameters->rowCount(), 5);
+    source = qobject_cast<QComboBox *>(parameters->cellWidget(1, 1)); value = qobject_cast<QLineEdit *>(parameters->cellWidget(1, 2));
+    source->setCurrentIndex(source->findData("@constant")); value->setText("3"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("operation").toString(), QString("QUSHENG_63"));
+    value->setText("1"); widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("mode").toObject().value("value").toInt(), 1);
+}
+
 void WidgetTest::renderChinesePages()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
@@ -290,6 +426,22 @@ void WidgetTest::renderChinesePages()
         if (!renderDir.isEmpty())
             QVERIFY(widget.grab().save(QDir(renderDir).filePath(QString("page-%1.png").arg(i + 1))));
     }
+    tabs->setCurrentIndex(1);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    operation->setCurrentIndex(operation->findData("QUSHENG_81"));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    auto *devSource = qobject_cast<QComboBox *>(parameters->cellWidget(0, 1));
+    devSource->setCurrentIndex(devSource->findData("@constant")); qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2))->setText("224");
+    auto *percentSource = qobject_cast<QComboBox *>(parameters->cellWidget(1, 1));
+    percentSource->setCurrentIndex(percentSource->findData(QString::fromUtf8(u8"位置")));
+    widget.findChild<QPushButton *>("saveMappings")->click(); QCoreApplication::processEvents();
+    if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-pending-81.png")));
+    operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    auto *protocolMore = widget.findChild<QGroupBox *>("mappingProtocolMore"); protocolMore->setChecked(true); QCoreApplication::processEvents();
+    auto *mappingScroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(mappingScroll);
+    mappingScroll->ensureWidgetVisible(protocolMore); QCoreApplication::processEvents();
+    if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-complex-c1.png")));
+
 }
 
 QTEST_MAIN(WidgetTest)
