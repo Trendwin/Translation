@@ -1,4 +1,5 @@
 #include "protocolconfig.h"
+
 #include <QCryptographicHash>
 #include <QFile>
 #include <QJsonArray>
@@ -6,185 +7,255 @@
 #include <QJsonParseError>
 #include <QSaveFile>
 #include <QSet>
+#include <QtMath>
 #include <QRegularExpression>
 
 namespace {
-bool fail(TranslationError *e, const QString &code, const QString &detail)
-{ if (e) *e = {code, detail}; return false; }
-bool integer(const QJsonValue &v, qint64 low, qint64 high)
-{ const double d=v.toDouble(-1); return d>=low && d<=high && double(qint64(d))==d; }
-bool validExpr(const QJsonObject &e)
+bool fail(TranslationError *error, const QString &code, const QString &message)
 {
-    const QString kind=e.value("kind").toString();
-    if (kind=="constant") return e.contains("value");
-    if (kind=="field") return !e.value("name").toString().isEmpty();
-    if (kind=="enum") return !e.value("field").toString().isEmpty() && e.value("table").isObject();
-    if (kind=="linear") return !e.value("field").toString().isEmpty()
-            && integer(e.value("numerator"),1,1000000000) && integer(e.value("denominator"),1,1000000000)
-            && (!e.contains("offset") || integer(e.value("offset"),-1000000000,1000000000))
-            && QStringList({"floor","ceil","nearest","exact"}).contains(e.value("round").toString());
-    if (kind=="bits") {
-        const QJsonArray parts=e.value("parts").toArray();
-        if (parts.isEmpty()) return false;
-        for (const QJsonValue &p:parts) if (!p.isObject() || !integer(p.toObject().value("shift"),0,31)
-              || !integer(p.toObject().value("width"),1,32) || !validExpr(p.toObject().value("value").toObject())) return false;
-        return true;
-    }
+    if (error) *error = {code, message};
     return false;
 }
+
+bool integer(const QJsonValue &value, qint64 minimum, qint64 maximum)
+{
+    const double number = value.toDouble(qQNaN());
+    return value.isDouble() && qIsFinite(number) && number >= minimum && number <= maximum
+            && number == double(qint64(number));
+}
+
+bool validHex(const QString &text)
+{
+    QByteArray compact = text.toLatin1();
+    compact.replace(" ", "");
+    return !compact.isEmpty() && compact.size() % 2 == 0
+            && QByteArray::fromHex(compact).toHex() == compact.toLower();
+}
+
+bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNames)
+{
+    const QString kind = expression.value("kind").toString();
+    if (kind == "constant") return integer(expression.value("value"), 0, 0xfffffe);
+    if (kind == "field") return fieldNames.contains(expression.value("field").toString());
+    if (kind != "linear" || !fieldNames.contains(expression.value("field").toString())) return false;
+    return integer(expression.value("numerator"), -1000000000, 1000000000)
+            && integer(expression.value("denominator"), 1, 1000000000)
+            && (!expression.contains("offset") || integer(expression.value("offset"), -1000000000, 1000000000))
+            && QStringList({"exact", "floor", "ceil", "nearest"}).contains(expression.value("round").toString());
+}
+}
+
+bool ProtocolConfig::decodeBytes(const QString &text, const QString &encoding,
+                                QByteArray *bytes, TranslationError *error)
+{
+    bytes->clear();
+    if (encoding == "hex") {
+        if (!validHex(text))
+            return fail(error, "INPUT_HEX", QString::fromUtf8(u8"HEX 必须是偶数个十六进制字符，可用空格分隔字节"));
+        QByteArray compact = text.toLatin1();
+        compact.replace(" ", "");
+        *bytes = QByteArray::fromHex(compact);
+        return true;
+    }
+    if (encoding != "ascii")
+        return fail(error, "INPUT_ENCODING", QString::fromUtf8(u8"输入编码未配置为 ASCII 或 HEX"));
+    // 转义错误不能悄悄丢弃反斜杠或把中文替换成问号，否则预览与客户实际字节会不一致。
+    for (int i = 0; i < text.size(); ++i) {
+        const QChar ch = text.at(i);
+        if (ch.unicode() > 127)
+            return fail(error, "INPUT_ASCII", QString::fromUtf8(u8"ASCII 输入只能包含 ASCII 字符"));
+        if (ch != '\\') { bytes->append(ch.toLatin1()); continue; }
+        if (++i == text.size())
+            return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"反斜杠后缺少转义字符"));
+        const QChar next = text.at(i);
+        if (next == 'r') bytes->append('\r');
+        else if (next == 'n') bytes->append('\n');
+        else if (next == 't') bytes->append('\t');
+        else if (next == '\\') bytes->append('\\');
+        else if (next == 'x' && i + 2 < text.size()) {
+            const QString digits = text.mid(i + 1, 2);
+            if (!validHex(digits))
+                return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"\\x 后必须有两个十六进制字符"));
+            const int value = digits.toInt(nullptr, 16);
+            if (value > 127)
+                return fail(error, "INPUT_ASCII", QString::fromUtf8(u8"超过 ASCII 范围的字节请使用 HEX 编码"));
+            bytes->append(char(value)); i += 2;
+        } else return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"不支持的转义；可用 \\r、\\n、\\t、\\xNN 或双反斜杠"));
+    }
+    return true;
 }
 
 bool ProtocolConfig::fromJson(const QByteArray &json, ProtocolConfig *out, TranslationError *error)
 {
-    QJsonParseError parse;
-    const QJsonDocument doc=QJsonDocument::fromJson(json,&parse);
-    if (!doc.isObject()) return fail(error,"CONFIG_JSON",parse.errorString());
-    ProtocolConfig value; value.root=doc.object();
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(json, &parseError);
+    if (!document.isObject())
+        return fail(error, "CONFIG_JSON", QString::fromUtf8(u8"JSON 无效：%1").arg(parseError.errorString()));
+
+    ProtocolConfig value;
+    value.root = document.object();
     if (!value.validate(error)) return false;
-    value.version=QString::fromLatin1(QCryptographicHash::hash(doc.toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
-    if (out) *out=value;
+
+    // 版本由规范化后的完整 JSON 计算。请求接收时复制该值，后续编辑草稿不会改变在途请求。
+    value.version = QString::fromLatin1(QCryptographicHash::hash(
+        document.toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+    if (out) *out = value;
     return true;
 }
 
 bool ProtocolConfig::load(const QString &path, ProtocolConfig *out, TranslationError *error)
 {
     QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) return fail(error,"CONFIG_READ",file.errorString());
-    return fromJson(file.readAll(),out,error);
+    if (!file.open(QIODevice::ReadOnly)) return fail(error, "CONFIG_READ", file.errorString());
+    return fromJson(file.readAll(), out, error);
 }
 
 bool ProtocolConfig::save(const QString &path, TranslationError *error) const
 {
     if (!validate(error)) return false;
     QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly)) return fail(error,"CONFIG_WRITE",file.errorString());
-    if (file.write(QJsonDocument(root).toJson(QJsonDocument::Indented))<0 || !file.commit())
-        return fail(error,"CONFIG_WRITE",file.errorString());
+    if (!file.open(QIODevice::WriteOnly)) return fail(error, "CONFIG_WRITE", file.errorString());
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    // 原子提交前必须写满，磁盘错误不能把半份配置当作成功的用户版本。
+    if (file.write(json) != json.size() || !file.commit())
+        return fail(error, "CONFIG_WRITE", file.errorString());
     return true;
 }
 
 bool ProtocolConfig::validate(TranslationError *error) const
 {
-    if (root.value("schemaVersion").toInt()!=1) return fail(error,"CONFIG_SCHEMA","schemaVersion must be 1");
-    const QJsonObject frame=root.value("external").toObject();
-    const QString format=frame.value("format").toString();
-    if (!QStringList({"ascii","binary","dt"}).contains(format)) return fail(error,"CONFIG_FORMAT","external.format must be ascii, binary or dt");
-    if (format=="ascii" && (frame.value("template").toString().isEmpty() || !frame.value("template").toString().contains('{')))
-        return fail(error,"CONFIG_TEMPLATE","ASCII template needs a field placeholder");
-    if (format=="ascii" && (frame.value("template").toString().startsWith('{')
-             || frame.value("template").toString().endsWith('}')))
-        return fail(error,"CONFIG_TEMPLATE","ASCII template needs fixed prefix and terminator");
-    if (format!="binary" && !frame.value("crc").toObject().isEmpty())
-        return fail(error,"CONFIG_CRC","CRC definition is only supported for binary frames");
-    if (format=="binary") {
-        const QByteArray head=QByteArray::fromHex(frame.value("headerHex").toString().toLatin1());
-        if (head.isEmpty() || head.toHex()!=frame.value("headerHex").toString().toLatin1().toLower())
-            return fail(error,"CONFIG_HEADER","binary headerHex is invalid");
-        const QString footerText=frame.value("footerHex").toString();
-        if (!footerText.isEmpty() && QByteArray::fromHex(footerText.toLatin1()).toHex()!=footerText.toLatin1().toLower())
-            return fail(error,"CONFIG_FOOTER","binary footerHex is invalid");
-        const int fixed=frame.value("fixedLength").toInt();
-        const QJsonObject length=frame.value("lengthField").toObject();
-        if ((fixed<1)==length.isEmpty()) return fail(error,"CONFIG_LENGTH","choose fixedLength or lengthField");
-        if (fixed>4096 || (!length.isEmpty() && (!integer(length.value("offset"),0,4095)
-              || !integer(length.value("size"),1,2) || !integer(length.value("base"),0,4096)
-              || !QStringList({"little","big"}).contains(length.value("endian").toString()))))
-            return fail(error,"CONFIG_LENGTH","invalid frame length definition");
-        if (fixed>0 && fixed<int(head.size()+QByteArray::fromHex(frame.value("footerHex").toString().toLatin1()).size()))
-            return fail(error,"CONFIG_LENGTH","fixed frame shorter than boundaries");
-    }
+    if (!integer(root.value("schemaVersion"), 1, 1))
+        return fail(error, "CONFIG_SCHEMA", QString::fromUtf8(u8"schemaVersion 必须为 1"));
+
+    const QJsonObject external = root.value("external").toObject();
+    // 同一 schemaVersion 的旧实验配置也不能静默混用：明确提示重建顺序字段与映射。
+    if (external.contains("format") || root.contains("upstream") || root.contains("live"))
+        return fail(error, "CONFIG_LEGACY", QString::fromUtf8(u8"旧实验配置已停用，请按中文页面重新配置顺序字段、命令映射和设备参数"));
+    const QString encoding = external.value("encoding").toString();
+    if (!QStringList({"ascii", "hex"}).contains(encoding))
+        return fail(error, "CONFIG_ENCODING", QString::fromUtf8(u8"编码方式只能是 ASCII 或 HEX"));
+    const QString header = external.value("header").toString();
+    const QString footer = external.value("footer").toString();
+    if (header.isEmpty()) return fail(error, "CONFIG_HEADER", QString::fromUtf8(u8"帧头不能为空"));
+    if (footer.isEmpty()) return fail(error, "CONFIG_FOOTER", QString::fromUtf8(u8"帧尾不能为空"));
+    if (encoding == "hex" && (!validHex(header) || !validHex(footer)))
+        return fail(error, "CONFIG_BOUNDARY", QString::fromUtf8(u8"HEX 帧头和帧尾必须是偶数个十六进制字符"));
+    QByteArray headerBytes, footerBytes;
+    if (!decodeBytes(header, encoding, &headerBytes, error)
+            || !decodeBytes(footer, encoding, &footerBytes, error)) return false;
+    if (headerBytes.size() + footerBytes.size() > 4096)
+        return fail(error, "CONFIG_BOUNDARY", QString::fromUtf8(u8"帧头与帧尾超过 4096 字节上限"));
+    if (!QStringList({"big", "little"}).contains(external.value("byteOrder").toString("big")))
+        return fail(error, "CONFIG_ENDIAN", QString::fromUtf8(u8"高级字节序只能是大端或小端"));
+
+    const QJsonArray fields = external.value("fields").toArray();
+    if (fields.isEmpty()) return fail(error, "CONFIG_FIELD", QString::fromUtf8(u8"至少需要一个字段"));
     QSet<QString> names;
-    for (const QJsonValue &v:frame.value("fields").toArray()) {
-        const QJsonObject f=v.toObject(); const QString name=f.value("name").toString();
-        if (name.isEmpty() || names.contains(name)) return fail(error,"CONFIG_FIELD","field name missing or duplicated");
+    int commandFields = 0;
+    bool metTailField = false;
+    int fixedBytes = headerBytes.size() + footerBytes.size();
+    for (int index = 0; index < fields.size(); ++index) {
+        const QJsonObject field = fields.at(index).toObject();
+        if (field.contains("offset") || field.contains("endian"))
+            return fail(error, "CONFIG_LEGACY", QString::fromUtf8(u8"字段不再使用 offset/endian，请按顺序排列并在高级配置中设置 byteOrder"));
+        const QString name = field.value("name").toString().trimmed();
+        if (name.isEmpty() || name != field.value("name").toString() || names.contains(name))
+            return fail(error, "CONFIG_FIELD", QString::fromUtf8(u8"字段名称不能为空或重复（第 %1 行）").arg(index + 1));
         names.insert(name);
-        if (!QStringList({"uint","int","ascii","constant"}).contains(f.value("type").toString()))
-            return fail(error,"CONFIG_FIELD","unsupported field type: "+name);
-        if (format=="ascii" && !QStringList({"uint","int"}).contains(f.value("type").toString()))
-            return fail(error,"CONFIG_FIELD","ASCII placeholders support numeric fields only: "+name);
-        if (format=="binary" && (!integer(f.value("offset"),0,4095) || !integer(f.value("length"),1,8)
-             || !QStringList({"little","big"}).contains(f.value("endian").toString())))
-            return fail(error,"CONFIG_FIELD","invalid binary field: "+name);
-        if (format=="binary" && frame.value("fixedLength").toInt()>0
-                && f.value("offset").toInt()+f.value("length").toInt()>frame.value("fixedLength").toInt())
-            return fail(error,"CONFIG_FIELD","binary field exceeds fixed frame: "+name);
-        if (f.contains("min") && f.contains("max") && f.value("min").toDouble()>f.value("max").toDouble())
-            return fail(error,"CONFIG_RANGE","inverted field range: "+name);
+        const QString role = field.value("role").toString();
+        if (!QStringList({"command", "parameter", "fixed"}).contains(role))
+            return fail(error, "CONFIG_FIELD_ROLE", QString::fromUtf8(u8"字段“%1”的作用无效").arg(name));
+        if (role == "command") ++commandFields;
+        const QString type = field.value("type").toString();
+        if (!QStringList({"ascii", "uint", "int"}).contains(type))
+            return fail(error, "CONFIG_FIELD_TYPE", QString::fromUtf8(u8"字段“%1”的数据类型无效").arg(name));
+        const QString lengthMode = field.value("lengthMode").toString();
+        if (!QStringList({"fixed", "toFooter"}).contains(lengthMode))
+            return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的长度方式无效").arg(name));
+        if (metTailField)
+            return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"读取到帧尾的字段必须排在最后"));
+        if (lengthMode == "fixed" && !integer(field.value("length"), 1, 4096))
+            return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的固定长度必须大于 0").arg(name));
+        if (lengthMode == "toFooter") metTailField = true;
+        else fixedBytes += field.value("length").toInt();
+        if (encoding == "hex" && type != "ascii"
+                && (lengthMode != "fixed" || field.value("length").toInt() > 8))
+            return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"HEX 整数字段必须固定为 1 至 8 字节"));
+        if (role == "fixed" && !field.contains("fixedValue"))
+            return fail(error, "CONFIG_FIELD_CONSTANT", QString::fromUtf8(u8"固定字段“%1”必须填写固定值").arg(name));
+        if (role == "fixed") {
+            const QString text = field.value("fixedValue").toVariant().toString();
+            bool ok = false;
+            if (type == "ascii") {
+                ok = field.value("fixedValue").isString() && !text.isEmpty();
+                for (QChar ch : text) if (ch.unicode() > 127) ok = false;
+                if (lengthMode == "fixed" && text.size() != field.value("length").toInt()) ok = false;
+            } else {
+                text.toLongLong(&ok);
+                const QRegularExpression pattern(type == "uint" ? "^[0-9]+$" : "^-?[0-9]+$");
+                const QRegularExpressionMatch match = pattern.match(text);
+                ok = ok && match.hasMatch() && match.capturedLength() == text.size();
+            }
+            if (!ok) return fail(error, "CONFIG_FIELD_CONSTANT", QString::fromUtf8(u8"固定字段“%1”的值与类型或长度不符").arg(name));
+        }
+        if (role != "fixed" && field.contains("fixedValue"))
+            return fail(error, "CONFIG_FIELD_CONSTANT", QString::fromUtf8(u8"只有固定字段可以设置固定值（%1）").arg(name));
+        if (type == "ascii" && (field.contains("min") || field.contains("max")))
+            return fail(error, "CONFIG_RANGE", QString::fromUtf8(u8"ASCII 字段不使用数值上下限（%1）").arg(name));
+        // JSON 数字使用双精度，边界限于精确整数范围；不能接受字符串、空值或小数后再隐式转零。
+        const qint64 jsonMax = 9007199254740991LL;
+        for (const QString &key : {QStringLiteral("min"), QStringLiteral("max")})
+            if (field.contains(key) && !integer(field.value(key), type == "uint" ? 0 : -jsonMax, jsonMax))
+                return fail(error, "CONFIG_RANGE", QString::fromUtf8(u8"字段“%1”的范围必须为可精确保存的整数").arg(name));
+        if (field.contains("min") && field.contains("max")
+                && field.value("min").toDouble() > field.value("max").toDouble())
+            return fail(error, "CONFIG_RANGE", QString::fromUtf8(u8"字段“%1”的最小值大于最大值").arg(name));
     }
-    if (format=="ascii") {
-        const QString templ=frame.value("template").toString();
-        QSet<QString> placeholders;
-        const QRegularExpression re(QStringLiteral("\\{([^{}]+)\\}"));
-        auto matches=re.globalMatch(templ);
-        while(matches.hasNext()) placeholders.insert(matches.next().captured(1));
-        if(placeholders!=names) return fail(error,"CONFIG_TEMPLATE","ASCII placeholders and field definitions differ");
+    if (fixedBytes + (metTailField ? 1 : 0) > 4096)
+        return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"配置的完整帧超过 4096 字节上限"));
+    if (commandFields != 1)
+        return fail(error, "CONFIG_COMMAND_FIELD", QString::fromUtf8(u8"字段表必须且只能有一个“命令码”字段"));
+
+    const QJsonArray mappings = root.value("mappings").toArray();
+    if (mappings.isEmpty()) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"至少需要一条命令映射"));
+    QSet<QString> commandCodes;
+    for (const QJsonValue &value : mappings) {
+        const QJsonObject mapping = value.toObject();
+        const QString code = mapping.value("commandCode").toVariant().toString();
+        if (code.isEmpty() || commandCodes.contains(code))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码不能为空或重复"));
+        commandCodes.insert(code);
+        if (mapping.value("operation").toString() != "ABSOLUTE_MOVE")
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"第一阶段只支持“绝对位置运动”"));
+        if (!QStringList({"ack", "complete"}).contains(mapping.value("responsePolicy").toString()))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"响应方式只能是“命令应答”或“动作完成”"));
+        const QJsonObject parameters = mapping.value("parameters").toObject();
+        if (parameters.size() != 1)
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"首版参数关系只开放目标位置；速度和动作值在设备参数中设置"));
+        if (!parameters.contains("positionUm"))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"绝对位置运动必须映射 positionUm"));
+        for (auto it = parameters.begin(); it != parameters.end(); ++it)
+            if (!validExpression(it.value().toObject(), names))
+                return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的关系无效").arg(it.key()));
     }
-    const QJsonObject crc=frame.value("crc").toObject();
-    if (!crc.isEmpty() && (!QStringList({"crc16-ccitt-false","crc16-msb"}).contains(crc.value("algorithm").toString())
-          || !integer(crc.value("polynomial"),0,65535) || !integer(crc.value("initial"),0,65535)
-          || !integer(crc.value("xorOut"),0,65535) || !integer(crc.value("offset"),0,4095)
-          || !integer(crc.value("from"),0,4095) || !integer(crc.value("toExclusive"),1,4096)
-          || !QStringList({"little","big"}).contains(crc.value("endian").toString())
-          || !crc.contains("reflectIn") || !crc.contains("reflectOut")
-          || crc.value("reflectIn").toBool() || crc.value("reflectOut").toBool()))
-        return fail(error,"CONFIG_CRC","CRC requires algorithm, polynomial, initial, xorOut, range, offset, endian");
-    if (!crc.isEmpty() && crc.value("algorithm").toString()=="crc16-ccitt-false"
-            && (crc.value("polynomial").toInt()!=0x1021 || crc.value("initial").toInt()!=0xffff || crc.value("xorOut").toInt()!=0))
-        return fail(error,"CONFIG_CRC","CCITT-FALSE parameters do not match its algorithm name");
-    if (!crc.isEmpty() && frame.value("fixedLength").toInt()>0
-            && (crc.value("offset").toInt()+2>frame.value("fixedLength").toInt()
-                || crc.value("toExclusive").toInt()>frame.value("fixedLength").toInt()))
-        return fail(error,"CONFIG_CRC","CRC range exceeds fixed frame");
-    const QJsonArray maps=root.value("mappings").toArray();
-    if (maps.isEmpty()) return fail(error,"CONFIG_MAPPING","at least one mapping is required");
-    QSet<QByteArray> predicates;
-    for (const QJsonValue &v:maps) {
-        const QJsonObject m=v.toObject();
-        if (!QStringList({"ABSOLUTE_MOVE","QUERY_MOTOR"}).contains(m.value("operation").toString())
-                || !QStringList({"ack","complete","query"}).contains(m.value("responsePolicy").toString()))
-            return fail(error,"CONFIG_MAPPING","unsupported operation or response policy");
-        if ((m.value("operation").toString()=="QUERY_MOTOR")!=(m.value("responsePolicy").toString()=="query"))
-            return fail(error,"CONFIG_MAPPING","query operation and query response policy must agree");
-        const QByteArray predicate=QJsonDocument(m.value("when").toObject()).toJson(QJsonDocument::Compact);
-        if (predicates.contains(predicate)) return fail(error,"CONFIG_MAPPING","duplicate mapping predicate");
-        predicates.insert(predicate);
-        const QJsonObject params=m.value("parameters").toObject();
-        for (auto it=params.begin();it!=params.end();++it)
-            if (!validExpr(it.value().toObject())) return fail(error,"CONFIG_EXPRESSION","invalid expression: "+it.key());
-    }
-    const QJsonObject dev=root.value("device").toObject();
-    if (!integer(dev.value("destination"),1,255) || !integer(dev.value("source"),1,255)
-            || dev.value("destination").toInt()==dev.value("source").toInt()
-            || !integer(dev.value("devId"),0x11,0x1c) || !integer(dev.value("speedUmPerS"),1,0xfffffe)
-            || !integer(dev.value("minPositionUm"),0,0xfffffe) || !integer(dev.value("maxPositionUm"),0,0xfffffe)
-            || dev.value("minPositionUm").toInt()>dev.value("maxPositionUm").toInt()
-            || (dev.value("absoluteAction").toInt()!=1 && dev.value("absoluteAction").toInt()!=3))
-        return fail(error,"CONFIG_DEVICE","device addresses, speed, limits or absoluteAction invalid");
+
+    // 这些值直接参与真实设备组帧，所以即使仅预览也必须是合法数值；是否已经人工核对由界面单独确认。
+    const QJsonObject device = root.value("device").toObject();
+    if (!integer(device.value("destination"), 1, 255)
+            || !integer(device.value("source"), 1, 255)
+            || device.value("destination").toInt() == device.value("source").toInt()
+            || !integer(device.value("devId"), 0x11, 0x1c)
+            || !integer(device.value("speedUmPerS"), 1, 0xfffffe)
+            || !integer(device.value("minPositionUm"), 0, 0xfffffe)
+            || !integer(device.value("maxPositionUm"), 0, 0xfffffe)
+            || device.value("minPositionUm").toInt() > device.value("maxPositionUm").toInt()
+            || (!integer(device.value("absoluteAction"), 1, 1) && !integer(device.value("absoluteAction"), 3, 3)))
+        return fail(error, "CONFIG_DEVICE", QString::fromUtf8(u8"下游地址、DevID、速度、行程或绝对运动动作值不完整"));
     return true;
 }
 
 bool ProtocolConfig::liveReady(TranslationError *error) const
 {
-    if (!validate(error)) return false;
-    const QJsonObject dev=root.value("device").toObject();
-    if (!dev.value("confirmed").toBool() || !dev.value("conversionConfirmed").toBool()
-            || !dev.value("crcConfirmed").toBool())
-        return fail(error,"DEVICE_UNCONFIRMED","device, unit conversion and CRC must be independently confirmed before live send");
-    const QJsonObject responses=root.value("responses").toObject();
-    if (root.value("external").toObject().value("format").toString()=="dt") {
-        if (!root.value("dtErrorMapConfirmed").toBool() || !integer(root.value("defaultDtErrorCode"),1,15))
-            return fail(error,"DT_ERROR_MAP_UNCONFIRMED","DT error code mapping and fallback require confirmation");
-        const QJsonObject codes=root.value("dtErrorCodes").toObject();
-        for(auto it=codes.begin();it!=codes.end();++it)
-            if(!integer(it.value(),1,15)) return fail(error,"DT_ERROR_MAP_UNCONFIRMED","DT error code must be 1..15: "+it.key());
-    } else if (responses.value("ack").toString().isEmpty() || responses.value("complete").toString().isEmpty()
-               || responses.value("reject").toString().isEmpty())
-        return fail(error,"RESPONSE_UNCONFIRMED","ack, complete and reject response templates are required");
-    if (root.value("external").toObject().value("format").toString()=="binary")
-        for (const QString &name:{QStringLiteral("ack"),QStringLiteral("complete"),QStringLiteral("reject")}) {
-            const QByteArray candidate=responses.value(name).toString().toLatin1();
-            if (QByteArray::fromHex(candidate).toHex()!=candidate.toLower())
-                return fail(error,"RESPONSE_UNCONFIRMED","binary response is not valid hex: "+name);
-        }
-    return true;
+    // 配置层只检查设备参数完整性。人工确认、显式启用和串口连接由界面在发送瞬间共同检查。
+    return validate(error);
 }

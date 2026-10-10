@@ -1,13 +1,36 @@
-# Translation
+# Translation：配置驱动的客户报文转换
 
-Qt 5.14.2 / C++11 protocol conversion application. The current first stage provides a configuration driven external parser and semantic mapper, a guarded Qusheng encoder, two serial connections, and an offline preview. Read [the protocol basis and acceptance record](docs/phase1.md) before enabling real hardware.
+基于 Qt 5.14.2 / C++11。客户报文来自软件输入框，程序只使用一个下游串口连接趋盛控制板。第一阶段只保证一条由配置定义的**绝对位置运动**链路。
 
-## Start without hardware
+## 操作步骤
 
-1. Open `Translation.pro` with the installed Qt 5.14.2 kit and build. `tests/tests.pro` is the Qt Test project.
-2. The app loads `examples/dt-preview.json` as an editable draft. Enter `/1A2000R\r`, then click **预览（不发送）**. The example values are illustrative and cannot enable real send.
-3. Import `examples/ascii-preview.json` and preview `!MOVE,2000\r`. Import `examples/binary-preview.json`, switch input to HEX, and preview `AA 55 01 D0 07 E6 48`. Both produce the same unified absolute target and target frame for sequence zero. Click **启用配置** only to bind the validated draft as the active snapshot; preview is still safe.
-4. Edit fields in **字段编辑**, and mappings in **映射编辑**. Click **应用…到草稿**, validate, then explicitly enable the new version. Raw JSON editing remains available for device profile, CRC, response templates and advanced expressions. Import and export use UTF-8 JSON.
-5. A simulated full device reply can be entered in **模拟设备回告 HEX** to inspect decoding. A successful 0x11 reply proves command acceptance only. Real sending and bridging require confirmed configuration flags plus explicitly connected downstream/upstream serial ports.
+1. **客户协议格式**：选择 ASCII 或 HEX，填写帧头、帧尾，按顺序添加命令码、参数或固定字段。按“保存到草稿”。
+2. **命令映射**：填写客户命令码，选择“绝对位置运动”和响应方式。目标位置支持直接引用、固定值或线性换算。按“保存到草稿”。
+3. **报文调试**：输入完整报文，按“预览但不发送”。查看原始输入、按顺序识别的字段、命中映射、换算过程、统一命令及趋盛 HEX 帧。
+4. **设备与连接**：核对下游地址、电机编号、动作值、速度和行程，保存草稿；点击全局“校验配置”“启用配置”，连接下游，再勾选设备参数确认项。
+5. 回到**报文调试**，按“真实发送到下游”，切换“原始设备回告”“回告解析结果”查看设备应答，结合执行状态和中文错误原因判断最终结果。
 
-The app never invents address, DevID, speed, unit calibration or stroke limits. The included example numbers must not be used for a real pump. See [configuration format](docs/config-schema.md) and [Windows build notes](docs/windows-build.md).
+表单修改、保存草稿、校验和启用是不同的步骤。顶部始终分别显示“当前草稿”和“当前已启用版本”。未保存的表单或未应用的高级 JSON 不能冒充已保存配置；草稿修改后须重新校验、启用及确认才能发送。每个在途请求复制已启用参数，不受草稿编辑影响，在途期间不能切换运行版本。
+
+## 无硬件验证
+
+启动时载入 `examples/dt-preview.json`。在报文调试页输入 `/1A2000R\r`（输入框用 `\r` 表示回车），点击预览，可得到：
+
+- 地址 1、客户命令码 A、客户位置 2000。
+- 由配置决定的位置换算：2000 × 10 ÷ 1 + 0 = 20000 微米。
+- 趋盛目标帧（新连接的序号 00）：`AA AA 02 01 08 F7 00 11 11 41 00 03 E8 00 4E 20 27 F8`。
+
+DT 仅是一份配置示例，转换器没有协议名称或 A/a/Q 专用分支。修改帧头、帧尾或客户命令码，只需保存配置，不用修改 C++。`ascii-preview.json` 的 `!M2000\r` 和 `binary-preview.json` 的 `AA 55 01 07 D0 0D 0A` 也生成等价运动命令。
+
+## 状态与恢复
+
+“串口已写出”“设备命令应答”“动作完成”不能合并。应答返回策略可先显示命令接纳结果，后台仍用 0x12 查询确认设备空闲及目标位置；动作完成返回策略等待上述确认。失败、超时和取消等待都不会自动重发运动。
+
+“取消本地等待”不会停止设备。设备状态未知时禁止再次运动，可在已连接且参数确认后点击“查询设备状态”重新确认忙闲；写出故障先重连。序号在同一连接中不回绕，256 个报文用完须重连。预览使用独立编码器，真实序号由请求管理器分配，实际帧显示在目标帧页。
+
+## 工程与文档
+
+- `Translation.pro`：应用；`tests/tests.pro`：核心测试；`tests/ui-tests.pro`：界面流程与渲染测试。
+- [配置说明](docs/config-schema.md)、[架构说明](docs/architecture.md)、[阶段范围及实机待确认项](docs/phase1.md)、[Windows 构建](docs/windows-build.md)。
+
+示例设备参数仅用于离线验证：目标地址 2、软件源地址 1、电机编号 0x11、动作值 1、速度 1000 微米/秒、行程 0–60000 微米、位置系数 10。勾选确认项前须按设备资料和实机核对。其他客户命令后续扩展；拖拽设计器、脚本、多命令组合、循环、TCP、位拼接及通用 CRC 编辑尚未实现。

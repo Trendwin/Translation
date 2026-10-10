@@ -8,16 +8,16 @@ RequestManager::RequestManager(IInternalProtocol *protocol,ITransport *transport
         if(!m_active) return;
         if(m_probeActive) { m_probeActive=false; scheduleProbe(); return; }
         if(m_current.operation=="ABSOLUTE_MOVE") setBusy(true);
-        failCurrent(RequestState::TimedOut,"SEND_TIMEOUT","serial write did not finish");
+        failCurrent(RequestState::TimedOut,"SEND_TIMEOUT",QString::fromUtf8(u8"串口写出未在时限内完成"));
     });
     connect(&m_ackTimer,&QTimer::timeout,this,[this]() {
         if(!m_active) return;
         if(m_probeActive) { m_probeActive=false; scheduleProbe(); return; }
         if(m_current.operation=="ABSOLUTE_MOVE") setBusy(true);
-        failCurrent(RequestState::TimedOut,"ACK_TIMEOUT","device command ACK timed out");
+        failCurrent(RequestState::TimedOut,"ACK_TIMEOUT",QString::fromUtf8(u8"等待设备命令应答超时"));
     });
     connect(&m_motionTimer,&QTimer::timeout,this,[this]() {
-        if(m_active && m_acked) failCurrent(RequestState::TimedOut,"MOTION_TIMEOUT","motion completion not confirmed; device state remains busy/unknown");
+        if(m_active && m_acked) failCurrent(RequestState::TimedOut,"MOTION_TIMEOUT",QString::fromUtf8(u8"动作完成未确认；设备保持忙或状态未知"));
     });
     connect(&m_pollTimer,&QTimer::timeout,this,&RequestManager::startProbe);
     connect(m_transport,&ITransport::sendFinished,this,&RequestManager::onSendFinished);
@@ -33,22 +33,23 @@ void RequestManager::setBusy(bool busy)
 void RequestManager::enqueue(const UnifiedCommand &command)
 {
     m_queue.enqueue(command);
-    emit stateChanged(command.requestId,RequestState::Queued,QStringLiteral("queued"));
+    emit stateChanged(command.requestId,RequestState::Queued,QString::fromUtf8(u8"请求已进入发送队列"));
     QTimer::singleShot(0,this,&RequestManager::startNext);
 }
 
 void RequestManager::startNext()
 {
     if(m_active || m_queue.isEmpty()) return;
-    m_current=m_queue.dequeue(); m_active=true; m_acked=false; m_probeActive=false; m_upstreamReplied=false;
-    if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED","downstream disconnected"); return; }
+    m_current=m_queue.dequeue(); m_active=true; m_acked=false; m_probeActive=false; m_completionEmitted=false;
+    if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
+    // 已经向界面发出 ack 结果并不释放设备；只有完成查询确认空闲后才能接收下一条运动。
     if(m_deviceBusy && m_current.operation=="ABSOLUTE_MOVE") {
-        failCurrent(RequestState::Failed,"DEVICE_BUSY","previous motion is still busy or its final state is unknown"); return;
+        failCurrent(RequestState::Failed,"DEVICE_BUSY",QString::fromUtf8(u8"上一动作仍在执行，或设备最终状态尚未确认")); return;
     }
     QByteArray frame; TranslationError error;
     if(!m_protocol->encodeCommand(m_current,&frame,&error)) { failCurrent(RequestState::Failed,error.code,error.message); return; }
     emit frameReady(m_current.requestId,frame);
-    emit stateChanged(m_current.requestId,RequestState::Sending,"writing downstream frame");
+    emit stateChanged(m_current.requestId,RequestState::Sending,QString::fromUtf8(u8"正在向下游串口写出趋盛帧"));
     m_sendTimer.start(m_sendTimeoutMs);
     m_transport->sendBytes(m_current.requestId,frame);
 }
@@ -56,15 +57,17 @@ void RequestManager::startNext()
 void RequestManager::onSendFinished(quint64 requestId,bool success,const QString &reason)
 {
     if(!m_active || requestId!=m_current.requestId) return;
-    if(m_acked && !m_probeActive) return; // ACK can precede bytesWritten callback.
+    if(m_acked && !m_probeActive) return; // 回告可能早于本地 bytesWritten；不能把已应答状态退回等待应答。
     m_sendTimer.stop();
     if(!success) {
         if(m_probeActive) { m_probeActive=false; scheduleProbe(); return; }
         if(m_current.operation=="ABSOLUTE_MOVE") setBusy(true);
         failCurrent(RequestState::Failed,"SEND_FAILED",reason); return;
     }
-    emit stateChanged(requestId,RequestState::Written,"bytes written; no command ACK yet");
-    emit stateChanged(requestId,RequestState::WaitingReply,m_probeActive?"waiting 0x12 probe reply":"waiting command ACK");
+    emit stateChanged(requestId,RequestState::Written,QString::fromUtf8(u8"字节已写出，尚未收到设备命令应答"));
+    emit stateChanged(requestId,RequestState::WaitingReply,m_probeActive
+                      ? QString::fromUtf8(u8"等待 0x12 状态查询回告")
+                      : QString::fromUtf8(u8"等待设备命令应答"));
     m_ackTimer.start(m_ackTimeoutMs);
 }
 
@@ -75,6 +78,8 @@ void RequestManager::onBytesReceived(const QByteArray &data)
     const QList<ProtocolMessage> messages=m_protocol->feedReceivedData(data,&errors);
     for(const TranslationError &e:errors) emit protocolError(e);
     for(const ProtocolMessage &message:messages) {
+        // 0x17 是主动状态上报，序号可能与当前请求无关。首版只用它更新忙状态，
+        // 不能让它直接完成新请求，避免迟到上报误配。
         if(message.messageType==0x17 && message.payload.size()>=2
                 && m_active && quint8(message.payload.at(0))==m_current.targetDevice.toUInt()) {
             const int state=(quint8(message.payload.at(1))>>4)&0x0f;
@@ -93,34 +98,36 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             const quint32 position=result.data.value("positionUm").toUInt();
             if(state==1 && position==m_current.parameters.value("positionUm").toUInt()) {
                 setBusy(false);
-                if(!m_upstreamReplied) { result.requestId=m_current.requestId; result.data.insert("deviceBusy",false); emit completed(result); m_upstreamReplied=true; }
-                emit stateChanged(m_current.requestId,RequestState::Succeeded,"motion idle at requested absolute position");
+                if(!m_completionEmitted) { result.requestId=m_current.requestId; result.data.insert("deviceBusy",false); emit completed(result); m_completionEmitted=true; }
+                emit stateChanged(m_current.requestId,RequestState::Succeeded,QString::fromUtf8(u8"设备已空闲且位置等于绝对目标"));
                 finishCurrent();
-            } else if(state==4) failCurrent(RequestState::Failed,"MOTOR_ERROR","0x12 reports motor error");
+            } else if(state==4) failCurrent(RequestState::Failed,"MOTOR_ERROR",QString::fromUtf8(u8"0x12 状态查询报告电机错误"));
             else scheduleProbe();
             continue;
         }
         if(!result.success) { failCurrent(RequestState::Failed,result.error.code,result.error.message); continue; }
         m_acked=true;
-        emit stateChanged(m_current.requestId,RequestState::Acknowledged,"device accepted command; motion completion not implied");
+        // 0x11 成功回告仅表示命令被接纳，不能合并为“动作完成”。
+        emit stateChanged(m_current.requestId,RequestState::Acknowledged,QString::fromUtf8(u8"设备已接纳命令，但这不表示动作已完成"));
         if(m_current.operation=="QUERY_MOTOR") {
             const int motorState=result.data.value("motorState").toInt();
             if(motorState==1) setBusy(false);
             if(motorState==2 || motorState==3 || motorState==4) setBusy(true);
-            if(motorState==4) { failCurrent(RequestState::Failed,"MOTOR_ERROR","0x12 reports motor error"); continue; }
+            if(motorState==4) { failCurrent(RequestState::Failed,"MOTOR_ERROR",QString::fromUtf8(u8"0x12 状态查询报告电机错误")); continue; }
             if(motorState==0 || motorState>4 || result.data.value("positionUm").toUInt()==0xffffffu) {
-                failCurrent(RequestState::Failed,"MOTOR_STATE_UNKNOWN","0x12 reports unhomed or unknown motor state"); continue;
+                setBusy(true); // 查询未能确认空闲，不能沿用之前的空闲状态放行新动作。
+                failCurrent(RequestState::Failed,"MOTOR_STATE_UNKNOWN",QString::fromUtf8(u8"0x12 报告电机未回零或状态未知")); continue;
             }
             result.data.insert("deviceBusy",m_deviceBusy);
-            emit stateChanged(m_current.requestId,RequestState::Succeeded,"query reply received");
-            emit completed(result); m_upstreamReplied=true; finishCurrent(); continue;
+            emit stateChanged(m_current.requestId,RequestState::Succeeded,QString::fromUtf8(u8"状态查询回告已解析"));
+            emit completed(result); m_completionEmitted=true; finishCurrent(); continue;
         }
         setBusy(true);
         if(m_current.responsePolicy=="ack") {
             result.data.insert("deviceBusy",true);
-            emit completed(result); m_upstreamReplied=true;
+            emit completed(result); m_completionEmitted=true;
         }
-        emit stateChanged(m_current.requestId,RequestState::InMotion,"motion acknowledged; polling 0x12 for completion");
+        emit stateChanged(m_current.requestId,RequestState::InMotion,QString::fromUtf8(u8"动作已应答，继续轮询 0x12 判断是否完成"));
         m_motionTimer.start(m_motionTimeoutMs); scheduleProbe();
     }
 }
@@ -154,7 +161,10 @@ void RequestManager::failCurrent(RequestState state,const QString &code,const QS
     m_protocol->clearReceiveBuffer();
     UnifiedResult result; result.requestId=m_current.requestId; result.error={code,detail};
     emit stateChanged(result.requestId,state,detail);
-    if(!m_upstreamReplied) emit completed(result);
+    // ack 策略已经通知过“命令接纳”，后续失败仍必须展示；它不撤回之前的接纳事实。
+    // 使用独立错误信号避免重复发出业务 completed，同时让界面看到动作超时等最终原因。
+    if(!m_completionEmitted) emit completed(result);
+    else emit protocolError(result.error);
     finishCurrent();
 }
 
@@ -162,11 +172,11 @@ void RequestManager::cancel(quint64 requestId)
 {
     if(m_active && m_current.requestId==requestId) {
         if(m_current.operation=="ABSOLUTE_MOVE" && (m_acked || m_sendTimer.isActive() || m_ackTimer.isActive())) setBusy(true);
-        failCurrent(RequestState::Cancelled,"LOCAL_WAIT_CANCELLED","local wait cancelled; device was not stopped"); return;
+        failCurrent(RequestState::Cancelled,"LOCAL_WAIT_CANCELLED",QString::fromUtf8(u8"已取消本地等待；未向设备发送停止命令")); return;
     }
     for(int i=0;i<m_queue.size();++i) if(m_queue.at(i).requestId==requestId) {
         m_queue.removeAt(i); UnifiedResult result; result.requestId=requestId;
-        result.error={"CANCELLED","queued request cancelled before send"};
+        result.error={"CANCELLED",QString::fromUtf8(u8"排队请求已在发送前取消")};
         emit stateChanged(requestId,RequestState::Cancelled,result.error.message); emit completed(result); return;
     }
 }

@@ -4,8 +4,7 @@
 #include "model/translationtypes.h"
 #include <QJsonObject>
 
-// A complete, immutable-by-value configuration snapshot. Drafts are never shared
-// with requests; the caller copies an enabled snapshot when accepting input.
+// 完整配置按值保存。界面启用时生成不可变快照，请求不会引用仍在编辑的草稿。
 class ProtocolConfig
 {
 public:
@@ -16,6 +15,9 @@ public:
     bool save(const QString &path, TranslationError *error) const;
     bool validate(TranslationError *error) const;
     bool liveReady(TranslationError *error) const;
+    // 界面和解析器共用严格的字节入口，避免同一转义在配置与输入框中被不同解释。
+    static bool decodeBytes(const QString &text, const QString &encoding,
+                            QByteArray *bytes, TranslationError *error);
 };
 
 #endif

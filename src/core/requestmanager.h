@@ -37,7 +37,8 @@ private:
     ITransport *m_transport;
     QQueue<UnifiedCommand> m_queue;
     UnifiedCommand m_current,m_probe;
-    bool m_active=false,m_probeActive=false,m_acked=false,m_upstreamReplied=false,m_deviceBusy=false;
+    // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由后续 0x12 查询独立维护。
+    bool m_active=false,m_probeActive=false,m_acked=false,m_completionEmitted=false,m_deviceBusy=false;
     int m_sendTimeoutMs=1000,m_ackTimeoutMs=800,m_motionTimeoutMs=30000;
     QTimer m_sendTimer,m_ackTimer,m_motionTimer,m_pollTimer;
 };

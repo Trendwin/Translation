@@ -1,11 +1,34 @@
-# Architecture
+# 第一阶段架构
 
-See [phase1.md](phase1.md) for requirements, source conflicts, interfaces and acceptance gates.
+## 数据流
 
-`ProtocolConfig` validates versioned JSON and provides a stable value snapshot. `ConversionEngine` owns the upstream stream cache, parses a complete external frame, evaluates bounded mapping expressions and produces a protocol neutral `UnifiedCommand`. Its preview uses a fresh `QushengProtocol`, so it cannot alter the sequence number of a live connection. `Widget` holds the enabled configuration and one `ConversionEngine` per upstream serial connection; editing the JSON text changes only the draft.
+界面输入框 → ConversionEngine → UnifiedCommand → RequestManager → QushengProtocol → 下游串口
 
-`TranslationService::submitUnifiedCommand` submits a mapped command to `RequestManager`. The manager writes through `ITransport` and separates write completion, 0x11 command acceptance, and motor completion. After 0x11 acceptance it polls 0x12 and checks both idle state and requested absolute position. A 0x17 report updates busy status but cannot complete a request because it has no request sequence. Commands are serialized and motions are never retried automatically. Cancelling a local wait leaves the motor state busy/unknown until a query confirms idle.
+设备回告按相反方向进入 QushengProtocol 和 RequestManager，最后由界面显示原始字节、解析结果和请求状态。运行时只有一个 SerialTransport，用于连接趋盛控制板。
 
-`Widget` owns separate serial transports for the upstream external connection and downstream device connection. It records an upstream connection generation and configuration snapshot per accepted request, so a reply returns to the original live connection and a config edit cannot change its format. The bridge and real send controls require explicit enabling and confirmed device/calibration/CRC flags. Preview never sends.
+## 模块职责
 
-`src/demo` and `DtClientProtocol` remain as compatibility/test components. The application uses the configuration engine as its production input path. TCP transport, complex action orchestration and editable downstream templates are extension points, not supported by this phase.
+- ProtocolConfig：校验带 schemaVersion 的 JSON，生成 SHA-256 配置版本。草稿和已启用配置按值分离。
+- ConversionEngine：按配置的帧头、帧尾和字段顺序完成通用分帧、字段解析、命令码匹配和参数换算。它不知道客户协议名称。
+- UnifiedCommand / UnifiedResult：业务层只传动作、目标设备、参数、单位和响应策略。
+- QushengProtocol：固定且受约束的趋盛编解码器，负责地址、序号、长度反码、命令数据和 CRC。
+- RequestManager：分别管理串口写出、命令应答和动作完成；成功的 0x11 回告只表示设备接纳命令，动作完成继续由 0x12 查询确认。
+- Widget：提供中文草稿编辑、校验、启用、预览、设备确认、下游连接和回告显示。
+
+## 配置快照
+
+中文表单先写入草稿。校验成功后才能显式启用。每个统一命令记录启用配置的版本；已经进入请求管理的命令包含完成组帧所需的参数，后续草稿编辑不会改变该请求。请求进行中禁止切换启用版本，避免下游地址或序号匹配规则改变。
+
+## 当前边界
+
+第一阶段只开放 ASCII/HEX 输入、固定长度或读取到帧尾的顺序字段，以及直接引用、固定值、线性换算三种参数关系。TCP、通用 CRC 编辑、任意脚本、位拼接、多命令组合、循环和可编辑趋盛模板均未进入运行路径。
+
+## 界面和配置状态边界
+
+界面提供客户协议格式、命令映射、报文调试、设备与连接及高级配置五个中文页面。编辑控件、已保存草稿、已校验草稿、已启用快照分开保存；加载控件时屏蔽编辑信号，避免加载过程中产生伪修改。来源字段删除或改名后保留失效引用并提示“未找到字段”，不得自动改成其他参数。
+
+转换入口每次检查配置合法性，严格将文本转成字节，然后按边界与字段顺序解析；失败清空整个预览结果，禁止返回上一条成功请求的目标帧。统一位置单位为微米，速度为微米/秒，受设备行程和趋盛 24 位边界共同约束。
+
+TranslationService 只接收统一命令和转发设备结果，没有客户回写接口。应用只构建设备串口、配置转换及趋盛请求路径；旧专用客户适配器已删除。ITransport、IInternalProtocol 和配置参数关系分派是后续扩展边界，首版未实现的关系类型会被明确拒绝。
+
+命令应答策略已返回接纳结果后，如果动作超时或失败，独立错误信号仍展示最终原因。状态未知保持设备忙，内部 0x12 查询可恢复经确认的空闲状态。切换配置不重置同一物理连接的序号，避免迟到回告误配；只在新连接时重置协议会话。

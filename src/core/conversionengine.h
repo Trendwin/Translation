@@ -3,16 +3,20 @@
 
 #include "config/protocolconfig.h"
 #include <QList>
+#include <QStringList>
 
 struct ConversionPreview
 {
     QByteArray input;
     QMap<QString,QVariant> fields;
+    QStringList fieldOrder;
+    QString matchedCommandCode;
+    QMap<QString,QString> parameterTrace;
     UnifiedCommand command;
     QByteArray targetFrame;
 };
 
-// One instance per upstream connection. The configuration is a value snapshot.
+// 转换器只读取配置快照，不识别任何客户协议名称或命令字。
 class ConversionEngine
 {
 public:
@@ -22,7 +26,8 @@ public:
     void clear() { m_buffer.clear(); }
 private:
     bool parse(const QByteArray &input, QMap<QString,QVariant> *fields, TranslationError *error) const;
-    bool map(const QMap<QString,QVariant> &fields, UnifiedCommand *command, TranslationError *error) const;
+    bool map(const QMap<QString,QVariant> &fields, UnifiedCommand *command,
+             ConversionPreview *preview, TranslationError *error) const;
     ProtocolConfig m_config;
     QByteArray m_buffer;
 };

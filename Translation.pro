@@ -5,6 +5,7 @@ TEMPLATE = app
 TARGET = Translation
 
 DEFINES += QT_DEPRECATED_WARNINGS
+RESOURCES += resources.qrc
 
 win32-msvc {
     QMAKE_CFLAGS += /utf-8
@@ -26,31 +27,20 @@ SOURCES += \
     src/core/translationservice.cpp \
     src/core/conversionengine.cpp \
     src/config/protocolconfig.cpp \
-    src/dt/dtclientprotocol.cpp \
     src/qusheng/qushengprotocol.cpp \
-    src/transport/serialtransport.cpp \
-    src/demo/democlientprotocol.cpp \
-    src/demo/demointernalprotocol.cpp \
-    src/demo/mocktransport.cpp
+    src/transport/serialtransport.cpp
 
 HEADERS += \
     widget.h \
     src/model/translationtypes.h \
-    src/protocol/iclientprotocol.h \
     src/protocol/iinternalprotocol.h \
     src/transport/itransport.h \
     src/core/requestmanager.h \
     src/core/translationservice.h \
     src/core/conversionengine.h \
     src/config/protocolconfig.h \
-    src/dt/dtclientprotocol.h \
     src/qusheng/qushengprotocol.h \
-    src/transport/serialtransport.h \
-    src/demo/democlientprotocol.h \
-    src/demo/demointernalprotocol.h \
-    src/demo/mocktransport.h
-
-FORMS += widget.ui
+    src/transport/serialtransport.h
 
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin

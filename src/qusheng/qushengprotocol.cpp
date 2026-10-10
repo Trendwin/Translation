@@ -6,8 +6,8 @@ const int FrameOverhead = 10;
 const quint32 Maximum24Bit = 0xffffffu;
 const quint32 ContinuousMoveDistance = 0xffffffu;
 
-// Command 0x11 encodes every 24-bit unsigned field in network (big-endian)
-// byte order.  Each field always occupies exactly three bytes.
+// 0x11 的速度和位置均以微米相关单位进入编码器，线上固定占 3 字节且高字节在前。
+// 这里不接受客户协议字段，避免外部格式绕过统一命令和设备行程校验。
 void appendBe24(QByteArray *out, quint32 value)
 {
     out->append(char(value >> 16));
@@ -33,6 +33,8 @@ bool readUnsigned24Parameter(const UnifiedCommand &command, const char *name, qu
 
 quint16 QushengProtocol::crc16(const QByteArray &data)
 {
+    // 固定采用现有趋盛样例验证过的 CRC16（初值 FFFF、多项式 1021）。
+    // 覆盖从帧头到数据末尾，CRC 高字节在前；首版不向客户开放算法编辑。
     quint16 crc = 0xffff;
     for (char byte : data) {
         crc ^= quint16(quint8(byte)) << 8;
@@ -101,9 +103,9 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     }
     QByteArray payload;
     payload.append(char(devId));
-    payload.append(char(0x40 | action)); // AbsolutePosition mode=4; action from confirmed profile.
-    appendBe24(&payload, speed);    // D2..D4: 24-bit unsigned, high byte first
-    appendBe24(&payload, position); // D5..D7: absolute target, high byte first
+    payload.append(char(0x40 | action)); // 高 4 位为绝对位置模式 4，低位动作值来自已核对设备配置。
+    appendBe24(&payload, speed);    // D2..D4：速度，24 位无符号大端。
+    appendBe24(&payload, position); // D5..D7：绝对目标位置，单位 μm，24 位无符号大端。
 
     const quint8 sequence = quint8(m_nextSequence++);
     *frame = makeFrame(m_destination, m_source, sequence, 0x11, payload);
@@ -137,7 +139,7 @@ QList<ProtocolMessage> QushengProtocol::feedReceivedData(const QByteArray &data,
     for (;;) {
         const int header = m_buffer.indexOf(QByteArray::fromHex("aaaa"));
         if (header < 0) {
-            // A trailing AA may be the first byte of a header split across reads.
+            // 缓存末尾的 AA 可能是拆包帧头的第一个字节，必须保留到下一次接收。
             if (!m_buffer.isEmpty() && quint8(m_buffer.at(m_buffer.size() - 1)) == FrameByte)
                 m_buffer = QByteArray(1, char(FrameByte));
             else
