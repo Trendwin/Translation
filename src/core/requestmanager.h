@@ -25,6 +25,7 @@ signals:
     void deviceBusyChanged(bool busy);
 private:
     void startNext();
+    void sendCurrent();
     void onSendFinished(quint64 requestId,bool success,const QString &reason);
     void onBytesReceived(const QByteArray &data);
     void onConnectionChanged(bool connected,const QString &reason);
@@ -39,6 +40,8 @@ private:
     UnifiedCommand m_current,m_probe;
     // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由后续 0x12 查询独立维护。
     bool m_active=false,m_probeActive=false,m_acked=false,m_completionEmitted=false,m_deviceBusy=false;
+    // 相对动作的前置查询不能与动作完成轮询合并：前者成功前绝不能发送运动。
+    bool m_preflight=false;
     int m_sendTimeoutMs=1000,m_ackTimeoutMs=800,m_motionTimeoutMs=30000;
     QTimer m_sendTimer,m_ackTimer,m_motionTimer,m_pollTimer;
 };
