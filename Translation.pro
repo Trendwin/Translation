@@ -28,6 +28,7 @@ SOURCES += \
     src/core/conversionengine.cpp \
     src/config/protocolconfig.cpp \
     src/qusheng/qushengprotocol.cpp \
+    src/qusheng/qushengcommandcatalog.cpp \
     src/transport/serialtransport.cpp
 
 HEADERS += \
@@ -40,6 +41,7 @@ HEADERS += \
     src/core/conversionengine.h \
     src/config/protocolconfig.h \
     src/qusheng/qushengprotocol.h \
+    src/qusheng/qushengcommandcatalog.h \
     src/transport/serialtransport.h
 
 qnx: target.path = /tmp/$${TARGET}/bin

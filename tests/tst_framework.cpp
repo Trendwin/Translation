@@ -9,6 +9,7 @@
 #include "core/requestmanager.h"
 #include "demo/demointernalprotocol.h"
 #include "qusheng/qushengprotocol.h"
+#include "qusheng/qushengcommandcatalog.h"
 
 class FakeTransport : public ITransport
 {
@@ -55,6 +56,9 @@ private slots:
     void deviceVersionReply();
     void relativeMoveChecksPositionBeforeSending();
     void relativeMoveRejectsUnsafeStartAndTimeout();
+    void completeCommandCatalogMatchesProtocol();
+    void pendingCommandMappingsRoundTripAndRefuseExecution();
+    void pendingParameterRelationshipsAreValidated();
 };
 
 static QString example(const QString &name)
@@ -62,6 +66,157 @@ static QString example(const QString &name)
     // qmake 在独立构建目录中把 __FILE__ 设为相对路径，必须相对构建目录解析，不能依赖启动目录。
     const QString source = QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__));
     return QFileInfo(source).dir().filePath("../examples/" + name);
+}
+
+void FrameworkTest::completeCommandCatalogMatchesProtocol()
+{
+    // 从V0.1.7第3.2章独立列出命令码；不能仅验证目录自己宣称的数量。
+    const QStringList expected = QStringLiteral("01 03 04 05 08 09 0B 0C 11 12 13 14 15 16 17 1A 21 22 23 24 25 44 45 46 54 63 64 65 71 72 73 74 81 82 83 84 91 92 A1 C1 C2 C3 D1 D2 D3 D4 D6 D7 D8 D9 E1 E2 E3 E4 E5 E6").split(' ');
+    const QSet<QString> receiveOnly = {"0x17", "0x45", "0xD9", "0xE6"};
+    const QJsonArray commands = QushengCommandCatalog::commands();
+    QCOMPARE(commands.size(), 56);
+    QCOMPARE(QushengCommandCatalog::options().size(), 59);
+    QSet<QString> actual, operations;
+    int rxCount = 0, executableOptions = 0;
+    for (int i = 0; i < commands.size(); ++i) {
+        const QJsonObject command = commands.at(i).toObject();
+        const QString code = command.value("code").toString();
+        const QString operation = command.value("operation").toString();
+        QVERIFY(!actual.contains(code));
+        QVERIFY(!operations.contains(operation));
+        actual.insert(code); operations.insert(operation);
+        QCOMPARE(command.value("section").toString(), QStringLiteral("3.2.%1").arg(i + 1));
+        QVERIFY(!command.value("name").toString().isEmpty());
+        QVERIFY(!command.value("category").toString().isEmpty());
+        QVERIFY(!command.value("description").toString().isEmpty());
+        QVERIFY(command.value("parameters").isArray());
+        const bool rx = QushengCommandCatalog::isReceiveOnly(operation);
+        QCOMPARE(rx, receiveOnly.contains(code));
+        if (rx) { ++rxCount; QVERIFY(!QushengCommandCatalog::isExecutable(operation)); }
+        for (const QJsonValue &value : command.value("parameters").toArray()) {
+            const QJsonObject parameter = value.toObject();
+            QVERIFY(!parameter.value("key").toString().isEmpty());
+            QVERIFY(!parameter.value("label").toString().isEmpty());
+            QVERIFY(!parameter.value("description").toString().isEmpty());
+            if (parameter.value("editable").toBool()) {
+                QVERIFY(parameter.contains("min"));
+                QVERIFY(parameter.contains("max"));
+            }
+        }
+    }
+    for (const QString &code : expected) QVERIFY(actual.contains("0x" + code));
+    QCOMPARE(rxCount, 4);
+    QCOMPARE(QushengCommandCatalog::find("QUSHENG_11").value("code").toString(), QStringLiteral("0x11"));
+    QVERIFY(!QushengCommandCatalog::isExecutable("QUSHENG_11"));
+    for (const QJsonValue &entry : QushengCommandCatalog::options())
+        executableOptions += QushengCommandCatalog::isExecutable(entry.toObject().value("operation").toString()) ? 1 : 0;
+    QCOMPARE(executableOptions, 5);
+    QVERIFY(QushengCommandCatalog::find("NOT_IN_PROTOCOL").isEmpty());
+    QVERIFY(!QushengCommandCatalog::isExecutable("NOT_IN_PROTOCOL"));
+    QVERIFY(QushengCommandCatalog::find("QUSHENG_C1").value("note").toString().contains(QString::fromUtf8(u8"重叠")));
+    QVERIFY(QushengCommandCatalog::find("QUSHENG_92").value("note").toString().contains("D4～D6"));
+}
+
+void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
+{
+    ProtocolConfig config;
+    TranslationError error;
+    QVERIFY2(ProtocolConfig::load(example("command-catalog-draft.json"), &config, &error), qPrintable(error.message));
+    ConversionPreview result;
+    QVERIFY2(ConversionEngine(config).convert("!MOVE2000\r", false, &result, &error), qPrintable(error.message));
+    const QByteArray goodFrame = result.targetFrame;
+    QVERIFY(!goodFrame.isEmpty());
+    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", false, &result, &error));
+    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
+    QVERIFY(result.targetFrame.isEmpty());
+    QVERIFY(error.message.contains(QString::fromUtf8(u8"待实现")));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QVERIFY(config.save(dir.filePath("draft.json"), &error));
+    ProtocolConfig reloaded;
+    QVERIFY(ProtocolConfig::load(dir.filePath("draft.json"), &reloaded, &error));
+    QCOMPARE(reloaded.root, config.root);
+    QVERIFY(ConversionEngine(reloaded).convert("!MOVE2000\r", false, &result, &error));
+    QCOMPARE(result.targetFrame, goodFrame);
+    QVERIFY(!ConversionEngine(reloaded).convert("!FAN50\r", true, &result, &error));
+    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
+    QVERIFY(result.targetFrame.isEmpty());
+
+    // 任意目录状态/高级配置标志都不能授予执行权限，真实发送和预览共享同一编译白名单。
+    QJsonArray mappings = config.root.value("mappings").toArray();
+    QJsonObject pending = mappings.at(1).toObject();
+    pending.insert("executable", true);
+    pending.insert("enabled", true);
+    pending.insert("catalog", QJsonObject{{"direction", "tx"}, {"executable", true}});
+    mappings.replace(1, pending);
+    config.root.insert("mappings", mappings);
+    QVERIFY(config.validate(&error));
+    QVERIFY(!QushengCommandCatalog::isExecutable(pending.value("operation").toString()));
+    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", true, &result, &error));
+    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
+    QVERIFY(result.targetFrame.isEmpty());
+    QVERIFY(config.save(dir.filePath("metadata.json"), &error));
+    QVERIFY(ProtocolConfig::load(dir.filePath("metadata.json"), &reloaded, &error));
+    QCOMPARE(reloaded.root.value("mappings"), config.root.value("mappings"));
+
+    // 同码0x11的通用模式与已验证绝对位置预设是不同执行状态，不能靠命令码借用发送许可。
+    pending.insert("operation", "QUSHENG_11");
+    pending.insert("parameters", QJsonObject{{"devId", QJsonObject{{"kind", "constant"}, {"value", 17}}},
+                   {"mode", QJsonObject{{"kind", "constant"}, {"value", 1}}},
+                   {"action", QJsonObject{{"kind", "constant"}, {"value", 2}}}});
+    mappings.replace(1, pending); config.root.insert("mappings", mappings);
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", true, &result, &error));
+    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
+    QVERIFY(result.targetFrame.isEmpty());
+
+    for (const QString &operation : {QStringLiteral("QUSHENG_17"), QStringLiteral("QUSHENG_45"),
+                                    QStringLiteral("QUSHENG_D9"), QStringLiteral("QUSHENG_E6")}) {
+        pending.insert("operation", operation);
+        pending.insert("parameters", QJsonObject());
+        mappings.replace(1, pending); config.root.insert("mappings", mappings);
+        QVERIFY(!config.validate(&error));
+        QCOMPARE(error.code, QStringLiteral("CONFIG_RECEIVE_ONLY"));
+    }
+    pending.insert("operation", "QUSHENG_FF");
+    mappings.replace(1, pending); config.root.insert("mappings", mappings);
+    QVERIFY(!config.validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_MAPPING"));
+}
+
+void FrameworkTest::pendingParameterRelationshipsAreValidated()
+{
+    ProtocolConfig base;
+    TranslationError error;
+    QVERIFY(ProtocolConfig::load(example("command-catalog-draft.json"), &base, &error));
+    auto withParameters = [&base](const QString &operation, const QJsonObject &parameters) {
+        ProtocolConfig config = base;
+        QJsonArray mappings = config.root.value("mappings").toArray();
+        QJsonObject pending = mappings.at(1).toObject();
+        pending.insert("operation", operation); pending.insert("parameters", parameters);
+        mappings.replace(1, pending); config.root.insert("mappings", mappings);
+        return config;
+    };
+    // 待实现条目可以暂时不填参数，方便逐步编辑；已填参数必须符合目录标量与来源定义。
+    QVERIFY(withParameters("QUSHENG_81", QJsonObject()).validate(&error));
+    for (int mode : {1, 2, 4})
+        QVERIFY(withParameters("QUSHENG_11", QJsonObject{{"mode", QJsonObject{{"kind", "constant"}, {"value", mode}}}}).validate(&error));
+    QVERIFY(!withParameters("QUSHENG_11", QJsonObject{{"mode", QJsonObject{{"kind", "constant"}, {"value", 3}}}}).validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_EXPRESSION"));
+    QVERIFY(withParameters("QUSHENG_A1", QJsonObject{{"pwm", QJsonObject{{"kind", "constant"}, {"value", -100}}}}).validate(&error));
+    QVERIFY(withParameters("QUSHENG_71", QJsonObject{{"fileLength", QJsonObject{{"kind", "constant"}, {"value", 4294967295.0}}}}).validate(&error));
+    QVERIFY(!withParameters("QUSHENG_A1", QJsonObject{{"pwm", QJsonObject{{"kind", "constant"}, {"value", -129}}}}).validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_EXPRESSION"));
+    QVERIFY(!withParameters("QUSHENG_71", QJsonObject{{"fileLength", QJsonObject{{"kind", "constant"}, {"value", 4294967296.0}}}}).validate(&error));
+    QVERIFY(!withParameters("QUSHENG_81", QJsonObject{{"percent", QJsonObject{{"kind", "constant"}, {"value", 101}}}}).validate(&error));
+    QVERIFY(!withParameters("QUSHENG_81", QJsonObject{{"unknownParameter", QJsonObject{{"kind", "constant"}, {"value", 10}}}}).validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_PARAMETER"));
+    QVERIFY(!withParameters("QUSHENG_91", QJsonObject{{"modeAndMask", QJsonObject{{"kind", "constant"}, {"value", 10}}}}).validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_PARAMETER"));
+    QVERIFY(!withParameters("QUSHENG_81", QJsonObject{{"percent", QJsonObject{{"kind", "field"}, {"field", QString::fromUtf8(u8"命令码")}}}}).validate(&error));
+    QCOMPARE(error.code, QStringLiteral("CONFIG_EXPRESSION"));
+    QVERIFY(withParameters("QUSHENG_81", QJsonObject{{"percent", QJsonObject{{"kind", "linear"}, {"field", QString::fromUtf8(u8"数值")}, {"numerator", 1}, {"denominator", 2}, {"offset", 0}, {"round", "exact"}}}}).validate(&error));
 }
 
 void FrameworkTest::configuredDtStyleAndRoundTrip()

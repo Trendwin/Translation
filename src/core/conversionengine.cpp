@@ -1,5 +1,6 @@
 #include "conversionengine.h"
 #include "qusheng/qushengprotocol.h"
+#include "qusheng/qushengcommandcatalog.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -239,6 +240,13 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     if (matched.isEmpty())
         return fail(error, "COMMAND_UNSUPPORTED",
                     QString::fromUtf8(u8"客户命令码“%1”没有匹配的命令映射").arg(incomingCode));
+
+    // 目录完整不等于执行完整。按命中的单条映射阻止待实现指令，避免把其参数误套成运动位置；
+    // 同一配置中的已验证运动/查询仍可正常使用。拒绝点必须在组帧之前，不能生成可误发的HEX。
+    const QString selectedOperation = matched.value("operation").toString();
+    if (!QushengCommandCatalog::isExecutable(selectedOperation))
+        return fail(error, "COMMAND_NOT_IMPLEMENTED", QString::fromUtf8(u8"“%1”已保存映射，但发送与回告处理待实现；不会生成或发送趋盛目标帧")
+                    .arg(QushengCommandCatalog::name(selectedOperation)));
 
     const QJsonObject device = m_config.root.value("device").toObject();
     command->configVersion = m_config.version;
