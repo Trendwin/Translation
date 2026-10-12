@@ -15,13 +15,11 @@
     {
       "commandCode": "MOVE",
       "operation": "MOTOR_FORWARD",
-      "responsePolicy": "ack",
       "parameters": {"positionUm": {"kind": "field", "field": "数值"}}
     },
     {
       "commandCode": "FAN",
       "operation": "QUSHENG_81",
-      "responsePolicy": "ack",
       "parameters": {
         "devId": {"kind": "constant", "value": 224},
         "percent": {"kind": "field", "field": "数值"}

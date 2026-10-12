@@ -59,6 +59,7 @@ private slots:
     void completeCommandCatalogMatchesProtocol();
     void pendingCommandMappingsRoundTripAndRefuseExecution();
     void pendingParameterRelationshipsAreValidated();
+    void sharedFooterAndLegacyResponse();
     void fixedMotorActionTemplates();
     void fixedMotorActionRequestLifecycle_data();
     void fixedMotorActionRequestLifecycle();
@@ -459,15 +460,15 @@ void FrameworkTest::managerAckIsNotCompletion()
     QTRY_COMPARE(transport.sent.size(), 1);
     transport.receive(QushengProtocol::makeReply(0, 0));
     QTest::qWait(10);
-    QCOMPARE(completed, 0);
+    QCOMPARE(completed, 1);
     QVERIFY(manager.deviceBusy());
     transport.receive(QushengProtocol::makeFrame(1, 2, 99, 0x17,
                                                   QByteArray::fromHex("1110004e20ffffff")));
-    QCOMPARE(completed, 0);
+    QCOMPARE(completed, 1);
     QTRY_VERIFY(transport.sent.size() >= 2);
     transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12,
                                                   QByteArray::fromHex("0000000030004e20ffffff")));
-    QCOMPARE(completed, 0);
+    QCOMPARE(completed, 1);
     QTRY_VERIFY(transport.sent.size() >= 3);
     transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12,
                                                   QByteArray::fromHex("0000000010004e20ffffff")));
@@ -696,16 +697,16 @@ void FrameworkTest::simpleCommandExamples_data()
     QTest::addColumn<int>("wireCommand");
     QTest::addColumn<QByteArray>("payload");
     QTest::newRow("absolute-ack") << QByteArray("/1A2000R\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
-    QTest::newRow("absolute-complete") << QByteArray("/1a2000R\r") << QString("MOTOR_FORWARD") << QString("complete") << 0x11 << QByteArray::fromHex("11410003e80007d0");
+    QTest::newRow("absolute-lowercase") << QByteArray("/1a2000R\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
     QTest::newRow("relative-forward-ack") << QByteArray("/1P500R\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
-    QTest::newRow("relative-forward-complete") << QByteArray("/1p500R\r") << QString("RELATIVE_FORWARD") << QString("complete") << 0x11 << QByteArray::fromHex("11210003e80001f4");
+    QTest::newRow("relative-forward-lowercase") << QByteArray("/1p500R\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
     QTest::newRow("relative-backward-ack") << QByteArray("/1D500R\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
-    QTest::newRow("relative-backward-complete") << QByteArray("/1d500R\r") << QString("RELATIVE_BACKWARD") << QString("complete") << 0x11 << QByteArray::fromHex("11230003e80001f4");
-    QTest::newRow("position") << QByteArray("/1?\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("position-alias") << QByteArray("/1?0\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("pulse-position") << QByteArray("/1?4\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("version") << QByteArray("/1&\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
-    QTest::newRow("version-alias") << QByteArray("/1?23\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
+    QTest::newRow("relative-backward-lowercase") << QByteArray("/1d500R\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
+    QTest::newRow("position") << QByteArray("/1?R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("position-alias") << QByteArray("/1?0R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("pulse-position") << QByteArray("/1?4R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("version") << QByteArray("/1&R\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
+    QTest::newRow("version-alias") << QByteArray("/1?23R\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
 }
 
 void FrameworkTest::simpleCommandExamples()
@@ -734,15 +735,15 @@ void FrameworkTest::mappedInputFormatsAndRoundTrip()
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
     ConversionEngine engine(config);
-    for (const QByteArray &bad : {QByteArray("/1A2000\r"), QByteArray("/1?23R\r"), QByteArray("/1?01\r"), QByteArray("/1AR\r"),
+    for (const QByteArray &bad : {QByteArray("/1A2000\r"), QByteArray("/1?23\r"), QByteArray("/1?01R\r"), QByteArray("/1AR\r"),
                                  QByteArray("/1A2xR\r"), QByteArray("/1A6001R\r"), QByteArray("/1A500P20R\r"),
                                  QByteArray("/1#\r"), QByteArray("/1?20\r"), QByteArray("/1QR\r"), QByteArray("1A2000R\r")}) {
         QVERIFY2(!engine.convert(bad, false, &preview, &error), bad.constData()); QVERIFY(preview.targetFrame.isEmpty());
     }
     QList<TranslationError> errors;
     QVERIFY(engine.feed("noise/1?", &errors).isEmpty());
-    const auto frames = engine.feed("23\r/1A2000R\r/1?4\r", &errors);
-    QCOMPARE(frames.size(), 3); QVERIFY(errors.isEmpty()); QCOMPARE(frames.at(0), QByteArray("/1?23\r"));
+    const auto frames = engine.feed("23R\r/1A2000R\r/1?4R\r", &errors);
+    QCOMPARE(frames.size(), 3); QVERIFY(errors.isEmpty()); QCOMPARE(frames.at(0), QByteArray("/1?23R\r"));
     QTemporaryDir directory; const QString saved = directory.filePath("commands.json");
     QVERIFY(config.save(saved, &error)); ProtocolConfig reloaded; QVERIFY(ProtocolConfig::load(saved, &reloaded, &error));
     QCOMPARE(config.version, reloaded.version);
@@ -750,17 +751,17 @@ void FrameworkTest::mappedInputFormatsAndRoundTrip()
     QVERIFY(engine.convert("/1P500R\r", false, &preview, &error));
     QVERIFY(ConversionEngine(reloaded).convert("/1P500R\r", false, &second, &error));
     QCOMPARE(preview.targetFrame, second.targetFrame);
-    // 将客户命令换成任意多字符值并更改全局/查询帧尾，通用解析器不需要客户专用分支。
+    // 将客户命令换成任意多字符值并更改共用帧尾，通用解析器不需要客户专用分支。
     QJsonObject root = config.root, external = root.value("external").toObject();
     external.insert("header", "!"); external.insert("footer", ";\\n"); root.insert("external", external);
     QJsonArray mappings = root.value("mappings").toArray();
     QJsonObject move = mappings.at(0).toObject(); move.insert("commandCode", "MOVE"); mappings.replace(0, move);
     QJsonObject query = mappings.at(10).toObject(); query.insert("commandCode", "VERSION");
-    QJsonObject format = query.value("input").toObject(); format.insert("footer", "~\\n"); query.insert("input", format); mappings.replace(10, query);
+    mappings.replace(10, query);
     root.insert("mappings", mappings); QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
     QVERIFY(ConversionEngine(config).convert("!1MOVE2000;\n", false, &preview, &error));
     QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 2000);
-    QVERIFY(ConversionEngine(config).convert("!1VERSION~\n", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!1VERSION;\n", false, &preview, &error));
     QCOMPARE(preview.command.operation, QString("QUERY_DEVICE_INFO"));
 }
 
@@ -826,9 +827,9 @@ void FrameworkTest::relativeMoveChecksPositionBeforeSending()
         transport.receive(motorReply(0, 1, 1000)); QTRY_COMPARE(transport.sent.size(), 2);
         QCOMPARE(quint8(transport.sent.at(1).at(7)), quint8(0x11));
         QCOMPARE(quint8(transport.sent.at(1).at(9)), quint8(input.at(2) == 'p' ? 0x21 : 0x23));
-        transport.receive(QushengProtocol::makeReply(1, 0)); QCOMPARE(completed, 0); QVERIFY(manager.deviceBusy());
+        transport.receive(QushengProtocol::makeReply(1, 0)); QCOMPARE(completed, 1); QVERIFY(manager.deviceBusy());
         QTRY_COMPARE(transport.sent.size(), 3); transport.receive(motorReply(2, 1, 1000));
-        QCOMPARE(completed, 0); QVERIFY(manager.deviceBusy()); // 空闲但位置不符，不能冒充完成。
+        QCOMPARE(completed, 1); QVERIFY(manager.deviceBusy()); // 空闲但位置不符，不能冒充完成。
         QTRY_COMPARE(transport.sent.size(), 4); transport.receive(motorReply(3, 1, input.at(2) == 'p' ? 1500 : 500));
         QTRY_COMPARE(completed, 1); QVERIFY(result.success); QVERIFY(!manager.deviceBusy());
         QCOMPARE(transport.sent.size(), 4); // 只发一条运动，另外三条均为状态查询。
@@ -853,6 +854,36 @@ void FrameworkTest::relativeMoveRejectsUnsafeStartAndTimeout()
         QCOMPARE(result.error.code, QString(scenario == 0 ? "POSITION_LIMIT" : scenario == 3 ? "POSITION_QUERY_TIMEOUT" : "POSITION_QUERY_STATE"));
         if (scenario != 0) QVERIFY(manager.deviceBusy());
     }
+}
+
+void FrameworkTest::sharedFooterAndLegacyResponse()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
+    QJsonObject root = config.root; QJsonArray mappings = root.value("mappings").toArray();
+    QJsonObject mapping = mappings.first().toObject();
+    QVERIFY(!mapping.contains("responsePolicy"));
+    mapping.insert("responsePolicy", "complete"); mappings[0] = mapping; root.insert("mappings", mappings);
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
+    QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+    QCOMPARE(preview.command.responsePolicy, QString("ack"));
+    // 即使旧覆盖与共用帧尾相同，也不再作为第二个编辑入口接纳。
+    for (const QString &footer : {QStringLiteral("R\\r"), QStringLiteral("\\r")}) {
+        QJsonObject old = mapping; old.insert("input", QJsonObject{{"footer", footer}});
+        QCOMPARE(config.inputFormat(old).value("footer").toString(), QString("R\\r"));
+        mappings[0] = old; root.insert("mappings", mappings);
+        QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error));
+        QCOMPARE(error.code, QString("CONFIG_MAPPING_INPUT"));
+    }
+    QVERIFY(ProtocolConfig::load(example("dt-query-preview.json"), &config, &error));
+    for (const QByteArray &input : {QByteArray("/1?\r"), QByteArray("/1?4\r"), QByteArray("/1?23\r")}) {
+        QVERIFY(ConversionEngine(config).convert(input, false, &preview, &error));
+        QVERIFY(!preview.targetFrame.isEmpty());
+    }
+    QVERIFY(!ConversionEngine(config).convert("/1?R\r", false, &preview, &error));
+    QTemporaryDir directory; QVERIFY(config.save(directory.filePath("queries.json"), &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("queries.json"), &restored, &error));
+    QCOMPARE(config.version, restored.version);
 }
 
 void FrameworkTest::fixedMotorActionTemplates()
@@ -960,6 +991,8 @@ void FrameworkTest::fixedMotorActionRequestLifecycle()
     QFETCH(QString, operation); QFETCH(QString, policy);
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
     RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100, 2000);
+    QSignalSpy received(&manager, &RequestManager::replyReceived);
+    QSignalSpy states(&manager, &RequestManager::stateChanged);
     int completed = 0; UnifiedResult last;
     connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &result) { ++completed; last = result; });
     UnifiedCommand move; move.requestId = 1; move.targetDevice = "17"; move.operation = operation;
@@ -967,14 +1000,22 @@ void FrameworkTest::fixedMotorActionRequestLifecycle()
     manager.enqueue(move); QTRY_COMPARE(transport.sent.size(), 1);
     QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x11)); // 新动作绝不走旧相对运动的前置查询。
     transport.receive(QushengProtocol::makeReply(0, 0));
-    QCOMPARE(completed, policy == "ack" ? 1 : 0); QVERIFY(manager.deviceBusy());
+    QCOMPARE(completed, 1); QCOMPARE(received.count(), 1); QVERIFY(manager.deviceBusy());
+    transport.receive(QushengProtocol::makeReply(99, 0)); QCOMPARE(received.count(), 1);
     QTRY_COMPARE(transport.sent.size(), 2);
     transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12, QByteArray::fromHex("0000000010004e1fffffff")));
+    QCOMPARE(received.count(), 2);
+    QCOMPARE(qvariant_cast<UnifiedResult>(received.last().at(0)).data.value("positionUm").toInt(), 19999);
     QVERIFY(manager.deviceBusy()); // 空闲但目标不符不能完成，也不能释放后续运动。
-    QCOMPARE(completed, policy == "ack" ? 1 : 0);
+    QCOMPARE(completed, 1);
     QTRY_COMPARE(transport.sent.size(), 3);
     transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12, QByteArray::fromHex("0000000010004e20ffffff")));
     QTRY_COMPARE(completed, 1); QVERIFY(last.success); QVERIFY(!manager.deviceBusy());
+    QCOMPARE(received.count(), 3);
+    const UnifiedResult finalReply = qvariant_cast<UnifiedResult>(received.last().at(0));
+    QCOMPARE(finalReply.requestId, quint64(1)); QCOMPARE(finalReply.data.value("positionUm").toInt(), 20000);
+    QVERIFY(!finalReply.data.value("deviceBusy").toBool());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
 }
 
 QTEST_GUILESS_MAIN(FrameworkTest)

@@ -26,6 +26,7 @@ struct UnifiedCommand
     QString operation;
     QMap<QString, QVariant> parameters;
     QMap<QString, QString> parameterUnits;
+    // 旧调用方的兼容字段；当前请求统一立即反馈，不能据此推迟界面显示。
     QString responsePolicy;
 };
 

@@ -245,16 +245,16 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"目标指令不在趋盛协议目录中"));
         if (QushengCommandCatalog::isReceiveOnly(operation))
             return fail(error, "CONFIG_RECEIVE_ONLY", QString::fromUtf8(u8"“%1”是设备主动上报指令，只接收，不能创建下发映射").arg(catalogEntry.value("name").toString()));
-        if (!QStringList({"ack", "complete"}).contains(mapping.value("responsePolicy").toString()))
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"响应方式只能是“命令应答”或“动作完成”"));
+        // 旧配置允许保留合法的响应字段以便加载；新版本不再用它控制显示时机。
+        // 不把错误类型或未知值当作合法草稿，运行层统一在收到回告时反馈。
+        if (mapping.contains("responsePolicy") && !QStringList({"ack", "complete"}).contains(mapping.value("responsePolicy").toString()))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"旧响应字段无效；请删除 responsePolicy"));
         if (!mapping.value("parameters").isObject())
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"参数关系必须为对象；查询使用空对象"));
         const QJsonObject parameters = mapping.value("parameters").toObject();
-        if (executable && (query ? (!parameters.isEmpty() || mapping.value("responsePolicy").toString() != "ack")
+        if (executable && (query ? !parameters.isEmpty()
                   : (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm"))))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离；查询无参数且收到回告后返回"));
-        if (!executable && mapping.value("responsePolicy").toString() != "ack")
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"待实现指令仅保存“命令应答”意图；动作完成机制尚未实现"));
         // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
@@ -283,22 +283,19 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (!input.isEmpty()) {
             bool mapped = false;
             for (const QJsonValue &f : fields) mapped |= f.toObject().value("lengthMode").toString() == "mappedCommand";
-            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"独立输入格式需要将命令码长度方式设为“按命令码识别”"));
+            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段需要将命令码长度方式设为“按命令码识别”"));
         }
-        QByteArray codeBytes;
         if (code.size() > 128) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码超过 128 字符"));
         if (encoding == "ascii") {
             for (QChar ch : code)
                 if (ch.unicode() < 0x21 || ch.unicode() > 0x7e || ch == '\\')
                     return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"ASCII 客户命令码需为可见字符，不能含空格、控制符或转义"));
         }
-        if (input.contains("footer") && (!input.value("footer").isString()
-                || input.value("footer").toString().isEmpty()
-                || !decodeBytes(input.value("footer").toString(), encoding, &codeBytes, error)))
-            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令帧尾为空或格式无效"));
+        // 帧尾属于整份客户协议格式，不能让不可见的旧映射覆盖分帧边界。
+        if (input.contains("footer"))
+            return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"帧尾请在客户协议格式中设置；命令映射不再支持独立帧尾"));
         const QJsonObject effective = inputFormat(mapping);
-        const int effectiveFooterLength = input.contains("footer") ? codeBytes.size() : footerBytes.size();
-        int minimumLength = headerBytes.size() + effectiveFooterLength;
+        int minimumLength = headerBytes.size() + footerBytes.size();
         for (const QJsonValue &f : effective.value("fields").toArray()) {
             const QJsonObject effectiveField = f.toObject();
             const QString mode = effectiveField.value("lengthMode").toString();
@@ -371,7 +368,7 @@ QJsonObject ProtocolConfig::inputFormat(const QJsonObject &mapping) const
 {
     QJsonObject format = root.value("external").toObject();
     const QJsonObject input = mapping.value("input").toObject();
-    if (input.contains("footer")) format.insert("footer", input.value("footer"));
+    // 只按映射省略字段；帧头、帧尾、编码始终来自共用格式。
     const QJsonArray omitted = input.value("omitFields").toArray();
     QJsonArray selected;
     for (const QJsonValue &field : format.value("fields").toArray())
