@@ -56,6 +56,11 @@ private:
     bool saveMappingEditor();
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
+    void rebuildMappingOmissions(const QJsonObject &input);
+    void fieldFormatChanged();
+    bool synchronizeFieldNames();
+    QString mappingFieldIssue(const QJsonObject &mapping) const;
+    void refreshMappingSummaries();
     void updateMappingControls();
     void mappingEdited();
     void filterMappingCommands();
@@ -101,6 +106,7 @@ private:
     QGroupBox *m_mappingOmissions = nullptr;
     int m_mappingEditorRow = -1;
     bool m_loadingMapping = false;
+    bool m_syncingFields = false;
     bool m_mappingEditorDirty = false;
     bool m_multiplierChanged = false;
     QString m_editorOperation;

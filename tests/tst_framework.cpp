@@ -60,6 +60,7 @@ private slots:
     void pendingCommandMappingsRoundTripAndRefuseExecution();
     void pendingParameterRelationshipsAreValidated();
     void sharedFooterAndLegacyResponse();
+    void mappingSourcesRespectChangedFormat();
     void fixedMotorActionTemplates();
     void fixedMotorActionRequestLifecycle_data();
     void fixedMotorActionRequestLifecycle();
@@ -884,6 +885,47 @@ void FrameworkTest::sharedFooterAndLegacyResponse()
     QTemporaryDir directory; QVERIFY(config.save(directory.filePath("queries.json"), &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("queries.json"), &restored, &error));
     QCOMPARE(config.version, restored.version);
+}
+
+void FrameworkTest::mappingSourcesRespectChangedFormat()
+{
+    ProtocolConfig original; TranslationError error;
+    QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &original, &error));
+    // 只保留一个运动映射，使错误归因确实来自本次格式变化，而非其它查询布局。
+    QJsonObject mapping = original.root.value("mappings").toArray().first().toObject();
+    original.root.insert("mappings", QJsonArray{mapping});
+    for (const QString &change : {QStringLiteral("delete"), QStringLiteral("rename"), QStringLiteral("ascii"), QStringLiteral("fixed"), QStringLiteral("omit")}) {
+        ProtocolConfig config = original;
+        QJsonObject external = config.root.value("external").toObject();
+        QJsonArray fields = external.value("fields").toArray();
+        QJsonObject position = fields.at(2).toObject();
+        if (change == "delete") fields.removeAt(2);
+        else if (change == "rename") { position.insert("name", QString::fromUtf8(u8"数据参数")); fields[2] = position; }
+        else if (change == "ascii") {
+            position.insert("type", "ascii"); position.remove("min"); position.remove("max"); fields[2] = position;
+        } else if (change == "fixed") { position.insert("role", "fixed"); position.insert("fixedValue", "2000"); fields[2] = position; }
+        else {
+            QJsonObject omittedMapping = mapping;
+            omittedMapping.insert("input", QJsonObject{{"omitFields", QJsonArray{QString::fromUtf8(u8"位置")}}});
+            config.root.insert("mappings", QJsonArray{omittedMapping});
+        }
+        external.insert("fields", fields); config.root.insert("external", external);
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_EXPRESSION"));
+        QVERIFY(error.message.contains(QString::fromUtf8(u8"命令映射“A”")));
+        QVERIFY(error.message.contains(QString::fromUtf8(u8"位置")));
+        if (change == "ascii" || change == "fixed") QVERIFY(error.message.contains(QString::fromUtf8(u8"整数参数字段")));
+        ConversionPreview preview;
+        QVERIFY(!ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
+    }
+    // 删除原来源不会破坏固定数值映射；后者并不依赖任何客户数值字段。
+    QJsonObject external = original.root.value("external").toObject();
+    QJsonArray fields = external.value("fields").toArray(); fields.removeAt(2); external.insert("fields", fields);
+    original.root.insert("external", external);
+    mapping.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "constant"}, {"value", 2000}}}});
+    original.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY2(original.validate(&error), qPrintable(error.message));
+    ConversionPreview preview; QVERIFY(ConversionEngine(original).convert("/1AR\r", false, &preview, &error));
+    QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 2000);
 }
 
 void FrameworkTest::fixedMotorActionTemplates()
