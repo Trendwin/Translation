@@ -13,6 +13,8 @@
 
 字段的 name 必须唯一；role 为 command（命令码）、parameter（参数）或 fixed（固定字段），整个格式必须只有一个命令码字段。type 支持 ascii、uint、int。
 
+普通字段表改名会同步同一字段的映射来源及省略设置，JSON中的引用名称随保存更新。数字参数来源必须是role=parameter且type为uint/int的字段；删除、类型或作用变化造成失效时，错误包含客户命令码、目标参数和来源字段。JSON整体替换需自行保持名称引用一致，详见[field-adaptation.md](field-adaptation.md)。
+
 lengthMode 支持 fixed（固定长度）、toFooter（读取到帧尾）和 mappedCommand（按保存的命令码识别）。固定字段 length 是字节数；toFooter 只能位于最后。mappedCommand 仅用于 ASCII 命令码，之前只能有固定长度字段；按配置中客户命令码最长前缀识别，之后严格核对剩余字段和帧尾，不能用短命令吞掉多余参数。
 
 fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCII 整数只接受十进制数字，有符号整数可有负号，不接受空白、正号、小数。HEX 整数固定1–8字节，使用 byteOrder；统一计算范围为有符号64位，超范围拒绝。JSON 数值范围限于可精确保存的整数 ±9007199254740991。

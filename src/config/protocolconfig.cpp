@@ -265,7 +265,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
         for (const QJsonValue &omittedValue : input.value("omitFields").toArray()) {
             const QString omittedName = omittedValue.toString();
             if (!omittedValue.isString() || !available.contains(omittedName) || omitted.contains(omittedName))
-                return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段不存在或重复：%1").arg(omittedName));
+                return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令映射“%1”的省略字段不存在或重复：%2").arg(code, omittedName));
             bool beforeCommand = true;
             for (const QJsonValue &f : fields) {
                 const QJsonObject declaredField = f.toObject();
@@ -335,9 +335,21 @@ bool ProtocolConfig::validate(TranslationError *error) const
                         && !parameterSpec.value("allowedValues").toArray().contains(expression.value("value")))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的固定值不在协议允许的枚举中").arg(parameterSpec.value("label").toString()));
             }
-            if (!it.value().isObject() || !validExpression(it.value().toObject(),
-                    executable ? available : numericParameters, minimum, maximum))
-                return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"参数“%1”的关系无效；请检查客户数值字段和固定值范围").arg(parameterName));
+            const QJsonObject expression = it.value().toObject();
+            const QString kind = expression.value("kind").toString();
+            if (kind == "field" || kind == "linear") {
+                const QString source = expression.value("field").toString();
+                // 界面可追踪同一行字段的改名，但删除、类型变化或整体JSON替换不能猜替代字段。
+                // 在配置层统一核对引用与当前字段定义，防止不可见失效引用进入真实组帧。
+                if (!names.contains(source))
+                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”找不到客户字段“%3”；请重新选择来源").arg(code, parameterName, source));
+                if (!available.contains(source))
+                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source));
+                if (!numericParameters.contains(source))
+                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
+            }
+            if (!it.value().isObject() || !validExpression(expression, numericParameters, minimum, maximum))
+                return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”关系无效；请检查固定值范围或换算设置").arg(code, parameterName));
         }
     }
 

@@ -28,6 +28,7 @@
 #include <QSerialPortInfo>
 #include <QSpinBox>
 #include <QSignalBlocker>
+#include <QSet>
 #include <QScrollArea>
 #include <QRegularExpression>
 #include <QStandardItemModel>
@@ -498,12 +499,12 @@ void Widget::buildUi()
     m_log = new QTextEdit(this); m_log->setObjectName("runLog"); m_log->setReadOnly(true);
     deviceOutputs->addTab(m_log, QString::fromUtf8(u8"日志"));
 
-    connect(addField, &QPushButton::clicked, this, [this]() { addFieldRow(); markDraftDirty(); });
+    connect(addField, &QPushButton::clicked, this, [this]() { addFieldRow(); fieldFormatChanged(); });
     connect(removeField, &QPushButton::clicked, this, [this]() {
         if (m_fieldTable->currentRow() >= 0) m_fieldTable->removeRow(m_fieldTable->currentRow());
         for (int row = 0; row < m_fieldTable->rowCount(); ++row)
             m_fieldTable->item(row, 0)->setText(QString::number(row + 1));
-        markDraftDirty();
+        fieldFormatChanged();
     });
     connect(fieldUp, &QPushButton::clicked, this, [this]() {
         const int row = m_fieldTable->currentRow();
@@ -569,8 +570,7 @@ void Widget::connectSignals()
         connect(edit, &QLineEdit::textChanged, this, &Widget::markDraftDirty);
     connect(m_byteOrder, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Widget::markDraftDirty);
     connect(m_fieldTable, &QTableWidget::cellChanged, this, [this](int, int column) {
-        Q_UNUSED(column);
-        markDraftDirty();
+        if (column == 1) fieldFormatChanged(); else markDraftDirty();
     });
     connect(m_mappingTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
         if (m_loadingUi || m_loadingMapping) return;
@@ -741,12 +741,17 @@ void Widget::loadInitialExample()
 
 void Widget::addFieldRow(const QJsonObject &field)
 {
+    // 一行的 item 和下拉都创建完成后才参与联动；半行不能用于判断字段类型或身份。
+    const QSignalBlocker blocker(m_fieldTable);
     const int row = m_fieldTable->rowCount();
     m_fieldTable->insertRow(row);
     auto *order = new QTableWidgetItem(QString::number(row + 1));
     order->setFlags(order->flags() & ~Qt::ItemIsEditable);
     m_fieldTable->setItem(row, 0, order);
-    m_fieldTable->setItem(row, 1, new QTableWidgetItem(field.value("name").toString()));
+    auto *name = new QTableWidgetItem(field.value("name").toString());
+    // UI 的 item 跟随这一字段；上次已同步名称不是行号，也不写入 JSON。
+    // 载入整份 JSON 会新建 item，因此没有依据的整体替换不会猜测重命名。
+    name->setData(Qt::UserRole, field.value("name").toString()); m_fieldTable->setItem(row, 1, name);
     auto *role = combo(this, {{QString::fromUtf8(u8"命令码"), QStringLiteral("command")},
                               {QString::fromUtf8(u8"参数"), QStringLiteral("parameter")},
                               {QString::fromUtf8(u8"固定字段"), QStringLiteral("fixed")}});
@@ -774,7 +779,7 @@ void Widget::addFieldRow(const QJsonObject &field)
         if (m_fieldTable->cellWidget(row, col)) m_fieldTable->cellWidget(row, col)->setToolTip(m_fieldTable->horizontalHeaderItem(col)->toolTip());
     }
     for (QComboBox *box : {role, type, lengthMode})
-        connect(box, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Widget::markDraftDirty);
+        connect(box, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &Widget::fieldFormatChanged);
 }
 
 void Widget::addMappingRow(const QJsonObject &value)
@@ -820,8 +825,10 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
         }
         summary = references.isEmpty() ? QString::fromUtf8(u8"待设置") : references.join(QString::fromUtf8(u8"；"));
     }
-    m_mappingTable->item(row, 2)->setText(summary);
-    for (int c = 0; c < 3; ++c) m_mappingTable->item(row, c)->setToolTip(m_mappingTable->horizontalHeaderItem(c)->toolTip());
+    const QString issue = mappingFieldIssue(mapping);
+    m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
+    m_mappingTable->item(row, 2)->setToolTip(issue);
+    for (int c = 0; c < 2; ++c) m_mappingTable->item(row, c)->setToolTip(m_mappingTable->horizontalHeaderItem(c)->toolTip());
 }
 
 void Widget::filterMappingCommands()
@@ -938,6 +945,17 @@ void Widget::loadMappingEditor(int row)
     m_mappingValue->setText(expression.value("value").toVariant().toString());
     m_mappingMultiplier->setText(expression.value("kind").toString() == "linear" ? multiplierText(expression) : QStringLiteral("1"));
     const QJsonObject input = mapping.value("input").toObject();
+    rebuildMappingOmissions(input);
+    updateMappingSources();
+    const QString source = expression.value("kind").toString() == "constant" ? QStringLiteral("@constant") : expression.value("field").toString();
+    if (!source.isEmpty() && m_mappingSource->findData(source) < 0) m_mappingSource->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(source), source);
+    selectData(m_mappingSource, source);
+    loadCatalogParameters(mapping.value("parameters").toObject());
+    updateMappingControls(); m_mappingEditorDirty = false; m_multiplierChanged = false; m_loadingMapping = false;
+}
+
+void Widget::rebuildMappingOmissions(const QJsonObject &input)
+{
     auto *omitLayout = m_mappingOmissions->layout();
     while (QLayoutItem *item = omitLayout->takeAt(0)) { delete item->widget(); delete item; }
     QStringList omitted;
@@ -964,12 +982,109 @@ void Widget::loadMappingEditor(int row)
         connect(check, &QCheckBox::toggled, this, [this]() { updateMappingSources(); mappingEdited(); });
     }
     m_mappingOmissions->setVisible(!all.isEmpty());
-    updateMappingSources();
-    const QString source = expression.value("kind").toString() == "constant" ? QStringLiteral("@constant") : expression.value("field").toString();
-    if (!source.isEmpty() && m_mappingSource->findData(source) < 0) m_mappingSource->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(source), source);
-    selectData(m_mappingSource, source);
-    loadCatalogParameters(mapping.value("parameters").toObject());
-    updateMappingControls(); m_mappingEditorDirty = false; m_multiplierChanged = false; m_loadingMapping = false;
+}
+
+void Widget::fieldFormatChanged()
+{
+    if (m_loadingUi || m_syncingFields) return;
+    markDraftDirty();
+    if (!synchronizeFieldNames()) { refreshMappingSummaries(); return; }
+    QJsonArray omitted;
+    for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
+        if (check->isChecked()) omitted.append(check->property("fieldName").toString());
+    rebuildMappingOmissions(QJsonObject{{"omitFields", omitted}});
+    updateMappingSources(); refreshMappingSummaries();
+}
+
+bool Widget::synchronizeFieldNames()
+{
+    if (m_loadingUi || m_syncingFields) return true;
+    QMap<QString, QString> renames; QSet<QString> names;
+    QMap<QString, int> previousCounts;
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row)
+        ++previousCounts[m_fieldTable->item(row, 1)->data(Qt::UserRole).toString()];
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+        const QString name = itemText(m_fieldTable, row, 1);
+        if (name.isEmpty() || names.contains(name)) {
+            // 输入中的空名、重复名只是尚未完成的编辑。此时不可迁移，否则交换名称会串绑。
+            m_validationState->setText(name.isEmpty() ? QString::fromUtf8(u8"字段名称不能为空")
+                : QString::fromUtf8(u8"字段名称重复：%1").arg(name));
+            return false;
+        }
+        names.insert(name);
+        const QString previous = m_fieldTable->item(row, 1)->data(Qt::UserRole).toString();
+        if (!previous.isEmpty() && previous != name && previousCounts.value(previous) == 1)
+            renames.insert(previous, name); // 已载入的非法重名没有可靠归属，不能猜测其引用对象。
+    }
+    if (!renames.isEmpty()) {
+        // 先保存正在编辑的参数，不丢倍率、固定值或多参数关系。失败时保留编辑和旧身份，保存时重试。
+        m_syncingFields = true;
+        if (!saveMappingEditor()) { m_syncingFields = false; return false; }
+        for (int row = 0; row < m_mappingTable->rowCount(); ++row) {
+            QJsonObject mapping = m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject();
+            QJsonObject parameters = mapping.value("parameters").toObject();
+            for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+                QJsonObject expression = it.value().toObject(); const QString kind = expression.value("kind").toString();
+                const QString previous = expression.value("field").toString();
+                // 从原表达式只查一次旧名映射；不能依次字符串替换，否则 A→B、B→A 会相互覆盖。
+                if ((kind == "field" || kind == "linear") && renames.contains(previous)) {
+                    expression.insert("field", renames.value(previous)); it.value() = expression;
+                }
+            }
+            if (mapping.value("parameters").isObject()) mapping.insert("parameters", parameters);
+            if (mapping.value("input").isObject()) {
+                QJsonObject input = mapping.value("input").toObject();
+                if (input.value("omitFields").isArray()) {
+                    QJsonArray omitted = input.value("omitFields").toArray();
+                    for (int i = 0; i < omitted.size(); ++i)
+                        if (omitted.at(i).isString() && renames.contains(omitted.at(i).toString()))
+                            omitted[i] = renames.value(omitted.at(i).toString());
+                    input.insert("omitFields", omitted);
+                }
+                mapping.insert("input", input);
+            }
+            updateMappingSummary(row, mapping);
+        }
+        const QSignalBlocker fieldBlocker(m_fieldTable);
+        for (int row = 0; row < m_fieldTable->rowCount(); ++row)
+            m_fieldTable->item(row, 1)->setData(Qt::UserRole, itemText(m_fieldTable, row, 1));
+        loadMappingEditor(m_mappingEditorRow); m_syncingFields = false;
+    } else {
+        const QSignalBlocker blocker(m_fieldTable);
+        for (int row = 0; row < m_fieldTable->rowCount(); ++row)
+            m_fieldTable->item(row, 1)->setData(Qt::UserRole, itemText(m_fieldTable, row, 1));
+    }
+    return true;
+}
+
+QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
+{
+    QSet<QString> numeric, omittable, seen; bool commandSeen = false;
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+        const QString name = itemText(m_fieldTable, row, 1);
+        if (name.isEmpty() || seen.contains(name)) return QString::fromUtf8(u8"字段名称为空或重复");
+        seen.insert(name);
+        const QString role = comboData(m_fieldTable, row, 2);
+        if (role == "command") commandSeen = true; else if (commandSeen) omittable.insert(name);
+        if (role == "parameter" && comboData(m_fieldTable, row, 3) != "ascii") numeric.insert(name);
+    }
+    for (const QJsonValue &omitted : mapping.value("input").toObject().value("omitFields").toArray()) {
+        if (!omittable.contains(omitted.toString())) return QString::fromUtf8(u8"省略字段不可用：%1").arg(omitted.toString());
+        numeric.remove(omitted.toString());
+    }
+    const QJsonObject parameters = mapping.value("parameters").toObject();
+    for (const QJsonValue &value : parameters) {
+        const QJsonObject expression = value.toObject(); const QString kind = expression.value("kind").toString();
+        if ((kind == "field" || kind == "linear") && !numeric.contains(expression.value("field").toString()))
+            return QString::fromUtf8(u8"来源字段不可用：%1").arg(expression.value("field").toString());
+    }
+    return QString();
+}
+
+void Widget::refreshMappingSummaries()
+{
+    for (int row = 0; row < m_mappingTable->rowCount(); ++row)
+        updateMappingSummary(row, m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject());
 }
 
 void Widget::updateMappingSources()
@@ -986,7 +1101,7 @@ void Widget::updateMappingSources()
             m_mappingSource->addItem(name, name);
     }
     m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
-    // 删除、改名、改为文本或省略字段后保留失效引用，让校验指出问题，不能自动换成另一个参数。
+    // 删除、改为文本或省略字段后保留失效引用，让校验指出问题，不能自动换成另一个参数。
     if (!selected.isEmpty() && m_mappingSource->findData(selected) < 0)
         m_mappingSource->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(selected), selected);
     selectData(m_mappingSource, selected);
@@ -1177,7 +1292,7 @@ bool Widget::saveUiToDraft()
         appendLog(m_validationState->text());
         return false;
     }
-    if (!saveMappingEditor()) return false;
+    if (!synchronizeFieldNames() || !saveMappingEditor()) return false;
     // 所有数字先严格读取，任何失败都保留旧草稿；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
         bool ok = false;
@@ -1252,7 +1367,7 @@ bool Widget::saveUiToDraft()
     m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
     appendLog(QString::fromUtf8(u8"中文表单已保存到草稿；当前已启用版本未改变。"));
-    updateMappingControls(); updateLiveState();
+    refreshMappingSummaries(); updateMappingControls(); updateLiveState();
     return true;
 }
 
@@ -1263,6 +1378,7 @@ void Widget::markDraftDirty()
     m_draftValid = false;
     m_deviceConfirmed->setChecked(false);
     updateTableControls();
+    refreshMappingSummaries();
     m_draftVersion->setText(QString::fromUtf8(u8"草稿：未保存"));
     m_validationState->setText(QString::fromUtf8(u8"校验：待保存"));
     updateLiveState();
