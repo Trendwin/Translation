@@ -9,13 +9,13 @@
     ]
   },
   "mappings": [
-    {"commandCode": "F", "operation": "MOTOR_FORWARD", "responsePolicy": "ack",
+    {"commandCode": "F", "operation": "MOTOR_FORWARD",
      "parameters": {"positionUm": {"kind": "field", "field": "距离"}}},
-    {"commandCode": "B", "operation": "MOTOR_BACKWARD", "responsePolicy": "complete",
+    {"commandCode": "B", "operation": "MOTOR_BACKWARD",
      "parameters": {"positionUm": {"kind": "field", "field": "距离"}}},
-    {"commandCode": "S", "operation": "MOTOR_STOP", "responsePolicy": "ack", "parameters": {},
+    {"commandCode": "S", "operation": "MOTOR_STOP", "parameters": {},
      "input": {"omitFields": ["距离"]}},
-    {"commandCode": "H", "operation": "MOTOR_RESET", "responsePolicy": "ack", "parameters": {},
+    {"commandCode": "H", "operation": "MOTOR_RESET", "parameters": {},
      "input": {"omitFields": ["距离"]}}
   ],
   "device": {

@@ -98,8 +98,6 @@ private:
     QComboBox *m_mappingSource = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
-    QComboBox *m_mappingResponse = nullptr;
-    QLineEdit *m_mappingFooter = nullptr;
     QGroupBox *m_mappingOmissions = nullptr;
     int m_mappingEditorRow = -1;
     bool m_loadingMapping = false;

@@ -14,6 +14,7 @@ signals:
     void requestStateChanged(quint64 requestId, RequestState state, const QString &detail);
     void outgoingFrame(quint64 requestId, const QByteArray &frame);
     void rawDataReceived(const QByteArray &data);
+    void replyReceived(const UnifiedResult &result);
     void completed(const UnifiedResult &result);
     void errorOccurred(quint64 requestId, const TranslationError &error);
     void unsolicitedMessage(const ProtocolMessage &message);

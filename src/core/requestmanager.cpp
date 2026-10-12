@@ -111,6 +111,13 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         if(!m_active || !m_protocol->matchesReply(expected,message)) { emit unsolicitedMessage(message); continue; }
         UnifiedResult result; TranslationError error;
         if(!m_protocol->decodeReply(expected,message,&result,&error)) { failCurrent(RequestState::Failed,error.code,error.message); continue; }
+        // 接纳回告、前置查询和完成轮询均立即显示。显示不触发出队，不能把接纳误当完成。
+        // 内部查询沿用业务请求编号；错误序号和不匹配的设备报文不会进入此信号。
+        result.requestId=m_current.requestId;
+        if(result.success && result.data.contains("motorState"))
+            result.data.insert("deviceBusy",result.data.value("motorState").toInt()!=1);
+        else if(result.success && isMotion(expected)) result.data.insert("deviceBusy",true);
+        emit replyReceived(result);
         m_sendTimer.stop(); m_ackTimer.stop();
         if(m_probeActive) {
             m_probeActive=false;
@@ -173,10 +180,10 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             emit completed(result); m_completionEmitted=true; finishCurrent(); continue;
         }
         setBusy(true);
-        if(m_current.responsePolicy=="ack") {
-            result.data.insert("deviceBusy",true);
-            emit completed(result); m_completionEmitted=true;
-        }
+        // 统一在有效接纳回告到达时反馈一次结果；旧响应策略不再推迟反馈。
+        // 后续仍保持运动占用并轮询，空闲且达到本次目标时才释放队列。
+        result.data.insert("deviceBusy",true);
+        emit completed(result); m_completionEmitted=true;
         emit stateChanged(m_current.requestId,RequestState::InMotion,QString::fromUtf8(u8"动作已应答，继续轮询 0x12 判断是否完成"));
         m_motionTimer.start(m_motionTimeoutMs); scheduleProbe();
     }
@@ -211,7 +218,7 @@ void RequestManager::failCurrent(RequestState state,const QString &code,const QS
     m_protocol->clearReceiveBuffer();
     UnifiedResult result; result.requestId=m_current.requestId; result.error={code,detail};
     emit stateChanged(result.requestId,state,detail);
-    // ack 策略已经通知过“命令接纳”，后续失败仍必须展示；它不撤回之前的接纳事实。
+    // 已经通知过“命令接纳”时，后续失败仍必须展示；它不撤回之前的接纳事实。
     // 使用独立错误信号避免重复发出业务 completed，同时让界面看到动作超时等最终原因。
     if(!m_completionEmitted) emit completed(result);
     else emit protocolError(result.error);

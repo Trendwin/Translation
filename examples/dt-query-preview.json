@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "name": "DT风格查询验证示例（共用回车帧尾）",
+  "external": {
+    "encoding": "ascii",
+    "header": "/",
+    "footer": "\\r",
+    "byteOrder": "big",
+    "fields": [
+      {
+        "name": "地址",
+        "role": "parameter",
+        "type": "uint",
+        "lengthMode": "fixed",
+        "length": 1,
+        "min": 1,
+        "max": 9
+      },
+      {
+        "name": "命令码",
+        "role": "command",
+        "type": "ascii",
+        "lengthMode": "mappedCommand"
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "?",
+      "operation": "QUERY_MOTOR",
+      "parameters": {}
+    },
+    {
+      "commandCode": "?0",
+      "operation": "QUERY_MOTOR",
+      "parameters": {}
+    },
+    {
+      "commandCode": "?4",
+      "operation": "QUERY_MOTOR",
+      "parameters": {}
+    },
+    {
+      "commandCode": "&",
+      "operation": "QUERY_DEVICE_INFO",
+      "parameters": {}
+    },
+    {
+      "commandCode": "?23",
+      "operation": "QUERY_DEVICE_INFO",
+      "parameters": {}
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "absoluteAction": 1,
+    "speedUmPerS": 1000,
+    "minPositionUm": 0,
+    "maxPositionUm": 6000
+  }
+}

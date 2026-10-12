@@ -39,7 +39,7 @@ private slots:
     void pendingMappingEditorAndFieldRefresh();
     void pendingAdvancedRelationAndTargetSwitch();
     void simplifiedExpertInterface();
-    void optionalFooterAndVisibleErrors();
+    void unifiedFormatAndVisibleErrors();
     void pendingScalarRanges();
     void fixedMotorActionsAndLegacyCompatibility();
     void renderChinesePages();
@@ -121,7 +121,7 @@ void WidgetTest::advancedJsonAndDynamicControls()
     QVERIFY(fields && maps && json);
     QCOMPARE(fields->horizontalHeaderItem(2)->text(), QString::fromUtf8(u8"字段作用"));
     QVERIFY(fields->isColumnHidden(6));
-    QCOMPARE(maps->columnCount(), 4);
+    QCOMPARE(maps->columnCount(), 3);
     auto *source = widget.findChild<QComboBox *>("mappingSource");
     auto *fixed = widget.findChild<QLineEdit *>("mappingValue");
     auto *multiplier = widget.findChild<QLineEdit *>("mappingMultiplier");
@@ -184,7 +184,7 @@ void WidgetTest::simpleMappingEditorAndInvalidNumbers()
     auto *preview = widget.findChild<QTextEdit *>("previewOutput");
     auto *target = widget.findChild<QTextEdit *>("targetOutput");
     QVERIFY(maps && source && multiplier && save);
-    QCOMPARE(maps->columnCount(), 4);
+    QCOMPARE(maps->columnCount(), 3);
     QCOMPARE(maps->horizontalHeaderItem(2)->text(), QString::fromUtf8(u8"参数说明"));
     QCOMPARE(maps->editTriggers(), QAbstractItemView::NoEditTriggers);
     QVERIFY(source->findData(QString::fromUtf8(u8"命令码")) < 0);
@@ -215,17 +215,20 @@ void WidgetTest::advancedMappingIsPreserved()
         {"offset", 17}, {"round", "floor"}, {"note", QString::fromUtf8(u8"保留高级关系备注")}};
     mapping.insert("parameters", QJsonObject{{"positionUm", expression}});
     mapping.insert("description", QString::fromUtf8(u8"保留来源信息"));
+    mapping.insert("responsePolicy", "complete");
     mapping.insert("input", QJsonObject{{"footer", "R\\r"}, {"extension", QJsonObject{{"source", "manual"}}}});
     mappings[0] = mapping; root.insert("mappings", mappings); applyRoot(widget, root);
+    QJsonObject cleanedInput = mapping.value("input").toObject(); cleanedInput.remove("footer");
+    mapping.insert("input", cleanedInput);
     QCOMPARE(widget.findChild<QLineEdit *>("mappingMultiplier")->text(), QString("1/3"));
     QVERIFY(!widget.findChild<QGroupBox *>("mappingMore"));
-    auto *response = widget.findChild<QComboBox *>("mappingResponse"); response->setCurrentIndex(response->findData("complete"));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("B");
     widget.findChild<QPushButton *>("saveMappings")->click();
     QJsonObject saved = draftRoot(widget).value("mappings").toArray().at(0).toObject();
     QCOMPARE(saved.value("parameters").toObject().value("positionUm").toObject(), expression);
     QCOMPARE(saved.value("input"), mapping.value("input"));
     QCOMPARE(saved.value("description"), mapping.value("description"));
-    QCOMPARE(saved.value("responsePolicy").toString(), QString("complete"));
+    QVERIFY(!saved.contains("responsePolicy"));
     widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2.5"); button(widget, "saveMappings")->click();
     const QJsonObject changed = draftRoot(widget).value("mappings").toArray().at(0).toObject();
     QJsonObject expected = expression; expected.insert("numerator", 5); expected.insert("denominator", 2);
@@ -275,7 +278,6 @@ void WidgetTest::queryAndRelativeMappingControls()
     auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *source = widget.findChild<QComboBox *>("mappingSource");
     auto *multiplier = widget.findChild<QLineEdit *>("mappingMultiplier");
-    auto *response = widget.findChild<QComboBox *>("mappingResponse");
     auto *save = widget.findChild<QPushButton *>("saveMappings");
     int queryRow = -1, relativeRow = -1;
     for (int r = 0; r < maps->rowCount(); ++r) {
@@ -286,9 +288,8 @@ void WidgetTest::queryAndRelativeMappingControls()
     QVERIFY(queryRow >= 0 && relativeRow >= 0);
     maps->selectRow(queryRow);
     QCOMPARE(operation->currentData().toString(), QString("QUERY_MOTOR"));
-    QVERIFY(source->isHidden()); QVERIFY(multiplier->isHidden()); QVERIFY(response->isHidden());
-    QCOMPARE(widget.findChild<QLineEdit *>("mappingFooter")->text(), QString("\\r"));
-    widget.findChild<QLineEdit *>("customerInput")->setText("/1?0\\r");
+    QVERIFY(source->isHidden()); QVERIFY(multiplier->isHidden());
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1?0R\\r");
     button(widget, "previewButton")->click();
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("00 12"));
     maps->selectRow(relativeRow); QVERIFY(!source->isHidden()); QVERIFY(!multiplier->isHidden());
@@ -298,10 +299,10 @@ void WidgetTest::queryAndRelativeMappingControls()
     QJsonObject expression = draftRoot(widget).value("mappings").toArray().at(relativeRow).toObject().value("parameters").toObject().value("distanceUm").toObject();
     QCOMPARE(expression.value("numerator").toInt(), 1); QCOMPARE(expression.value("denominator").toInt(), 10);
     QVERIFY(!draftRoot(widget).value("mappings").toArray().at(relativeRow).toObject().value("parameters").toObject().contains("positionUm"));
-    // 新增查询模板时自动移除尾部数值参数，但公共地址仍保留；帧尾可在普通表单里直接修改。
+    // 查询模板省略位置参数，但公共地址与协议格式帧尾仍统一读取。
     operation->setCurrentIndex(operation->findData("QUERY_MOTOR"));
     QVERIFY(source->isHidden()); QVERIFY(multiplier->isHidden());
-    widget.findChild<QLineEdit *>("mappingFooter")->setText("\\r"); save->click();
+    save->click();
     QJsonObject queryMapping = draftRoot(widget).value("mappings").toArray().at(relativeRow).toObject();
     QVERIFY(queryMapping.value("parameters").toObject().isEmpty());
     const QJsonArray omitted = queryMapping.value("input").toObject().value("omitFields").toArray();
@@ -312,12 +313,20 @@ void WidgetTest::queryAndRelativeMappingControls()
     auto *service = widget.findChild<TranslationService *>(); QVERIFY(service);
     UnifiedResult reply; reply.success = true; reply.requestId = 1;
     reply.data.insert("motorState", 3); reply.data.insert("positionUm", 0xffffff); reply.data.insert("boardType", 1);
-    service->completed(reply);
+    reply.data.insert("deviceBusy", true);
+    service->replyReceived(reply);
     const QString shownReply = widget.findChild<QTextEdit *>("replyResult")->toPlainText();
     QVERIFY(shownReply.contains(QString::fromUtf8(u8"运行中")));
     QVERIFY(shownReply.contains(QString::fromUtf8(u8"未回零或未配置")));
     QVERIFY(shownReply.contains(QString::fromUtf8(u8"控制板类型")));
     QVERIFY(!shownReply.contains("16777215"));
+    QVERIFY(shownReply.contains(QString::fromUtf8(u8"运动中或状态未知")));
+    UnifiedResult completed; completed.success = true; completed.requestId = 1; completed.data.insert("positionUm", 100);
+    service->completed(completed); QCOMPARE(widget.findChild<QTextEdit *>("replyResult")->toPlainText(), shownReply);
+    UnifiedResult rejected; rejected.requestId = 1; rejected.success = false;
+    rejected.error.code = "DEVICE_REJECTED"; rejected.error.message = QString::fromUtf8(u8"设备拒绝命令");
+    service->replyReceived(rejected);
+    QVERIFY(widget.findChild<QTextEdit *>("replyResult")->toPlainText().contains(QString::fromUtf8(u8"设备拒绝命令")));
 }
 
 void WidgetTest::completeCatalogAndSearchPreserveSelection()
@@ -456,7 +465,7 @@ void WidgetTest::simplifiedExpertInterface()
     auto *tabs = widget.findChild<QTabWidget *>("mainTabs"); QVERIFY(tabs); QCOMPARE(tabs->count(), 5);
     for (const char *name : {"mappingMore", "mappingOffset", "mappingRounding", "mappingDefaultFooter",
                             "mappingProtocolMore", "mappingCommandInfo", "mappingParameterHint", "mappingSearchResult",
-                            "mappingCategory", "browseCatalog", "commandCatalogDialog"}) QVERIFY(!widget.findChild<QWidget *>(name));
+                            "mappingCategory", "browseCatalog", "commandCatalogDialog", "mappingResponse", "mappingFooter"}) QVERIFY(!widget.findChild<QWidget *>(name));
     for (QLabel *label : widget.findChildren<QLabel *>()) {
         QVERIFY(!label->text().contains(QString::fromUtf8(u8"编辑客户协议格式 →")));
         QVERIFY(!label->text().contains(QString::fromUtf8(u8"配置定义的单条运动")));
@@ -471,27 +480,64 @@ void WidgetTest::simplifiedExpertInterface()
     QCOMPARE(widget.findChild<QCheckBox *>("deviceConfirmed")->text(), QString::fromUtf8(u8"参数已确认"));
     tabs->setCurrentIndex(1); QCoreApplication::processEvents();
     auto *scroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(scroll);
-    QVERIFY(scroll->viewport()->rect().contains(widget.findChild<QLineEdit *>("mappingFooter")->mapTo(scroll->viewport(), QPoint(0, 0))));
+    QVERIFY(scroll->viewport()->rect().contains(widget.findChild<QLineEdit *>("mappingMultiplier")->mapTo(scroll->viewport(), QPoint(0, 0))));
 }
 
-void WidgetTest::optionalFooterAndVisibleErrors()
+void WidgetTest::unifiedFormatAndVisibleErrors()
 {
-    Widget widget; auto *footer = widget.findChild<QLineEdit *>("mappingFooter");
-    QVERIFY(footer); QVERIFY(footer->text().isEmpty()); QCOMPARE(footer->placeholderText(), QString("R\\r"));
-    widget.findChild<QLineEdit *>("mappingCode")->setText("B"); button(widget, "saveMappings")->click();
-    QVERIFY(!draftRoot(widget).value("mappings").toArray().at(0).toObject().value("input").toObject().contains("footer"));
-    footer->setText("!\\r"); button(widget, "saveMappings")->click();
-    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("input").toObject().value("footer").toString(), QString("!\\r"));
-    applyRoot(widget, draftRoot(widget)); QCOMPARE(footer->text(), QString("!\\r"));
-    footer->clear(); button(widget, "saveMappings")->click();
-    QVERIFY(!draftRoot(widget).value("mappings").toArray().at(0).toObject().value("input").toObject().contains("footer"));
-    auto *input = widget.findChild<QLineEdit *>("customerInput"); input->setText("/1B2000R\\r");
-    button(widget, "previewButton")->click(); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("AA AA"));
+    Widget widget; QVERIFY(!widget.findChild<QWidget *>("mappingResponse")); QVERIFY(!widget.findChild<QWidget *>("mappingFooter"));
+    auto *maps = widget.findChild<QTableWidget *>("mappingTable"); QCOMPARE(maps->columnCount(), 3);
+    // 所有旧行在载入时一起迁移，不能只处理当前选中行；仅删除退役项，不删省略字段和扩展。
+    QJsonObject root = draftRoot(widget); QJsonArray rows = root.value("mappings").toArray();
+    for (int i = 0; i < rows.size(); ++i) {
+        QJsonObject row = rows.at(i).toObject(); row.insert("responsePolicy", i % 2 ? "complete" : "ack");
+        QJsonObject input = row.value("input").toObject(); input.insert("footer", "!\\r");
+        input.insert("note", "preserved"); row.insert("input", input); rows[i] = row;
+    }
+    root.insert("mappings", rows); applyRoot(widget, root);
+    for (int i = 0; i < rows.size(); ++i) {
+        QJsonObject expected = rows.at(i).toObject(); expected.remove("responsePolicy");
+        QJsonObject input = expected.value("input").toObject(); input.remove("footer"); expected.insert("input", input);
+        QCOMPARE(draftRoot(widget).value("mappings").toArray().at(i).toObject(), expected);
+    }
+    const QJsonObject migrated = draftRoot(widget); applyRoot(widget, migrated); QCOMPARE(draftRoot(widget), migrated);
+    auto *input = widget.findChild<QLineEdit *>("customerInput"); auto *target = widget.findChild<QTextEdit *>("targetOutput");
+    for (const QString &text : {QStringLiteral("/1A2000R\\r"), QStringLiteral("/1?0R\\r")}) {
+        input->setText(text); button(widget, "previewButton")->click(); QVERIFY(target->toPlainText().contains("AA AA"));
+        QVERIFY(!widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"响应方式")));
+    }
+    input->setText("/1?0\\r"); button(widget, "previewButton")->click(); QVERIFY(target->toPlainText().isEmpty());
+    auto *footer = widget.findChild<QLineEdit *>("formatFooter"); QVERIFY(footer); footer->setText("!\\r");
+    button(widget, "saveFields")->click();
+    for (const QString &text : {QStringLiteral("/1A2000!\\r"), QStringLiteral("/1?0!\\r")}) {
+        input->setText(text); button(widget, "previewButton")->click(); QVERIFY(target->toPlainText().contains("AA AA"));
+    }
+    input->setText("/1?0R\\r"); button(widget, "previewButton")->click(); QVERIFY(target->toPlainText().isEmpty());
+    button(widget, "addMapping")->click();
+    widget.findChild<QComboBox *>("mappingOperation")->setCurrentIndex(widget.findChild<QComboBox *>("mappingOperation")->findData("MOTOR_STOP"));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("S"); button(widget, "saveMappings")->click();
+    const QJsonObject added = draftRoot(widget).value("mappings").toArray().last().toObject();
+    QCOMPARE(added.value("commandCode").toString(), QString("S")); QVERIFY(!added.contains("responsePolicy"));
+    QVERIFY(!added.value("input").toObject().contains("footer"));
     widget.findChild<QTextEdit *>("advancedJson")->setPlainText("invalid"); button(widget, "applyJson")->click();
     QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"JSON 无效")));
     auto *transport = widget.findChild<SerialTransport *>(); QVERIFY(transport);
     transport->connectionChanged(false, QString::fromUtf8(u8"找不到串口设备；系统详情：测试详情"));
     QCOMPARE(widget.findChild<QLabel *>("validationState")->text(), QString::fromUtf8(u8"找不到串口设备"));
+    // 迁移不修复未获授权的格式错误：坏类型仍保留，让配置校验明确拒绝。
+    Widget invalid; QJsonObject invalidRoot = draftRoot(invalid);
+    invalidRoot.insert("mappings", "invalid-array"); applyRoot(invalid, invalidRoot);
+    QCOMPARE(draftRoot(invalid).value("mappings"), QJsonValue(QStringLiteral("invalid-array")));
+    applyRoot(invalid, migrated);
+    invalidRoot = draftRoot(invalid); QJsonArray invalidRows = invalidRoot.value("mappings").toArray();
+    QJsonObject invalidMapping = invalidRows.at(0).toObject(); const QJsonArray invalidInput{"bad-type"};
+    invalidMapping.insert("input", invalidInput); invalidRows[0] = invalidMapping;
+    invalidRoot.insert("mappings", invalidRows); applyRoot(invalid, invalidRoot);
+    QCOMPARE(draftRoot(invalid).value("mappings").toArray().at(0).toObject().value("input"), QJsonValue(invalidInput));
+    invalid.findChild<QLineEdit *>("mappingCode")->setText("B"); button(invalid, "saveMappings")->click();
+    QCOMPARE(draftRoot(invalid).value("mappings").toArray().at(0).toObject().value("input"), QJsonValue(invalidInput));
+    button(invalid, "validateConfig")->click();
+    QVERIFY(invalid.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"校验失败")));
 }
 
 void WidgetTest::pendingScalarRanges()

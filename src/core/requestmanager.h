@@ -19,6 +19,8 @@ signals:
     void stateChanged(quint64 requestId,RequestState state,const QString &detail);
     void frameReady(quint64 requestId,const QByteArray &frame);
     void rawDataReceived(const QByteArray &data);
+    // 每个匹配且已解码的回告立即交给界面；显示结果与释放运动请求是两件事。
+    void replyReceived(const UnifiedResult &result);
     void completed(const UnifiedResult &result);
     void unsolicitedMessage(const ProtocolMessage &message);
     void protocolError(const TranslationError &error);

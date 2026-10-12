@@ -255,7 +255,8 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     const bool query = command->operation == "QUERY_MOTOR" || command->operation == "QUERY_DEVICE_INFO";
     const bool relative = command->operation == "RELATIVE_FORWARD" || command->operation == "RELATIVE_BACKWARD";
     command->action = query ? ActionType::Query : ActionType::Execute;
-    command->responsePolicy = matched.value("responsePolicy").toString();
+    // 回告立即反馈；旧配置中的 complete 不再延迟显示，也不改变运动完成判断。
+    command->responsePolicy = QStringLiteral("ack");
     command->parameters.clear();
     command->parameterUnits.clear();
     preview->matchedCommandCode = incomingCode;

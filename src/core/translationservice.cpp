@@ -6,6 +6,7 @@ TranslationService::TranslationService(RequestManager *requests, QObject *parent
     connect(requests, &RequestManager::stateChanged, this, &TranslationService::requestStateChanged);
     connect(requests, &RequestManager::frameReady, this, &TranslationService::outgoingFrame);
     connect(requests, &RequestManager::rawDataReceived, this, &TranslationService::rawDataReceived);
+    connect(requests, &RequestManager::replyReceived, this, &TranslationService::replyReceived);
     connect(requests, &RequestManager::unsolicitedMessage, this, &TranslationService::unsolicitedMessage);
     connect(requests, &RequestManager::protocolError, this,
             [this](const TranslationError &e) { emit errorOccurred(0, e); });

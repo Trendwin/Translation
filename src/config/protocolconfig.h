@@ -15,7 +15,7 @@ public:
     bool save(const QString &path, TranslationError *error) const;
     bool validate(TranslationError *error) const;
     bool liveReady(TranslationError *error) const;
-    // 共用字段表保持顺序；无参数命令可显式省略指定字段、覆盖帧尾，不能按操作名称猜客户格式。
+    // 共用帧头帧尾及字段顺序；无参数命令只显式省略指定字段，不能按操作名称猜客户格式。
     QJsonObject inputFormat(const QJsonObject &mapping) const;
     // 界面和解析器共用严格的字节入口，避免同一转义在配置与输入框中被不同解释。
     static bool decodeBytes(const QString &text, const QString &encoding,

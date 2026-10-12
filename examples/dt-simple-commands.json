@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "name": "单条运动和查询验证示例（客户格式可编辑，数值直接引用）",
+  "name": "统一帧尾运动和查询验证示例（DT风格，数值直接引用）",
   "external": {
     "encoding": "ascii",
     "header": "/",
@@ -13,17 +13,17 @@
     ]
   },
   "mappings": [
-    {"commandCode":"A","operation":"MOTOR_FORWARD","responsePolicy":"ack","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"a","operation":"MOTOR_FORWARD","responsePolicy":"complete","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"P","operation":"RELATIVE_FORWARD","responsePolicy":"ack","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"p","operation":"RELATIVE_FORWARD","responsePolicy":"complete","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"D","operation":"RELATIVE_BACKWARD","responsePolicy":"ack","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"d","operation":"RELATIVE_BACKWARD","responsePolicy":"complete","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"?","operation":"QUERY_MOTOR","responsePolicy":"ack","parameters":{},"input":{"omitFields":["位置"],"footer":"\\r"}},
-    {"commandCode":"?0","operation":"QUERY_MOTOR","responsePolicy":"ack","parameters":{},"input":{"omitFields":["位置"],"footer":"\\r"}},
-    {"commandCode":"?4","operation":"QUERY_MOTOR","responsePolicy":"ack","parameters":{},"input":{"omitFields":["位置"],"footer":"\\r"}},
-    {"commandCode":"&","operation":"QUERY_DEVICE_INFO","responsePolicy":"ack","parameters":{},"input":{"omitFields":["位置"],"footer":"\\r"}},
-    {"commandCode":"?23","operation":"QUERY_DEVICE_INFO","responsePolicy":"ack","parameters":{},"input":{"omitFields":["位置"],"footer":"\\r"}}
+    {"commandCode":"A","operation":"MOTOR_FORWARD","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"a","operation":"MOTOR_FORWARD","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"P","operation":"RELATIVE_FORWARD","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"p","operation":"RELATIVE_FORWARD","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"D","operation":"RELATIVE_BACKWARD","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"d","operation":"RELATIVE_BACKWARD","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"?","operation":"QUERY_MOTOR","parameters":{},"input":{"omitFields":["位置"]}},
+    {"commandCode":"?0","operation":"QUERY_MOTOR","parameters":{},"input":{"omitFields":["位置"]}},
+    {"commandCode":"?4","operation":"QUERY_MOTOR","parameters":{},"input":{"omitFields":["位置"]}},
+    {"commandCode":"&","operation":"QUERY_DEVICE_INFO","parameters":{},"input":{"omitFields":["位置"]}},
+    {"commandCode":"?23","operation":"QUERY_DEVICE_INFO","parameters":{},"input":{"omitFields":["位置"]}}
   ],
   "device": {
     "destination":2,"source":1,"devId":17,"absoluteAction":1,

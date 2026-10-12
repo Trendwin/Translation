@@ -7,7 +7,7 @@
 | 属性 | 中文含义与边界 |
 |---|---|
 | encoding | ascii 或 hex，决定输入框如何转成字节 |
-| header、footer | 必填帧头和默认帧尾；ASCII 支持 `\r`、`\n`、`\t`、`\xNN`，HEX 填偶数个十六进制字符 |
+| header、footer | 必填共用帧头和帧尾；ASCII 支持 `\r`、`\n`、`\t`、`\xNN`，HEX 填偶数个十六进制字符 |
 | byteOrder | big 或 little，只影响 HEX 多字节整数 |
 | fields | 有顺序的字段数组，连续读取，不填写 offset |
 
@@ -23,12 +23,10 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 |---|---|
 | commandCode | 配置定义的客户命令码；不可为空、重复或超过128字符 |
 | operation | 趋盛目录中的下发目标；已有模板见下表，其他项为 QUSHENG_XX（XX为大写两位指令码） |
-| responsePolicy | ack：设备接纳后产生一次结果；complete：等待运动完成。查询只能为 ack |
 | parameters | 参数关系对象；查询使用空对象 |
 | input.omitFields | 此命令不读取的共用字段名称，仅允许命令码之后的字段，不能省略地址前缀或命令码 |
-| input.footer | 可选独立帧尾；缺省时用 external.footer |
 
-使用独立输入设置必须把命令码长度方式设为 mappedCommand。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
+使用字段省略设置必须把命令码长度方式设为 mappedCommand。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
 
 | operation | 参数关系 | 趋盛发送与状态 |
 |---|---|---|
@@ -50,7 +48,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 参数关系保持 field（直接引用）、constant（固定值）、linear（线性换算）三种。常用界面只选择来源/固定值和换算倍数。有限位数的十进制倍数精确转换成整数分数，避免浮点舍入改变目标值。既有高级分数修改无关选项后仍保持原值。
 
-简洁表单不再提供偏移/取整控件；已有表达式的offset、round和精确分数保留，普通编辑不会将它们改成零或默认取整。映射帧尾输入留空表示用external.footer，填写时写入input.footer；勾选的省略字段继续写入input.omitFields。
+简洁表单不再提供偏移/取整控件；已有表达式的offset、round和精确分数保留，普通编辑不会将它们改成零或默认取整。所有命令统一使用external.footer；勾选的省略字段继续写入input.omitFields。旧responsePolicy的ack/complete可在核心加载，但运行均立即反馈；界面载入和保存会清除responsePolicy与input.footer，不保留隐藏的旧控制项。核心校验拒绝独立帧尾覆盖。
 
 高级 linear 公式为 来源 × numerator ÷ denominator + offset，round 可为 exact、floor、ceil、nearest。分子范围 ±1000000000，分母1–1000000000，偏移默认0、范围 ±1000000000；除零、溢出、exact产生余数均拒绝生成目标帧。固定值0–16777214；0xFFFFFF是趋盛特殊持续运行值，本轮禁止作为位置或距离。
 
@@ -66,7 +64,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 ## 示例与兼容
 
-默认 `dt-simple-commands.json` 包含11条由配置描述的运动和查询。A/a使用新前进模板，字节保持原绝对模式/动作1；P/p、D/d保留旧相对语义。运动使用默认帧尾 `R\r`；查询省略“位置”，使用独立帧尾 `\r`。所有客户命令字符只在配置、文档和测试中。DT不是内置解析分支。
+默认 `dt-simple-commands.json` 包含11条由配置描述的运动和查询。A/a使用新前进模板，字节保持原绝对模式/动作1；P/p、D/d保留旧相对语义。这份验证示例统一使用帧尾 `R\r`，查询仅省略“位置”。原始DT查询另用 `dt-query-preview.json`，共用帧尾为 `\r`。所有客户命令字符只在配置、文档和测试中。DT不是内置解析分支。
 
 `command-catalog-draft.json` 展示另一个自行定义的客户格式：`!MOVE2000\r` 可预览绝对位置运动，`!FAN50\r` 命中风扇控制草稿并显示发送待实现。固定风扇编号224仅为编辑演示，不代表实际设备已确认；目录参数范围不替代客户字段取值限制。
 
