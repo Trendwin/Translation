@@ -15,21 +15,20 @@ QJsonArray QushengCommandCatalog::commands()
     return catalog;
 }
 
-QJsonArray QushengCommandCatalog::options()
+static QJsonArray legacyOptions()
 {
-    QJsonArray result = commands();
-    QJsonObject absolute;
-    for (const QJsonValue &value : result)
-        if (value.toObject().value("operation").toString() == "QUSHENG_11") {
-            absolute = value.toObject(); break;
-        }
+    QFile file(QStringLiteral(":/protocol/qusheng-commands.json"));
+    if (!file.open(QIODevice::ReadOnly)) return QJsonArray();
+    QJsonObject absolute = QJsonDocument::fromJson(file.readAll()).object().value("legacyMotorControl").toObject();
+    QJsonArray result;
+    result.append(absolute);
     if (absolute.isEmpty()) return result;
     // 通用 0x11 条目覆盖所有模式/动作，仍是待实现状态；已验证预设使用自己确定的参数模型。
     // 不能将通用条目的 mode/action 参数偷偷交给绝对位置执行器，否则停止/复位可能被误发成运动。
     absolute.insert("operation", "ABSOLUTE_MOVE");
     absolute.insert("name", QString::fromUtf8(u8"绝对位置运动"));
     absolute.insert("description", QString::fromUtf8(u8"已验证的绝对位置预设；使用设备页面确认的电机编号、速度和方向，客户映射提供目标位置。"));
-    absolute.insert("note", QString::fromUtf8(u8"只执行绝对位置模式；速度模式、停止、复位等请选择通用步进电机运动控制条目保存待实现映射。"));
+    absolute.insert("note", QString::fromUtf8(u8"仅用于兼容旧绝对映射；新建请选前进、停止、后退或复位。新前进/后退固定绝对模式，停止/复位发送待实现。"));
     QJsonArray presetParameters;
     for (const QJsonValue &value : absolute.value("parameters").toArray()) {
         QJsonObject parameter = value.toObject();
@@ -54,7 +53,7 @@ QJsonArray QushengCommandCatalog::options()
                            {"editable", false}, {"optional", false}});
     absolute.insert("parameters", presetParameters);
     result.append(absolute);
-    // 三个预设同属一个 0x11 命令，不重复计算为新的协议命令；总计56目录条目和59选择项。
+    // 三个旧运动模板仅用于加载既有配置，不计入新建选择池；不能自动改变旧相对参数含义。
     for (const QString &operation : {QStringLiteral("RELATIVE_FORWARD"), QStringLiteral("RELATIVE_BACKWARD")}) {
         QJsonObject entry = absolute;
         entry.insert("operation", operation);
@@ -81,10 +80,50 @@ QJsonArray QushengCommandCatalog::options()
     return result;
 }
 
+QJsonArray QushengCommandCatalog::options()
+{
+    QJsonArray result;
+    QJsonObject motor;
+    for (const QJsonValue &value : commands()) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value("operation").toString() == "QUSHENG_11") motor = entry;
+        else result.append(entry);
+    }
+    // 0x11 的四个动作共享固定绝对位置模式，但发送能力分别检查。停止、复位不能借用运动权限。
+    const QStringList operations = {"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
+    const QStringList labels = {QString::fromUtf8(u8"步进电机前进"), QString::fromUtf8(u8"步进电机停止"),
+                               QString::fromUtf8(u8"步进电机后退"), QString::fromUtf8(u8"步进电机复位")};
+    for (int index = 0; index < operations.size(); ++index) {
+        QJsonObject variant = motor;
+        variant.insert("operation", operations.at(index));
+        variant.insert("name", labels.at(index));
+        QJsonArray parameters;
+        for (const QJsonValue &value : motor.value("parameters").toArray()) {
+            QJsonObject parameter = value.toObject();
+            if (parameter.value("key").toString() == "action") {
+                parameter.insert("fixedValue", index + 1);
+                parameter.insert("description", QString::fromUtf8(u8"D1低四位；由所选动作固定为%1，不能由客户参数覆盖。").arg(index + 1));
+            }
+            parameters.append(parameter);
+        }
+        variant.insert("parameters", parameters);
+        variant.insert("description", QString::fromUtf8(u8"固定绝对位置模式；电机编号与速度来自设备默认参数，只有移动距离（绝对目标位置）需要映射。"));
+        variant.insert("note", index == 0 || index == 2
+                       ? QString::fromUtf8(u8"移动距离按绝对目标位置解释，不是当前位置加减距离；收到应答后继续查询空闲状态与目标位置。")
+                       : QString::fromUtf8(u8"可选择并保存映射；停止或复位的完成条件尚未确认，本轮禁止生成和发送目标帧。"));
+        result.append(variant);
+    }
+    return result;
+}
+
 QJsonObject QushengCommandCatalog::find(const QString &operation)
 {
     for (const QJsonValue &value : options())
         if (value.toObject().value("operation").toString() == operation) return value.toObject();
+    // 旧配置按原有单位、相对/绝对语义继续加载；不把旧相对距离静默改成绝对目标。
+    if (isLegacyOperation(operation))
+        for (const QJsonValue &value : legacyOptions())
+            if (value.toObject().value("operation").toString() == operation) return value.toObject();
     return QJsonObject();
 }
 
@@ -92,8 +131,20 @@ bool QushengCommandCatalog::isExecutable(const QString &operation)
 {
     // 许可必须由代码决定。即使高级配置或目录 JSON 写入 enabled/executable，也不能开启发送。
     return QStringList({"ABSOLUTE_MOVE", "RELATIVE_FORWARD", "RELATIVE_BACKWARD",
-                        "QUERY_MOTOR", "QUERY_DEVICE_INFO"}).contains(operation);
+                        "MOTOR_FORWARD", "MOTOR_BACKWARD", "QUERY_MOTOR", "QUERY_DEVICE_INFO"}).contains(operation);
 }
+
+bool QushengCommandCatalog::isAbsoluteMotion(const QString &operation)
+{ return operation == "ABSOLUTE_MOVE" || operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD"; }
+
+int QushengCommandCatalog::fixedAction(const QString &operation)
+{
+    const QStringList operations = {"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
+    return operations.indexOf(operation) + 1;
+}
+
+bool QushengCommandCatalog::isLegacyOperation(const QString &operation)
+{ return QStringList({"ABSOLUTE_MOVE", "RELATIVE_FORWARD", "RELATIVE_BACKWARD", "QUSHENG_11"}).contains(operation); }
 
 bool QushengCommandCatalog::isReceiveOnly(const QString &operation)
 {

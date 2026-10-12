@@ -184,63 +184,73 @@
       "name": "步进电机运动控制",
       "category": "步进电机",
       "direction": "tx",
-      "description": "按电机编号、模式和动作控制步进电机。通用模式映射待实现；已有绝对位置、相对前进、相对后退预设可执行。",
+      "description": "本软件将0x11拆为前进、停止、后退、复位四个动作，统一使用绝对位置模式；速度来自设备默认参数。",
       "section": "3.2.9",
       "parameters": [
         {
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
-          "editable": true,
+          "description": "D0；从设备与连接页面的默认电机编号读取。",
+          "editable": false,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 28,
+          "defaultSource": "device.devId"
         },
         {
           "key": "mode",
           "label": "工作模式",
           "type": "uint8",
-          "description": "D1高四位；1速度模式、2位置模式、4绝对位置模式。仅保存映射意图，尚未组帧执行。",
-          "editable": true,
+          "description": "D1高四位固定4：绝对位置模式，不需要客户映射。",
+          "editable": false,
           "optional": false,
-          "min": 1,
+          "min": 4,
           "max": 4,
-          "allowedValues": [1, 2, 4]
+          "allowedValues": [
+            4
+          ],
+          "fixedValue": 4
         },
         {
           "key": "action",
           "label": "电机动作",
           "type": "uint8",
-          "description": "D1低四位；1前进（远离零点）、2停止、3后退（靠近零点）、4复位到物理零点。",
-          "editable": true,
+          "description": "D1低四位；由前进、停止、后退或复位模板固定，不接受客户映射。",
+          "editable": false,
           "optional": false,
           "min": 1,
           "max": 4,
-          "allowedValues": [1, 2, 3, 4]
+          "allowedValues": [
+            1,
+            2,
+            3,
+            4
+          ]
         },
         {
-          "key": "speed",
+          "key": "speedUmPerS",
           "label": "移动速度",
           "type": "uint24",
-          "description": "D2～D4；速度数值，其作用随模式和动作变化。只保存参数关系，不推断客户单位。",
-          "editable": true,
+          "description": "D2～D4；从设备与连接页面读取默认速度数值，不映射客户报文。",
+          "editable": false,
           "optional": false,
-          "min": 0,
-          "max": 16777215
+          "min": 1,
+          "max": 16777214,
+          "defaultSource": "device.speedUmPerS"
         },
         {
-          "key": "positionOrDistance",
-          "label": "位置或距离",
+          "key": "positionUm",
+          "label": "移动距离（绝对位置）",
           "type": "uint24",
-          "description": "D5～D7；位置模式表示移动距离，绝对位置模式表示目标位置；具体作用须结合模式和动作。",
+          "description": "D5～D7；按绝对目标位置读取映射数值，不是当前位置加减距离；不推断客户单位。",
           "editable": true,
           "optional": false,
           "min": 0,
-          "max": 16777215
+          "max": 16777214
         }
       ],
-      "note": "模式与动作最终需要合并到D1的不同半字节；本轮只保存数值关系，不进行位拼接。0xFFFFFF是模式相关的持续运动特殊值，不能直接按普通目标位置执行；现有已支持预设拒绝该值。"
+      "note": "协议原文允许其他工作模式，当前软件新建映射统一模式4。移动距离按绝对目标位置解释；停止和复位仅保存映射，发送待实现。"
     },
     {
       "operation": "QUERY_MOTOR",
@@ -1834,5 +1844,78 @@
       ],
       "note": "只接收，不能创建下发映射。"
     }
-  ]
+  ],
+  "legacyMotorControl": {
+    "operation": "QUSHENG_11",
+    "code": "0x11",
+    "name": "步进电机运动控制",
+    "category": "步进电机",
+    "direction": "tx",
+    "description": "按电机编号、模式和动作控制步进电机。通用模式映射待实现；已有绝对位置、相对前进、相对后退预设可执行。",
+    "section": "3.2.9",
+    "parameters": [
+      {
+        "key": "devId",
+        "label": "电机编号",
+        "type": "uint8",
+        "description": "D0；步进电机设备编号 0x11～0x1C。",
+        "editable": true,
+        "optional": false,
+        "min": 17,
+        "max": 28
+      },
+      {
+        "key": "mode",
+        "label": "工作模式",
+        "type": "uint8",
+        "description": "D1高四位；1速度模式、2位置模式、4绝对位置模式。仅保存映射意图，尚未组帧执行。",
+        "editable": true,
+        "optional": false,
+        "min": 1,
+        "max": 4,
+        "allowedValues": [
+          1,
+          2,
+          4
+        ]
+      },
+      {
+        "key": "action",
+        "label": "电机动作",
+        "type": "uint8",
+        "description": "D1低四位；1前进（远离零点）、2停止、3后退（靠近零点）、4复位到物理零点。",
+        "editable": true,
+        "optional": false,
+        "min": 1,
+        "max": 4,
+        "allowedValues": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "key": "speed",
+        "label": "移动速度",
+        "type": "uint24",
+        "description": "D2～D4；速度数值，其作用随模式和动作变化。只保存参数关系，不推断客户单位。",
+        "editable": true,
+        "optional": false,
+        "min": 0,
+        "max": 16777215
+      },
+      {
+        "key": "positionOrDistance",
+        "label": "位置或距离",
+        "type": "uint24",
+        "description": "D5～D7；位置模式表示移动距离，绝对位置模式表示目标位置；具体作用须结合模式和动作。",
+        "editable": true,
+        "optional": false,
+        "min": 0,
+        "max": 16777215
+      }
+    ],
+    "note": "模式与动作最终需要合并到D1的不同半字节；本轮只保存数值关系，不进行位拼接。0xFFFFFF是模式相关的持续运动特殊值，不能直接按普通目标位置执行；现有已支持预设拒绝该值。"
+  }
 }

@@ -285,7 +285,11 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         command->parameters.insert("maxPositionUm", device.value("maxPositionUm").toInt());
     }
     command->parameters.insert("speedUmPerS", device.value("speedUmPerS").toInt());
-    command->parameters.insert("absoluteAction", relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3) : device.value("absoluteAction").toInt());
+    // 新建前进/后退模板各自固定动作1/3；设备默认方向只供旧ABS配置使用，不能覆盖新模板动作。
+    const int fixedAction = QushengCommandCatalog::fixedAction(command->operation);
+    command->parameters.insert("absoluteAction", fixedAction ? fixedAction
+                               : relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3)
+                                          : device.value("absoluteAction").toInt());
     command->parameterUnits.insert(positionKey, QStringLiteral("um"));
     command->parameterUnits.insert("speedUmPerS", QStringLiteral("um/s"));
     return true;

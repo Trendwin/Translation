@@ -1,10 +1,11 @@
 #include "requestmanager.h"
+#include "qusheng/qushengcommandcatalog.h"
 
 namespace {
 bool isRelative(const UnifiedCommand &command)
 { return command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD"; }
 bool isMotion(const UnifiedCommand &command)
-{ return command.operation == "ABSOLUTE_MOVE" || isRelative(command); }
+{ return QushengCommandCatalog::isAbsoluteMotion(command.operation) || isRelative(command); }
 }
 
 RequestManager::RequestManager(IInternalProtocol *protocol,ITransport *transport,QObject *parent)

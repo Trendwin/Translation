@@ -15,6 +15,9 @@ public:
     static QJsonObject find(const QString &operation);
     static bool isExecutable(const QString &operation);
     static bool isReceiveOnly(const QString &operation);
+    static bool isAbsoluteMotion(const QString &operation);
+    static int fixedAction(const QString &operation);
+    static bool isLegacyOperation(const QString &operation);
     static QString name(const QString &operation);
 };
 

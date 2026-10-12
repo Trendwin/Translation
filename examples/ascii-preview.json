@@ -13,7 +13,7 @@
   },
   "mappings": [{
     "commandCode": "M",
-    "operation": "ABSOLUTE_MOVE",
+    "operation": "MOTOR_FORWARD",
     "responsePolicy": "ack",
     "parameters": {
       "positionUm": {"kind":"linear","field":"位置","numerator":10,"denominator":1,"offset":0,"round":"exact"}

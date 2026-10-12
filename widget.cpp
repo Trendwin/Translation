@@ -357,12 +357,13 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"查找趋盛指令"), searchLine);
     editorForm->addRow(QString(), m_mappingSearchResult);
     editorForm->addRow(QString::fromUtf8(u8"趋盛指令"), m_mappingOperation);
+    // 固定模式和设备默认速度决定报文含义，放在指令选择后立即展示，不能藏在参数表单下方。
+    editorForm->addRow(m_mappingCommandInfo);
     editorForm->addRow(QString::fromUtf8(u8"位置来源"), m_mappingSource);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
     editorForm->addRow(QString::fromUtf8(u8"反馈时机"), m_mappingResponse);
     editorLayout->addLayout(editorForm);
-    editorLayout->addWidget(m_mappingCommandInfo);
     editorLayout->addWidget(m_mappingParameters);
     editorLayout->addWidget(m_mappingProtocolMore);
     m_mappingParameterHint = new QLabel(this); m_mappingParameterHint->setObjectName("mappingParameterHint");
@@ -415,22 +416,22 @@ void Widget::buildUi()
     m_destination = new QSpinBox(this); m_destination->setRange(1, 255);
     m_source = new QSpinBox(this); m_source->setRange(1, 255);
     m_devId = new QSpinBox(this); m_devId->setRange(0x11, 0x1c); m_devId->setDisplayIntegerBase(16);
-    m_action = new QSpinBox(this); m_action->setRange(1, 3); m_action->setSingleStep(2);
-    m_speed = new QSpinBox(this); m_speed->setRange(1, 0xfffffe);
+    m_action = new QSpinBox(this); m_action->setObjectName("legacyAbsoluteAction"); m_action->setRange(1, 3); m_action->setSingleStep(2);
+    m_speed = new QSpinBox(this); m_speed->setObjectName("defaultMotorSpeed"); m_speed->setRange(1, 0xfffffe);
     m_minPosition = new QSpinBox(this); m_minPosition->setRange(0, 0xfffffe);
     m_maxPosition = new QSpinBox(this); m_maxPosition->setRange(0, 0xfffffe);
     m_destination->setToolTip(QString::fromUtf8(u8"控制板地址，范围 1–255，必须与软件源地址不同。"));
     m_source->setToolTip(QString::fromUtf8(u8"软件地址，范围 1–255。"));
     m_devId->setToolTip(QString::fromUtf8(u8"电机编号 0x11–0x1C，按设备资料确认。"));
-    m_action->setToolTip(QString::fromUtf8(u8"只允许 1 或 3；具体机械方向需实机确认。"));
-    m_speed->setToolTip(QString::fromUtf8(u8"下位机速度数值，24 位范围且不可为零；物理单位需按实际设备确认。"));
+    m_action->setToolTip(QString::fromUtf8(u8"仅用于保留旧版绝对位置映射的方向；新指令的前进、停止、后退、复位动作由所选指令固定。"));
+    m_speed->setToolTip(QString::fromUtf8(u8"每条 0x11 指令都携带此默认速度，无需独立速度报文。数值为 1–16777214；物理单位需按实际设备确认。"));
     m_minPosition->setToolTip(QString::fromUtf8(u8"设备位置数值下限，与目标位置使用同一单位。"));
     m_maxPosition->setToolTip(QString::fromUtf8(u8"设备位置数值上限，不允许 0xFFFFFF 的连续运动值。"));
     deviceForm->addRow(QString::fromUtf8(u8"控制板目标地址"), m_destination);
     deviceForm->addRow(QString::fromUtf8(u8"软件源地址"), m_source);
     deviceForm->addRow(QString::fromUtf8(u8"电机编号（十六进制）"), m_devId);
-    deviceForm->addRow(QString::fromUtf8(u8"绝对运动动作值"), m_action);
-    deviceForm->addRow(QString::fromUtf8(u8"速度（下位机数值）"), m_speed);
+    deviceForm->addRow(QString::fromUtf8(u8"旧版绝对映射方向"), m_action);
+    deviceForm->addRow(QString::fromUtf8(u8"默认运动速度"), m_speed);
     deviceForm->addRow(QString::fromUtf8(u8"最小位置"), m_minPosition);
     deviceForm->addRow(QString::fromUtf8(u8"最大位置"), m_maxPosition);
     auto *saveDevice = new QPushButton(QString::fromUtf8(u8"保存设备参数到草稿"), this);
@@ -662,7 +663,13 @@ void Widget::connectSignals()
             }
             // 更换目标与搜索筛选是两种状态。目标切换先保存原表单；失败时返回原目标，不能丢掉未保存参数。
             { const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, m_editorOperation); }
-            if (!saveMappingEditor()) return;
+            const QJsonObject existing = m_mappingTable->item(m_mappingEditorRow, 0)->data(Qt::UserRole).toJsonObject();
+            // 新增空行尚未定义参数关系，必须允许先选停止/复位或查询，不能要求用户先补一个不会使用的位置。
+            // 已有配置及已选字段/固定值仍按严格保存流程处理，防止切换目标丢失有效关系或掩盖错误。
+            const bool emptyNewRelation = existing.value("commandCode").toString().isEmpty()
+                && existing.value("operation").toString() == "MOTOR_FORWARD"
+                && m_mappingSource->currentData().toString().isEmpty() && m_mappingValue->text().isEmpty();
+            if (!emptyNewRelation && !saveMappingEditor()) return;
             { const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, operation); }
             const bool supported = QushengCommandCatalog::isExecutable(operation);
             const bool previousSupported = QushengCommandCatalog::isExecutable(m_editorOperation);
@@ -680,6 +687,12 @@ void Widget::connectSignals()
                 m_mappingOffset->setText("0"); selectData(m_mappingRounding, "exact");
             }
             m_editorOperation = operation;
+            if (!QushengCommandCatalog::isLegacyOperation(operation)) {
+                const QSignalBlocker blocker(m_mappingOperation);
+                for (int i = m_mappingOperation->count() - 1; i >= 0; --i)
+                    if (m_mappingOperation->itemData(i, Qt::UserRole + 1).toBool()) m_mappingOperation->removeItem(i);
+                selectData(m_mappingOperation, operation);
+            }
         }
         updateMappingControls(); mappingEdited();
     });
@@ -837,7 +850,7 @@ void Widget::addFieldRow(const QJsonObject &field)
 void Widget::addMappingRow(const QJsonObject &value)
 {
     QJsonObject mapping = value;
-    if (mapping.isEmpty()) mapping = QJsonObject{{"commandCode", ""}, {"operation", "ABSOLUTE_MOVE"},
+    if (mapping.isEmpty()) mapping = QJsonObject{{"commandCode", ""}, {"operation", "MOTOR_FORWARD"},
         {"responsePolicy", "ack"}, {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", ""}}}}}};
     const int row = m_mappingTable->rowCount();
     m_mappingTable->insertRow(row);
@@ -851,7 +864,8 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     // 列表只显示摘要，整条映射存于行数据；普通表单不能丢弃高级 JSON 的备注、输入覆盖或扩展元数据。
     m_mappingTable->item(row, 0)->setData(Qt::UserRole, mapping);
     m_mappingTable->item(row, 0)->setText(mapping.value("commandCode").toString());
-    m_mappingTable->item(row, 1)->setText(operationName(mapping.value("operation").toString()));
+    const QString operation = mapping.value("operation").toString();
+    m_mappingTable->item(row, 1)->setText((QushengCommandCatalog::isLegacyOperation(operation) ? QString::fromUtf8(u8"旧版") : QString()) + operationName(operation));
     const bool query = isQuery(mapping.value("operation").toString());
     const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(mapping.value("operation").toString())).toObject();
     QString summary = QString::fromUtf8(u8"无参数");
@@ -895,7 +909,7 @@ void Widget::filterMappingCommands()
             && (text.isEmpty() || (entry.value("code").toString() + " " + entry.value("name").toString() + " " + entry.value("category").toString()).contains(text, Qt::CaseInsensitive));
         view->setRowHidden(i, !match); if (match) ++visible;
     }
-    m_mappingSearchResult->setText(visible ? QString::fromUtf8(u8"%1 个匹配选项；完整目录 56 条，另含 3 个运动预设。") .arg(visible)
+    m_mappingSearchResult->setText(visible ? QString::fromUtf8(u8"%1 个匹配选项；完整目录 56 条，0x11 分为前进、停止、后退、复位。") .arg(visible)
         : QString::fromUtf8(u8"没有匹配的指令，请修改搜索或类别；当前映射保持不变。"));
 }
 
@@ -911,7 +925,7 @@ void Widget::browseCommandCatalog()
     for (const QJsonValue &value : QushengCommandCatalog::commands()) {
         const QJsonObject entry = value.toObject(); const QString operation = entry.value("operation").toString(); const int row = table->rowCount(); table->insertRow(row);
         const QStringList texts = {entry.value("code").toString(), entry.value("name").toString(), entry.value("category").toString(),
-            QushengCommandCatalog::isReceiveOnly(operation) ? QString::fromUtf8(u8"仅设备主动上报") : QushengCommandCatalog::isExecutable(operation) ? QString::fromUtf8(u8"可发送") : QString::fromUtf8(u8"发送待实现")};
+            operation == "QUSHENG_11" ? QString::fromUtf8(u8"前进、后退可发送；停止、复位待实现") : QushengCommandCatalog::isReceiveOnly(operation) ? QString::fromUtf8(u8"仅设备主动上报") : QushengCommandCatalog::isExecutable(operation) ? QString::fromUtf8(u8"可发送") : QString::fromUtf8(u8"发送待实现")};
         for (int column = 0; column < texts.size(); ++column) table->setItem(row, column, new QTableWidgetItem(texts.at(column)));
         table->item(row, 0)->setData(Qt::UserRole, entry);
     }
@@ -1021,9 +1035,23 @@ void Widget::loadMappingEditor(int row)
     m_mappingEditor->setEnabled(row >= 0);
     const QJsonObject mapping = row >= 0 ? m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject() : QJsonObject();
     m_mappingCode->setText(mapping.value("commandCode").toString());
-    const QString operation = mapping.value("operation").toString("ABSOLUTE_MOVE");
+    const QString operation = mapping.value("operation").toString("MOTOR_FORWARD");
     m_editorOperation = operation;
-    if (m_mappingOperation->findData(operation) < 0) m_mappingOperation->addItem(operationName(operation), operation);
+    // 旧映射的模式和方向是配置的一部分，载入不等于迁移。兼容项只属于当前行，
+    // 离开该行即移除，避免将旧版相对模式重新混入新建映射的四动作指令池。
+    {
+        const QSignalBlocker blocker(m_mappingOperation);
+        for (int i = m_mappingOperation->count() - 1; i >= 0; --i)
+            if (m_mappingOperation->itemData(i, Qt::UserRole + 1).toBool()) m_mappingOperation->removeItem(i);
+        if (m_mappingOperation->findData(operation) < 0) {
+            const QString label = QushengCommandCatalog::isLegacyOperation(operation)
+                ? QString::fromUtf8(u8"0x11 | 旧版%1（保持原模式和方向）").arg(operationName(operation)) : operationName(operation);
+            m_mappingOperation->addItem(label, operation);
+            m_mappingOperation->setItemData(m_mappingOperation->count() - 1, true, Qt::UserRole + 1);
+            m_mappingOperation->setItemData(m_mappingOperation->count() - 1,
+                QString::fromUtf8(u8"兼容显示当前已有配置，不自动更改原有工作模式或方向。新建映射请选择四种新动作。"), Qt::ToolTipRole);
+        }
+    }
     selectData(m_mappingOperation, operation);
     selectData(m_mappingResponse, mapping.value("responsePolicy").toString("ack"));
     const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
@@ -1112,7 +1140,8 @@ void Widget::updateMappingControls()
     for (const QJsonValue &value : entry.value("parameters").toArray()) {
         const QJsonObject parameter = value.toObject();
         details << parameter.value("label").toString() + QString::fromUtf8(u8"：") + parameter.value("description").toString()
-            + (!parameter.value("editable").toBool() ? QString::fromUtf8(u8"（目录参考，结构编辑后续实现）") : QString());
+            + (!parameter.value("editable").toBool() ? QushengCommandCatalog::fixedAction(operation)
+               ? QString::fromUtf8(u8"（默认或固定参数，无需映射）") : QString::fromUtf8(u8"（目录参考，结构编辑后续实现）") : QString());
     }
     if (!entry.value("note").toString().isEmpty()) details << QString::fromUtf8(u8"注意：") + entry.value("note").toString();
     m_mappingProtocolDetail->setText(details.join('\n'));
@@ -1135,7 +1164,7 @@ void Widget::updateMappingControls()
             if (QWidget *label = form->labelForField(control)) {
                 label->setVisible(show);
                 if (control == m_mappingSource) if (auto *text = qobject_cast<QLabel *>(label))
-                    text->setText(mappingParameterKey(m_mappingOperation->currentData().toString()) == "distanceUm"
+                    text->setText(QushengCommandCatalog::fixedAction(operation) || mappingParameterKey(m_mappingOperation->currentData().toString()) == "distanceUm"
                         ? QString::fromUtf8(u8"距离来源") : QString::fromUtf8(u8"位置来源"));
             }
     }
@@ -1151,6 +1180,24 @@ void Widget::updateMappingControls()
             ? QString::fromUtf8(u8"移动距离（数值）") : QString::fromUtf8(u8"目标位置（数值）");
     m_mappingParameterHint->setText(!supported ? QString::fromUtf8(u8"数字参数可选择客户字段或固定值；暂未设置也可以保存待实现草稿。复杂结构仅提供协议说明。") : query ? QString::fromUtf8(u8"无参数；收到设备回告后显示结果。请核对此命令帧尾。") :
         constant ? target + QString::fromUtf8(u8"使用固定值。") : target + QString::fromUtf8(u8" = 客户字段 × 换算倍数（默认一倍）。"));
+    if (QushengCommandCatalog::fixedAction(operation)) {
+        const QString motorHint = QString::fromUtf8(u8"工作模式固定为绝对位置模式；速度使用“设备与连接”中的默认运动速度。仅移动距离需要映射客户参数。");
+        if (supported) {
+            m_mappingParameterHint->setText(motorHint + QString::fromUtf8(u8"移动距离在绝对模式下表示目标位置，不与当前位置相加减。")
+                + (constant ? QString::fromUtf8(u8"当前使用固定数值。") : QString::fromUtf8(u8"当前使用客户字段 × 换算倍数（默认一倍）。")));
+        } else {
+            m_mappingParameterHint->setText(motorHint + QString::fromUtf8(u8"停止、复位可先保存草稿；距离字段的实际含义及完成条件尚待确认，因此不开放发送。暂未设置距离也可保存。"));
+        }
+    } else if (QushengCommandCatalog::isLegacyOperation(operation)) {
+        m_mappingCommandInfo->setText(QString::fromUtf8(u8"旧版映射：保持原工作模式和方向，不自动迁移。") + "\n" + m_mappingCommandInfo->text());
+    }
+    // 方向已固化在新动作中；只有真实存在旧版 ABS 映射时显示其兼容方向，不能让用户在两个地方修改同一动作。
+    bool legacyAbsolute = false;
+    for (int row = 0; row < m_mappingTable->rowCount(); ++row)
+        if (m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject().value("operation").toString() == "ABSOLUTE_MOVE") legacyAbsolute = true;
+    m_action->setVisible(legacyAbsolute);
+    if (auto *form = qobject_cast<QFormLayout *>(m_action->parentWidget()->layout()))
+        if (QWidget *label = form->labelForField(m_action)) label->setVisible(legacyAbsolute);
 }
 
 bool Widget::saveMappingEditor()
@@ -1334,7 +1381,7 @@ bool Widget::saveUiToDraft()
     m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
     appendLog(QString::fromUtf8(u8"中文表单已保存到草稿；当前已启用版本未改变。"));
-    updateLiveState();
+    updateMappingControls(); updateLiveState();
     return true;
 }
 
