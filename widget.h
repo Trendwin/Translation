@@ -47,7 +47,6 @@ private:
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();
     void preview(bool live);
-    void parseOfflineReply();
     QByteArray inputBytes(const ProtocolConfig &config, TranslationError *error) const;
     QString previewText(const ConversionPreview &preview) const;
     void appendLog(const QString &text);
@@ -60,7 +59,6 @@ private:
     void updateMappingControls();
     void mappingEdited();
     void filterMappingCommands();
-    void browseCommandCatalog();
     void loadCatalogParameters(const QJsonObject &parameters);
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
     bool inputIsQuery() const;
@@ -96,23 +94,12 @@ private:
     QLineEdit *m_mappingCode = nullptr;
     QComboBox *m_mappingOperation = nullptr;
     QLineEdit *m_mappingSearch = nullptr;
-    QComboBox *m_mappingCategory = nullptr;
-    QLabel *m_mappingSearchResult = nullptr;
-    QLabel *m_mappingCommandInfo = nullptr;
-    QGroupBox *m_mappingProtocolMore = nullptr;
-    QLabel *m_mappingProtocolDetail = nullptr;
     QTableWidget *m_mappingParameters = nullptr;
     QComboBox *m_mappingSource = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
     QComboBox *m_mappingResponse = nullptr;
-    QLabel *m_mappingParameterHint = nullptr;
-    QCheckBox *m_mappingDefaultFooter = nullptr;
     QLineEdit *m_mappingFooter = nullptr;
-    QGroupBox *m_mappingMore = nullptr;
-    QWidget *m_mappingMoreContent = nullptr;
-    QLineEdit *m_mappingOffset = nullptr;
-    QComboBox *m_mappingRounding = nullptr;
     QGroupBox *m_mappingOmissions = nullptr;
     int m_mappingEditorRow = -1;
     bool m_loadingMapping = false;
@@ -147,7 +134,6 @@ private:
     QTextEdit *m_rawReply = nullptr;
     QTextEdit *m_replyResult = nullptr;
     QLabel *m_requestState = nullptr;
-    QLineEdit *m_offlineReply = nullptr;
     QTextEdit *m_log = nullptr;
 };
 
