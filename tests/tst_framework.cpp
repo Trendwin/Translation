@@ -59,6 +59,9 @@ private slots:
     void completeCommandCatalogMatchesProtocol();
     void pendingCommandMappingsRoundTripAndRefuseExecution();
     void pendingParameterRelationshipsAreValidated();
+    void fixedMotorActionTemplates();
+    void fixedMotorActionRequestLifecycle_data();
+    void fixedMotorActionRequestLifecycle();
 };
 
 static QString example(const QString &name)
@@ -110,7 +113,7 @@ void FrameworkTest::completeCommandCatalogMatchesProtocol()
     QVERIFY(!QushengCommandCatalog::isExecutable("QUSHENG_11"));
     for (const QJsonValue &entry : QushengCommandCatalog::options())
         executableOptions += QushengCommandCatalog::isExecutable(entry.toObject().value("operation").toString()) ? 1 : 0;
-    QCOMPARE(executableOptions, 5);
+    QCOMPARE(executableOptions, 4);
     QVERIFY(QushengCommandCatalog::find("NOT_IN_PROTOCOL").isEmpty());
     QVERIFY(!QushengCommandCatalog::isExecutable("NOT_IN_PROTOCOL"));
     QVERIFY(QushengCommandCatalog::find("QUSHENG_C1").value("note").toString().contains(QString::fromUtf8(u8"重叠")));
@@ -692,8 +695,8 @@ void FrameworkTest::simpleCommandExamples_data()
     QTest::addColumn<QString>("policy");
     QTest::addColumn<int>("wireCommand");
     QTest::addColumn<QByteArray>("payload");
-    QTest::newRow("absolute-ack") << QByteArray("/1A2000R\r") << QString("ABSOLUTE_MOVE") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
-    QTest::newRow("absolute-complete") << QByteArray("/1a2000R\r") << QString("ABSOLUTE_MOVE") << QString("complete") << 0x11 << QByteArray::fromHex("11410003e80007d0");
+    QTest::newRow("absolute-ack") << QByteArray("/1A2000R\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
+    QTest::newRow("absolute-complete") << QByteArray("/1a2000R\r") << QString("MOTOR_FORWARD") << QString("complete") << 0x11 << QByteArray::fromHex("11410003e80007d0");
     QTest::newRow("relative-forward-ack") << QByteArray("/1P500R\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
     QTest::newRow("relative-forward-complete") << QByteArray("/1p500R\r") << QString("RELATIVE_FORWARD") << QString("complete") << 0x11 << QByteArray::fromHex("11210003e80001f4");
     QTest::newRow("relative-backward-ack") << QByteArray("/1D500R\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
@@ -716,8 +719,9 @@ void FrameworkTest::simpleCommandExamples()
     QCOMPARE(quint8(preview.targetFrame.at(7)), quint8(wireCommand));
     QCOMPARE(preview.targetFrame.mid(8, payload.size()), payload);
     if (wireCommand == 0x11) {
-        const QString key = operation == "ABSOLUTE_MOVE" ? "positionUm" : "distanceUm";
-        QCOMPARE(preview.command.parameters.value(key).toInt(), operation == "ABSOLUTE_MOVE" ? 2000 : 500);
+        const bool absolute = QushengCommandCatalog::isAbsoluteMotion(operation);
+        const QString key = absolute ? "positionUm" : "distanceUm";
+        QCOMPARE(preview.command.parameters.value(key).toInt(), absolute ? 2000 : 500);
     } else {
         QCOMPARE(preview.fieldOrder.size(), 2);
         QVERIFY(!preview.fields.contains(QString::fromUtf8(u8"位置")));
@@ -849,6 +853,128 @@ void FrameworkTest::relativeMoveRejectsUnsafeStartAndTimeout()
         QCOMPARE(result.error.code, QString(scenario == 0 ? "POSITION_LIMIT" : scenario == 3 ? "POSITION_QUERY_TIMEOUT" : "POSITION_QUERY_STATE"));
         if (scenario != 0) QVERIFY(manager.deviceBusy());
     }
+}
+
+void FrameworkTest::fixedMotorActionTemplates()
+{
+    const QStringList expected = {"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
+    QStringList found;
+    for (const QJsonValue &value : QushengCommandCatalog::options()) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value("code").toString() != "0x11") continue;
+        const QString operation = entry.value("operation").toString();
+        found.append(operation);
+        int editable = 0;
+        for (const QJsonValue &parameter : entry.value("parameters").toArray()) {
+            const QJsonObject spec = parameter.toObject();
+            if (spec.value("editable").toBool()) {
+                ++editable; QCOMPARE(spec.value("key").toString(), QString("positionUm"));
+                QCOMPARE(spec.value("min").toInt(), 0); QCOMPARE(spec.value("max").toInt(), 0xfffffe);
+            }
+            if (spec.value("key").toString() == "mode") QCOMPARE(spec.value("fixedValue").toInt(), 4);
+            if (spec.value("key").toString() == "action") QCOMPARE(spec.value("fixedValue").toInt(), expected.indexOf(operation) + 1);
+            if (spec.value("key").toString() == "speedUmPerS") QCOMPARE(spec.value("defaultSource").toString(), QString("device.speedUmPerS"));
+        }
+        QCOMPARE(editable, 1);
+    }
+    QCOMPARE(found, expected);
+    for (const QString &operation : {QString("ABSOLUTE_MOVE"), QString("RELATIVE_FORWARD"), QString("RELATIVE_BACKWARD"), QString("QUSHENG_11")}) {
+        QVERIFY(QushengCommandCatalog::isLegacyOperation(operation));
+        QVERIFY(!QushengCommandCatalog::find(operation).isEmpty());
+        QVERIFY(!found.contains(operation));
+    }
+
+    ProtocolConfig base; TranslationError error;
+    QVERIFY(ProtocolConfig::load(example("dt-preview.json"), &base, &error));
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    for (const QString &operation : expected) {
+        ProtocolConfig config = base;
+        QJsonObject mapping = config.root.value("mappings").toArray().at(0).toObject();
+        mapping.insert("operation", operation); mapping.insert("responsePolicy", "ack");
+        config.root.insert("mappings", QJsonArray{mapping});
+        QJsonObject device = config.root.value("device").toObject();
+        device.insert("speedUmPerS", 1234); device.remove("absoluteAction"); config.root.insert("device", device);
+        QVERIFY2(config.validate(&error), qPrintable(error.message));
+        ConversionPreview preview;
+        const bool executable = operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
+        QCOMPARE(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error), executable);
+        if (executable) {
+            QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 20000);
+            QCOMPARE(preview.command.parameters.value("speedUmPerS").toInt(), 1234);
+            QCOMPARE(quint8(preview.targetFrame.at(9)), quint8(0x40 | QushengCommandCatalog::fixedAction(operation)));
+            QCOMPARE(preview.targetFrame.mid(10, 6), QByteArray::fromHex("0004d2004e20"));
+            const QByteArray before = preview.targetFrame;
+            // 设备中的旧方向与直接构造的统一命令都不能改写新模板固定动作。
+            device.insert("absoluteAction", operation == "MOTOR_FORWARD" ? 3 : 1); config.root.insert("device", device);
+            QVERIFY(ConversionEngine(config).convert("/1A2000R\r", true, &preview, &error)); QCOMPARE(preview.targetFrame, before);
+            UnifiedCommand forged = preview.command; forged.parameters.insert("absoluteAction", 2);
+            QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
+            QVERIFY(codec.encodeCommand(forged, &frame, &error)); QCOMPARE(frame, before);
+            device.insert("maxPositionUm", 19999); config.root.insert("device", device);
+            QVERIFY(!ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+            QCOMPARE(error.code, QString("POSITION_LIMIT")); QVERIFY(preview.targetFrame.isEmpty());
+            device.insert("maxPositionUm", 50000); config.root.insert("device", device);
+        } else {
+            QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED")); QVERIFY(preview.targetFrame.isEmpty());
+            UnifiedCommand pending; pending.operation = operation; pending.targetDevice = "17";
+            pending.parameters = {{"positionUm", 20000}, {"speedUmPerS", 1234}, {"absoluteAction", 1}};
+            QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame("previous valid frame");
+            QVERIFY(!codec.encodeCommand(pending, &frame, &error)); QVERIFY(frame.isEmpty());
+            QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED"));
+        }
+        QVERIFY(config.save(directory.filePath("actions.json"), &error));
+        ProtocolConfig loaded; QVERIFY(ProtocolConfig::load(directory.filePath("actions.json"), &loaded, &error));
+        QCOMPARE(loaded.root, config.root);
+        QCOMPARE(ConversionEngine(loaded).convert("/1A2000R\r", false, &preview, &error), executable);
+        QJsonObject parameters = mapping.value("parameters").toObject();
+        parameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 1}});
+        mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+        QVERIFY(!config.validate(&error)); // 高级JSON也不能为新动作添加工作模式参数。
+    }
+    QJsonObject device = base.root.value("device").toObject(); device.remove("absoluteAction"); base.root.insert("device", device);
+    QVERIFY(!base.validate(&error)); // 旧ABS的方向缺失仍需明确拒绝，不能静默猜测。
+
+    ProtocolConfig sample; QVERIFY(ProtocolConfig::load(example("motor-actions.json"), &sample, &error));
+    ConversionPreview result;
+    QVERIFY(ConversionEngine(sample).convert("!F2000\r", false, &result, &error));
+    QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11410003e80007d0"));
+    QVERIFY(ConversionEngine(sample).convert("!B500\r", false, &result, &error));
+    QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11430003e80001f4"));
+    for (const QByteArray &input : {QByteArray("!S\r"), QByteArray("!H\r")}) {
+        QVERIFY(!ConversionEngine(sample).convert(input, true, &result, &error));
+        QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED")); QVERIFY(result.targetFrame.isEmpty());
+    }
+}
+
+void FrameworkTest::fixedMotorActionRequestLifecycle_data()
+{
+    QTest::addColumn<QString>("operation"); QTest::addColumn<QString>("policy");
+    QTest::newRow("forward-ack") << QString("MOTOR_FORWARD") << QString("ack");
+    QTest::newRow("forward-complete") << QString("MOTOR_FORWARD") << QString("complete");
+    QTest::newRow("backward-ack") << QString("MOTOR_BACKWARD") << QString("ack");
+    QTest::newRow("backward-complete") << QString("MOTOR_BACKWARD") << QString("complete");
+}
+
+void FrameworkTest::fixedMotorActionRequestLifecycle()
+{
+    QFETCH(QString, operation); QFETCH(QString, policy);
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100, 2000);
+    int completed = 0; UnifiedResult last;
+    connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &result) { ++completed; last = result; });
+    UnifiedCommand move; move.requestId = 1; move.targetDevice = "17"; move.operation = operation;
+    move.responsePolicy = policy; move.parameters = {{"positionUm", 20000}, {"speedUmPerS", 1000}};
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(), 1);
+    QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x11)); // 新动作绝不走旧相对运动的前置查询。
+    transport.receive(QushengProtocol::makeReply(0, 0));
+    QCOMPARE(completed, policy == "ack" ? 1 : 0); QVERIFY(manager.deviceBusy());
+    QTRY_COMPARE(transport.sent.size(), 2);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12, QByteArray::fromHex("0000000010004e1fffffff")));
+    QVERIFY(manager.deviceBusy()); // 空闲但目标不符不能完成，也不能释放后续运动。
+    QCOMPARE(completed, policy == "ack" ? 1 : 0);
+    QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12, QByteArray::fromHex("0000000010004e20ffffff")));
+    QTRY_COMPARE(completed, 1); QVERIFY(last.success); QVERIFY(!manager.deviceBusy());
 }
 
 QTEST_GUILESS_MAIN(FrameworkTest)

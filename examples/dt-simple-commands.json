@@ -13,8 +13,8 @@
     ]
   },
   "mappings": [
-    {"commandCode":"A","operation":"ABSOLUTE_MOVE","responsePolicy":"ack","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
-    {"commandCode":"a","operation":"ABSOLUTE_MOVE","responsePolicy":"complete","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"A","operation":"MOTOR_FORWARD","responsePolicy":"ack","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
+    {"commandCode":"a","operation":"MOTOR_FORWARD","responsePolicy":"complete","parameters":{"positionUm":{"kind":"field","field":"位置"}}},
     {"commandCode":"P","operation":"RELATIVE_FORWARD","responsePolicy":"ack","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
     {"commandCode":"p","operation":"RELATIVE_FORWARD","responsePolicy":"complete","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},
     {"commandCode":"D","operation":"RELATIVE_BACKWARD","responsePolicy":"ack","parameters":{"distanceUm":{"kind":"field","field":"位置"}}},

@@ -1,4 +1,5 @@
 #include "qushengprotocol.h"
+#include "qushengcommandcatalog.h"
 
 namespace {
 const quint8 FrameByte = 0xaa;
@@ -81,7 +82,13 @@ QByteArray QushengProtocol::makeFrame(quint8 destination, quint8 source, quint8 
 bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *frame,
                                     TranslationError *error) const
 {
+    // 失败输出必须为空；调用方不得误用上一条成功命令的帧（尤其停止/复位仍待实现）。
+    if (frame) frame->clear();
     if (!frame || !error) return false;
+    if (command.operation == "MOTOR_STOP" || command.operation == "MOTOR_RESET") {
+        *error = {"COMMAND_NOT_IMPLEMENTED", QString::fromUtf8(u8"停止与复位的发送和完成条件待实现，本轮不会生成目标帧")};
+        return false;
+    }
     if (m_destination==0 || m_source==0 || m_destination==m_source) {
         *error = {"QUSHENG_ADDRESS", QString::fromUtf8(u8"趋盛地址未配置或冲突")};
         return false;
@@ -110,21 +117,22 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
         return true;
     }
     const bool relative = command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD";
-    if (!relative && command.operation!=QStringLiteral("ABSOLUTE_MOVE")) {
+    if (!relative && !QushengCommandCatalog::isAbsoluteMotion(command.operation)) {
         *error = {"QUSHENG_UNSUPPORTED", QString::fromUtf8(u8"只支持单条位置运动、电机查询及设备版本查询")};
         return false;
     }
-    quint32 speed=0, position=0, action=0;
+    quint32 speed=0, position=0, action=quint32(QushengCommandCatalog::fixedAction(command.operation));
     if (!readUnsigned24Parameter(command,"speedUmPerS",&speed)
             || !readUnsigned24Parameter(command,relative ? "distanceUm" : "positionUm",&position)
-            || !readUnsigned24Parameter(command,"absoluteAction",&action)
+            || (!action && !readUnsigned24Parameter(command,"absoluteAction",&action))
             || speed==0 || position==ContinuousMoveDistance || (action!=1 && action!=3)) {
         *error = {"QUSHENG_RANGE", QString::fromUtf8(u8"速度、绝对位置或方向不在有效范围")};
         return false;
     }
     QByteArray payload;
     payload.append(char(devId));
-    // 相对模式高四位为 2、绝对模式为 4；方向由通用目标模板决定，与客户命令字符无关。
+    // 新模板固定模式4、动作1/3。编码器再次以操作决定动作，防止直接构造统一命令绕过映射层。
+    // 旧相对配置保留模式2；停止/复位没有已确认完成条件，因此不能落入本段运动编码。
     if (relative) action = command.operation == "RELATIVE_FORWARD" ? 1 : 3;
     payload.append(char((relative ? 0x20 : 0x40) | action));
     appendBe24(&payload, speed);    // D2..D4：速度，24 位无符号大端。

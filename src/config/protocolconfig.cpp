@@ -228,6 +228,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
     const QJsonArray mappings = root.value("mappings").toArray();
     if (mappings.isEmpty()) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"至少需要一条命令映射"));
     QSet<QString> commandCodes;
+    bool requiresLegacyDirection = false;
     for (const QJsonValue &value : mappings) {
         const QJsonObject mapping = value.toObject();
         const QString code = mapping.value("commandCode").toVariant().toString();
@@ -235,6 +236,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码不能为空或重复"));
         commandCodes.insert(code);
         const QString operation = mapping.value("operation").toString();
+        requiresLegacyDirection |= operation == "ABSOLUTE_MOVE";
         const bool query = operation == "QUERY_MOTOR" || operation == "QUERY_DEVICE_INFO";
         const bool relative = operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
         const QJsonObject catalogEntry = QushengCommandCatalog::find(operation);
@@ -344,6 +346,9 @@ bool ProtocolConfig::validate(TranslationError *error) const
 
     // 这些值直接参与真实设备组帧，所以即使仅预览也必须是合法数值；是否已经人工核对由界面单独确认。
     const QJsonObject device = root.value("device").toObject();
+    if (requiresLegacyDirection && !integer(device.value("absoluteAction"), 1, 1)
+            && !integer(device.value("absoluteAction"), 3, 3))
+        return fail(error, "CONFIG_DEVICE", QString::fromUtf8(u8"旧版绝对映射需要保留方向值1或3；可在设备页面核对旧版方向"));
     if (!integer(device.value("destination"), 1, 255)
             || !integer(device.value("source"), 1, 255)
             || device.value("destination").toInt() == device.value("source").toInt()
@@ -351,9 +356,8 @@ bool ProtocolConfig::validate(TranslationError *error) const
             || !integer(device.value("speedUmPerS"), 1, 0xfffffe)
             || !integer(device.value("minPositionUm"), 0, 0xfffffe)
             || !integer(device.value("maxPositionUm"), 0, 0xfffffe)
-            || device.value("minPositionUm").toInt() > device.value("maxPositionUm").toInt()
-            || (!integer(device.value("absoluteAction"), 1, 1) && !integer(device.value("absoluteAction"), 3, 3)))
-        return fail(error, "CONFIG_DEVICE", QString::fromUtf8(u8"下游地址、DevID、速度、行程或绝对运动动作值不完整"));
+            || device.value("minPositionUm").toInt() > device.value("maxPositionUm").toInt())
+        return fail(error, "CONFIG_DEVICE", QString::fromUtf8(u8"下游地址、电机编号、默认速度或行程参数不完整"));
     return true;
 }
 

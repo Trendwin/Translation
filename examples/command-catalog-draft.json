@@ -14,7 +14,7 @@
   "mappings": [
     {
       "commandCode": "MOVE",
-      "operation": "ABSOLUTE_MOVE",
+      "operation": "MOTOR_FORWARD",
       "responsePolicy": "ack",
       "parameters": {"positionUm": {"kind": "field", "field": "数值"}}
     },
