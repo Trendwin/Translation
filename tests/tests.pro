@@ -5,10 +5,7 @@ TARGET = tst_framework
 INCLUDEPATH += ../src
 RESOURCES += ../resources.qrc
 
-win32-msvc {
-    QMAKE_CFLAGS += /utf-8
-    QMAKE_CXXFLAGS += /utf-8
-}
+include($$PWD/../build-encoding.pri)
 
 SOURCES += tst_framework.cpp \
     ../src/demo/demointernalprotocol.cpp \

@@ -7,10 +7,7 @@ TARGET = Translation
 DEFINES += QT_DEPRECATED_WARNINGS
 RESOURCES += resources.qrc
 
-win32-msvc {
-    QMAKE_CFLAGS += /utf-8
-    QMAKE_CXXFLAGS += /utf-8
-}
+include($$PWD/build-encoding.pri)
 
 CONFIG(debug, debug|release) {
     DESTDIR = $$PWD/bin/debug
