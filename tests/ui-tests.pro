@@ -4,7 +4,7 @@ TEMPLATE = app
 TARGET = tst_widget
 INCLUDEPATH += ../src ..
 RESOURCES += ../resources.qrc
-win32-msvc: QMAKE_CXXFLAGS += /utf-8
+include($$PWD/../build-encoding.pri)
 SOURCES += tst_widget.cpp ../widget.cpp \
     ../src/qusheng/qushengcommandcatalog.cpp \
     ../src/config/protocolconfig.cpp ../src/core/conversionengine.cpp \

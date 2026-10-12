@@ -2,6 +2,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
+#include <QDirIterator>
+#include <QRegularExpression>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -34,6 +36,7 @@ private slots:
     void advancedMappingIsPreserved();
     void queryAndRelativeMappingControls();
     void completeCatalogAndSearchPreserveSelection();
+    void catalogTextIsReadableAndSourceLiteralsAreExplicit();
     void pendingMappingEditorAndFieldRefresh();
     void pendingAdvancedRelationAndTargetSwitch();
     void browseReceiveOnlyCatalog();
@@ -312,6 +315,50 @@ void WidgetTest::completeCatalogAndSearchPreserveSelection()
     QCOMPARE(expression.value("numerator").toInt(), 5); QCOMPARE(expression.value("denominator").toInt(), 2);
 }
 
+void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
+{
+    Widget widget;
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); QVERIFY(operation);
+    // 独立核对截图里的项，不能仅从同一张目录自动生成期望而遗漏格式乱码。
+    QCOMPARE(operation->itemText(operation->findData("QUSHENG_22")), QString::fromUtf8(u8"0x22 | 电磁阀单路控制 (发送待实现)"));
+    QCOMPARE(operation->itemText(operation->findData("QUSHENG_17")), QString::fromUtf8(u8"0x17 | 电机运动完成上报 (仅接收)"));
+    QCOMPARE(operation->itemText(operation->findData("ABSOLUTE_MOVE")), QString::fromUtf8(u8"0x11 | 绝对位置运动 (可发送)"));
+    QCOMPARE(operation->itemText(operation->findData("RELATIVE_FORWARD")), QString::fromUtf8(u8"0x11 | 相对前进 (可发送)"));
+    QCOMPARE(operation->itemText(operation->findData("RELATIVE_BACKWARD")), QString::fromUtf8(u8"0x11 | 相对后退 (可发送)"));
+    QCOMPARE(operation->itemText(operation->findData("QUERY_MOTOR")), QString::fromUtf8(u8"0x12 | 电机信息查询 (可发送)"));
+    QCOMPARE(operation->itemText(operation->findData("QUERY_DEVICE_INFO")), QString::fromUtf8(u8"0x04 | 设备信息查询 (可发送)"));
+    QCOMPARE(operation->itemData(operation->findData("QUSHENG_22"), Qt::ToolTipRole).toString(), QString::fromUtf8(u8"打开指定电磁阀并设置保持时间。"));
+    QCOMPARE(operation->count(), 59);
+    for (int i = 0; i < operation->count(); ++i) {
+        const QString op = operation->itemData(i).toString();
+        const QJsonObject entry = QushengCommandCatalog::find(op);
+        const QString status = QushengCommandCatalog::isReceiveOnly(op) ? QString::fromUtf8(u8"仅接收")
+            : QushengCommandCatalog::isExecutable(op) ? QString::fromUtf8(u8"可发送") : QString::fromUtf8(u8"发送待实现");
+        const QString expected = entry.value("code").toString() + " | " + entry.value("name").toString() + " (" + status + ")";
+        QCOMPARE(operation->itemText(i), expected);
+        QVERIFY(!expected.contains(QChar(0xfffd)));
+        QVERIFY(!expected.contains(QString::fromUtf8(u8"锛")));
+        QVERIFY(!expected.contains("%1") && !expected.contains("%2") && !expected.contains("%3"));
+        QVERIFY(!operation->itemData(i, Qt::ToolTipRole).toString().isEmpty());
+    }
+
+    // 静态防线覆盖未触发的错误提示等路径；QStringLiteral 只留 ASCII，中文使用 fromUtf8(u8)。
+    // 这与运行时比较互补，避免仅在默认 UTF-8 编译器上通过，用户本地 kit 却再次解错标点。
+    const QDir sourceRoot(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
+    QStringList files = {sourceRoot.filePath("widget.cpp"), sourceRoot.filePath("main.cpp")};
+    QDirIterator it(sourceRoot.filePath("src"), {"*.cpp", "*.h"}, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) files << it.next();
+    const QRegularExpression literal(QStringLiteral("QStringLiteral\\s*\\(\\s*\"((?:[^\"\\\\]|\\\\.)*)\""));
+    for (const QString &path : files) {
+        QFile source(path); QVERIFY2(source.open(QIODevice::ReadOnly), qPrintable(path));
+        auto matches = literal.globalMatch(QString::fromUtf8(source.readAll()));
+        while (matches.hasNext()) {
+            const QString value = matches.next().captured(1);
+            for (const QChar ch : value) QVERIFY2(ch.unicode() < 128, qPrintable(path + ": " + value));
+        }
+    }
+}
+
 void WidgetTest::pendingMappingEditorAndFieldRefresh()
 {
     Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation");
@@ -441,6 +488,14 @@ void WidgetTest::renderChinesePages()
     auto *mappingScroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(mappingScroll);
     mappingScroll->ensureWidgetVisible(protocolMore); QCoreApplication::processEvents();
     if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-complex-c1.png")));
+
+    operation->setCurrentIndex(operation->findData("QUSHENG_22"));
+    mappingScroll->ensureWidgetVisible(operation); QCoreApplication::processEvents();
+    operation->showPopup(); QCoreApplication::processEvents();
+    operation->view()->scrollTo(operation->model()->index(operation->findData("QUSHENG_17"), 0), QAbstractItemView::PositionAtTop);
+    QCoreApplication::processEvents();
+    if (!renderDir.isEmpty()) QVERIFY(operation->view()->window()->grab().save(QDir(renderDir).filePath("command-dropdown.png")));
+    operation->hidePopup();
 
 }
 

@@ -206,16 +206,16 @@ void Widget::buildUi()
     auto *formatPage = new QWidget(this);
     auto *formatLayout = new QVBoxLayout(formatPage);
     auto *boundaryForm = new QFormLayout;
-    m_encoding = combo(this, {{QStringLiteral("ASCII 文本"), QStringLiteral("ascii")},
-                              {QStringLiteral("HEX 字节"), QStringLiteral("hex")}});
+    m_encoding = combo(this, {{QString::fromUtf8(u8"ASCII 文本"), QStringLiteral("ascii")},
+                              {QString::fromUtf8(u8"HEX 字节"), QStringLiteral("hex")}});
     m_encoding->setToolTip(QString::fromUtf8(u8"决定输入框如何转成字节。ASCII 支持 \\r、\\n 和 \\xNN 转义。"));
     m_header = new QLineEdit(this);
     m_header->setToolTip(QString::fromUtf8(u8"完整报文必须以此内容开始；不能为空。HEX 模式填写偶数个十六进制字符。"));
     m_footer = new QLineEdit(this);
     m_footer->setToolTip(QString::fromUtf8(u8"完整报文必须以此内容结束；ASCII 模式可填写 R\\r。"));
     m_byteOrderLabel = new QLabel(QString::fromUtf8(u8"多字节整数"), this);
-    m_byteOrder = combo(this, {{QStringLiteral("大端（高字节在前）"), QStringLiteral("big")},
-                               {QStringLiteral("小端（低字节在前）"), QStringLiteral("little")}});
+    m_byteOrder = combo(this, {{QString::fromUtf8(u8"大端（高字节在前）"), QStringLiteral("big")},
+                               {QString::fromUtf8(u8"小端（低字节在前）"), QStringLiteral("little")}});
     m_byteOrder->setToolTip(QString::fromUtf8(u8"仅 HEX 输入中的多字节整数使用；ASCII 数字不受影响。"));
     boundaryForm->addRow(QString::fromUtf8(u8"编码方式"), m_encoding);
     boundaryForm->addRow(QString::fromUtf8(u8"帧头"), m_header);
@@ -309,7 +309,10 @@ void Widget::buildUi()
         const QJsonObject entry = value.toObject(); const QString op = entry.value("operation").toString();
         const QString status = QushengCommandCatalog::isReceiveOnly(op) ? QString::fromUtf8(u8"仅接收")
             : QushengCommandCatalog::isExecutable(op) ? QString::fromUtf8(u8"可发送") : QString::fromUtf8(u8"发送待实现");
-        m_mappingOperation->addItem(QStringLiteral("%1 · %2（%3）").arg(entry.value("code").toString(), entry.value("name").toString(), status), op);
+        // JSON 中文名称由 JSON 解码器读取，状态文案显式按 UTF-8 转换。
+        // QStringLiteral 的非 ASCII 标点还会经过编译器输入字符集和 Qt 宏，某些构建会产生坏码点；
+        // 这里仅用 ASCII 拼接格式，保留中文名称。换字体不能修复已经解错的字符。
+        m_mappingOperation->addItem(QStringLiteral("%1 | %2 (%3)").arg(entry.value("code").toString(), entry.value("name").toString(), status), op);
         m_mappingOperation->setItemData(m_mappingOperation->count() - 1, entry.value("description").toString(), Qt::ToolTipRole);
         if (!categories.contains(entry.value("category").toString())) categories << entry.value("category").toString();
         if (QushengCommandCatalog::isReceiveOnly(op))
@@ -626,8 +629,8 @@ void Widget::connectSignals()
         const bool binary = m_encoding->currentData().toString() == "hex";
         m_byteOrderLabel->setVisible(binary);
         m_byteOrder->setVisible(binary);
-        m_header->setPlaceholderText(binary ? QStringLiteral("例如 AA55") : QStringLiteral("例如 /"));
-        m_footer->setPlaceholderText(binary ? QStringLiteral("例如 0D0A") : QStringLiteral("例如 R\\r"));
+        m_header->setPlaceholderText(binary ? QString::fromUtf8(u8"例如 AA55") : QString::fromUtf8(u8"例如 /"));
+        m_footer->setPlaceholderText(binary ? QString::fromUtf8(u8"例如 0D0A") : QString::fromUtf8(u8"例如 R\\r"));
         markDraftDirty();
     });
     for (QLineEdit *edit : {m_header, m_footer})
@@ -731,7 +734,7 @@ void Widget::connectSignals()
                     const QStringList states = {QString::fromUtf8(u8"未回零"), QString::fromUtf8(u8"空闲"),
                         QString::fromUtf8(u8"回零中"), QString::fromUtf8(u8"运行中"), QString::fromUtf8(u8"报错")};
                     const int state = it.value().toInt();
-                    value += QStringLiteral("（%1）").arg(state >= 0 && state < states.size() ? states.at(state) : QString::fromUtf8(u8"未知状态"));
+                    value += QStringLiteral(" (%1)").arg(state >= 0 && state < states.size() ? states.at(state) : QString::fromUtf8(u8"未知状态"));
                 }
                 // 0xFFFFFF 是协议定义的无效位置标记，不能把它显示成一个可以运动到的普通终点数值。
                 if ((it.key() == "positionUm" || it.key() == "feedbackPositionUm") && it.value().toLongLong() == 0xffffff)
@@ -756,7 +759,7 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::errorOccurred, this,
             [this](quint64, const TranslationError &error) {
-        appendLog(QStringLiteral("%1：%2").arg(error.code, error.message));
+        appendLog(QStringLiteral("%1: %2").arg(error.code, error.message));
         m_replyResult->append(QString::fromUtf8(u8"错误代码：%1\n原因：%2").arg(error.code, error.message));
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this,
@@ -1406,7 +1409,7 @@ void Widget::validateDraft()
     if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &error)) {
         m_draftValid = false;
         m_validationState->setText(QString::fromUtf8(u8"配置状态：校验失败（%1）").arg(error.message));
-        appendLog(QStringLiteral("%1：%2").arg(error.code, error.message));
+        appendLog(QStringLiteral("%1: %2").arg(error.code, error.message));
         updateLiveState();
         return;
     }
@@ -1483,13 +1486,13 @@ void Widget::exportDraft()
     ProtocolConfig config;
     TranslationError error;
     if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &error)) {
-        appendLog(QStringLiteral("%1：%2").arg(error.code, error.message));
+        appendLog(QStringLiteral("%1: %2").arg(error.code, error.message));
         return;
     }
     const QString path = QFileDialog::getSaveFileName(this, QString::fromUtf8(u8"导出协议配置"),
                                                        QString(), QStringLiteral("JSON (*.json)"));
     if (!path.isEmpty() && !config.save(path, &error))
-        appendLog(QStringLiteral("%1：%2").arg(error.code, error.message));
+        appendLog(QStringLiteral("%1: %2").arg(error.code, error.message));
 }
 
 void Widget::refreshPorts()
@@ -1497,7 +1500,7 @@ void Widget::refreshPorts()
     const QString selected = m_port->currentData().toString();
     m_port->clear();
     for (const QSerialPortInfo &port : QSerialPortInfo::availablePorts())
-        m_port->addItem(QStringLiteral("%1 — %2").arg(port.portName(), port.description()), port.portName());
+        m_port->addItem(QStringLiteral("%1 - %2").arg(port.portName(), port.description()), port.portName());
     const int index = m_port->findData(selected);
     if (index >= 0) m_port->setCurrentIndex(index);
 }
@@ -1583,7 +1586,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
     lines << QString::fromUtf8(u8"命中的客户命令码：%1").arg(preview.matchedCommandCode);
     lines << QString::fromUtf8(u8"参数换算：");
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
-        lines << QStringLiteral("  %1：%2").arg(displayName(it.key()), it.value());
+        lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
     lines << QString::fromUtf8(u8"统一命令：操作=%1，目标电机编号=%2，响应方式=%3，配置版本=%4")
              .arg(operationName(preview.command.operation), preview.command.targetDevice,
                   preview.command.responsePolicy == "ack" ? QString::fromUtf8(u8"命令应答后返回") : QString::fromUtf8(u8"动作完成后返回"),
@@ -1616,7 +1619,7 @@ void Widget::preview(bool live)
         TranslationError configError;
         if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &configError)) {
             m_previewOutput->setPlainText(QString::fromUtf8(u8"预览失败：%1").arg(configError.message));
-            appendLog(QStringLiteral("%1：%2").arg(configError.code, configError.message));
+            appendLog(QStringLiteral("%1: %2").arg(configError.code, configError.message));
             return;
         }
     }
@@ -1632,7 +1635,7 @@ void Widget::preview(bool live)
     if (!engine.convert(input, live, &converted, &conversionError)) {
         m_previewOutput->setPlainText(QString::fromUtf8(u8"转换已拒绝\n错误代码：%1\n原因：%2")
                                       .arg(conversionError.code, conversionError.message));
-        appendLog(QStringLiteral("%1：%2").arg(conversionError.code, conversionError.message));
+        appendLog(QStringLiteral("%1: %2").arg(conversionError.code, conversionError.message));
         return;
     }
     if (live && m_requests->deviceBusy() && !isQuery(converted.command.operation)) {
@@ -1664,7 +1667,7 @@ void Widget::parseOfflineReply()
     const QList<ProtocolMessage> messages = parser.feedReceivedData(QByteArray::fromHex(compact), &errors);
     QStringList result;
     for (const TranslationError &error : errors)
-        result << QStringLiteral("%1：%2").arg(error.code, error.message);
+        result << QStringLiteral("%1: %2").arg(error.code, error.message);
     for (const ProtocolMessage &message : messages)
         result << QString::fromUtf8(u8"完整趋盛帧：命令 0x%1，数据 %2")
                   .arg(message.messageType, 2, 16, QLatin1Char('0'))
