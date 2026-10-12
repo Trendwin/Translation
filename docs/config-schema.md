@@ -50,6 +50,8 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 参数关系保持 field（直接引用）、constant（固定值）、linear（线性换算）三种。常用界面只选择来源/固定值和换算倍数。有限位数的十进制倍数精确转换成整数分数，避免浮点舍入改变目标值。既有高级分数修改无关选项后仍保持原值。
 
+简洁表单不再提供偏移/取整控件；已有表达式的offset、round和精确分数保留，普通编辑不会将它们改成零或默认取整。映射帧尾输入留空表示用external.footer，填写时写入input.footer；勾选的省略字段继续写入input.omitFields。
+
 高级 linear 公式为 来源 × numerator ÷ denominator + offset，round 可为 exact、floor、ceil、nearest。分子范围 ±1000000000，分母1–1000000000，偏移默认0、范围 ±1000000000；除零、溢出、exact产生余数均拒绝生成目标帧。固定值0–16777214；0xFFFFFF是趋盛特殊持续运行值，本轮禁止作为位置或距离。
 
 ## 数值与设备 device
