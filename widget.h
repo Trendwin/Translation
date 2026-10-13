@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "src/config/protocolconfig.h"
+#include "src/config/draftstore.h"
 #include "src/core/conversionengine.h"
 
 class QCheckBox;
@@ -26,13 +27,14 @@ class Widget : public QWidget
 {
     Q_OBJECT
 public:
-    explicit Widget(QWidget *parent = nullptr);
+    explicit Widget(QWidget *parent = nullptr, const QString &draftFilePath = QString());
     ~Widget() override = default;
 
 private:
     void buildUi();
     void connectSignals();
-    void loadInitialExample();
+    void loadInitialDraft();
+    bool persistDraft(const QJsonObject &draft);
     void loadUiFromDraft();
     bool saveUiToDraft();
     bool draftSaved();
@@ -74,6 +76,8 @@ private:
     SerialTransport *m_transport = nullptr;
     RequestManager *m_requests = nullptr;
     TranslationService *m_service = nullptr;
+
+    DraftStore m_draftStore;
 
     QJsonObject m_draftRoot;
     ProtocolConfig m_validatedDraft;

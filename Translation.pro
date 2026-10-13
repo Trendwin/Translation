@@ -24,11 +24,13 @@ SOURCES += \
     src/core/translationservice.cpp \
     src/core/conversionengine.cpp \
     src/config/protocolconfig.cpp \
+    src/config/draftstore.cpp \
     src/qusheng/qushengprotocol.cpp \
     src/qusheng/qushengcommandcatalog.cpp \
     src/transport/serialtransport.cpp
 
 HEADERS += \
+    src/config/draftstore.h \
     widget.h \
     src/model/translationtypes.h \
     src/protocol/iinternalprotocol.h \
