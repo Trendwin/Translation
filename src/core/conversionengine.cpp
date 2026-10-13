@@ -8,6 +8,8 @@
 #include <climits>
 #include <QRegularExpression>
 
+// 转换链分三步：parse按客户格式拆字段，map按配置生成趋盛参数，convert组帧供预览。
+// 本层不写串口，也不以客户协议名称决定算法；真实发送沿用生成的参数快照。
 namespace {
 bool fail(TranslationError *error, const QString &code, const QString &message)
 {
@@ -65,6 +67,8 @@ quint64 readUnsigned(const QByteArray &bytes, bool littleEndian)
 bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
               QVariant *output, QString *trace, TranslationError *error)
 {
+    // 表达式只求数值，不判断趋盛参数是否合法；字段约束在parse检查，目标范围在SDK检查。
+    // 线性关系用整数分子/分母保留精度，不能直接用浮点乘法产生位置或控制量。
     const QString kind = expression.value("kind").toString();
     if (kind == "constant") {
         *output = expression.value("value").toVariant();
@@ -130,6 +134,8 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
     if (input.size() > 4096)
         return fail(error, "INPUT_OVERFLOW", QString::fromUtf8(u8"完整输入报文超过 4096 字节上限"));
     const QJsonObject matchedInput = mappingForInput(m_config, input);
+    // 预先识别可变长度命令，是为了选出该映射允许省略的客户字段。
+    // 这里只选配置布局，后续仍完整验证帧边界、字段值和唯一映射。
     const QJsonObject external = m_config.inputFormat(matchedInput);
     const QByteArray header = configuredBytes(external, "header");
     const QByteArray footer = configuredBytes(external, "footer");
@@ -230,6 +236,8 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         return fail(error, "MISSING_COMMAND", QString::fromUtf8(u8"没有解析出命令码字段"));
     const QString incomingCode = fields.value(commandField).toString();
 
+    // 读取到的客户命令码与配置精确匹配；最长前缀仅用于前面定位命令字段长度。
+    // operation代表趋盛目标模板，不能将客户命令字符直接当成趋盛CMD。
     QJsonObject matched;
     for (const QJsonValue &value : m_config.root.value("mappings").toArray()) {
         const QJsonObject candidate = value.toObject();
@@ -277,6 +285,8 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     }
 
     if (!QushengCommandCatalog::usesMotionEditor(command->operation)) {
+        // 通用控制/查询先将参数关系求值，再让SDK补齐未映射项。
+        // 将补齐结果存入UnifiedCommand，使预览和稍后发送使用相同值，不依赖变化中的草稿。
         const int code = QushengCommandCatalog::commandCode(command->operation);
         const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
         QushengSdkRequest sdkRequest;
@@ -310,6 +320,8 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     const int action = fixedAction ? fixedAction : relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3)
                                                         : device.value("absoluteAction").toInt();
     QushengSdkRequest motion;
+    // 运动保留旧应用字段及行程元数据，SDK只接收标准的mode/action/position参数。
+    // 电机和速度由SDK补齐后写回快照，完成轮询仍由请求层按本次运动目标判断。
     const QVariantMap supplied{{"positionUm", positionUm}, {"mode", relative ? 2 : 4}, {"action", action}};
     const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
     if (!QushengSdk::buildRequest(0x11, supplied, defaults, device.toVariantMap(), &motion, error)) return false;
@@ -345,6 +357,8 @@ bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPre
 
     const QJsonObject device = m_config.root.value("device").toObject();
     QushengProtocol codec;
+    // 预览使用临时会话，不消耗真实串口会话的线上序号；发送时会按真实会话重新组帧。
+    // 因此预览能核查参数和布局，但最终线上序号及CRC以实际发送帧为准。
     codec.setAddresses(quint8(device.value("destination").toInt()),
                        quint8(device.value("source").toInt()));
     if (!codec.encodeCommand(result.command, &result.targetFrame, error)) return false;

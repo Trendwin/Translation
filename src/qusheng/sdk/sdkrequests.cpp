@@ -2,11 +2,14 @@
 #include <QRegularExpression>
 #include <cmath>
 
+// 阅读顺序：definitions登记协议 → buildRequest补齐/校验 → encode生成D0...Dn。
+// 新增指令须同时补定义、编码及sdkreplies中的回告布局，不能只添加可选名称。
 namespace {
 using Support = QushengSdkSupport;
 const Support Simple = Support::Simple, Deferred = Support::Deferred,
               LayoutPending = Support::LayoutPending, ReceiveOnly = Support::ReceiveOnly;
 
+// 将紧凑的登记项转成统一元数据，保证界面默认提示与编码器使用同一参数定义。
 QushengParameterDefinition p(const char *key, const char *label, const char *type,
                             qint64 minimum, qint64 maximum, QVariant initial = QVariant(),
                             QString deviceKey = QString(), bool required = false,
@@ -22,6 +25,7 @@ QushengParameterDefinition p(const char *key, const char *label, const char *typ
 
 QushengParameterDefinition motor(int maximum = 0x1c)
 {
+    // 普通步进范围11～1C；0x1A仅支持11～13，通过maximum收窄而非编码时截断。
     return p("devId", u8"电机编号", "uint8", 0x11, maximum, 0x11, QStringLiteral("devId"));
 }
 
@@ -174,6 +178,7 @@ QMap<quint8, QushengCommandDefinition> definitions()
 
 const QMap<quint8, QushengCommandDefinition> &registry()
 {
+    // 协议登记是编译后的常量；客户JSON只能选择/映射，不能修改实现能力或参数范围。
     static const auto table = definitions();
     return table;
 }
@@ -186,6 +191,7 @@ bool fail(TranslationError *error, const char *code, const QString &message)
 
 bool supportCheck(quint8 command, TranslationError *error)
 {
+    // 在默认补齐和写字节之前拒绝未开放接口，使失败输出不会成为可发送的半成品。
     if (!registry().contains(command)) return fail(error, "SDK_UNKNOWN_COMMAND", QString::fromUtf8(u8"未知趋盛命令"));
     switch (registry().value(command).support) {
     case Support::Simple: return true;
@@ -236,6 +242,7 @@ bool validateValue(const QushengParameterDefinition &parameter, const QVariant &
 
 bool keysKnown(const QushengCommandDefinition &command, const QVariantMap &values, TranslationError *error)
 {
+    // 拼错参数名不能被忽略后悄悄使用默认值；预置和明确映射都须使用已登记的key。
     for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
         bool known = false;
         for (const auto &parameter : command.parameters) if (parameter.key == it.key()) { known = true; break; }
@@ -246,6 +253,8 @@ bool keysKnown(const QushengCommandDefinition &command, const QVariantMap &value
 
 bool crossCheck(quint8 command, const QVariantMap &parameters, TranslationError *error)
 {
+    // 单参数范围校验之后再检查跨字段关系、保留位和离散通道。
+    // 例如两个风扇阈值各自合法，低阈值仍不能超过高阈值。
     if (command == 0x01 && (parameters.value(QStringLiteral("enableMask")).toLongLong() & 1))
         return fail(error, "SDK_RESERVED_BIT", QString::fromUtf8(u8"功能使能位的位0为预留位，必须为0"));
     if (command == 0x84 && parameters.value(QStringLiteral("minOutput")).toLongLong() > parameters.value(QStringLiteral("maxOutput")).toLongLong())
@@ -260,6 +269,8 @@ bool crossCheck(quint8 command, const QVariantMap &parameters, TranslationError 
 
 void appendBigEndian(QByteArray *bytes, quint32 value, int width)
 {
+    // 趋盛多字节参数固定高字节先发，独立于客户格式的大小端设置。
+    // 调用前已检查位宽；A1负PWM转uint32后取低字节，保留线上8位补码。
     for (int i = width - 1; i >= 0; --i) bytes->append(char((value >> (8 * i)) & 0xff));
 }
 }
@@ -285,11 +296,14 @@ bool QushengSdk::buildRequest(quint8 command, const QVariantMap &supplied,
     if (!supportCheck(command, error)) return false;
     const auto spec = definition(command);
     if (!keysKnown(spec, supplied, error) || !keysKnown(spec, defaults, error)) return false;
+    // 先在局部对象中完成全部参数，避免失败时调用方读到部分更新的请求。
     QushengSdkRequest resolved;
     resolved.command = command;
     for (const auto &parameter : spec.parameters) {
         QVariant value;
         QString source;
+        // contains检查的是“是否明确提供”，因此固定值0仍会覆盖预置/默认值。
+        // 已提供但无效的值会报错，不自动回退，以免隐藏配置错误。
         if (supplied.contains(parameter.key)) { value = supplied.value(parameter.key); source = QString::fromUtf8(u8"明确映射"); }
         else if (defaults.contains(parameter.key)) { value = defaults.value(parameter.key); source = QString::fromUtf8(u8"SDK预置"); }
         else if (!parameter.deviceKey.isEmpty() && device.contains(parameter.deviceKey)) {
@@ -315,6 +329,8 @@ bool QushengSdk::buildRequest(quint8 command, const QVariantMap &supplied,
 
 bool QushengSdk::encode(quint8 command, const QVariantMap &parameters, QByteArray *payload, TranslationError *error)
 {
+    // encode也可被SDK调用方直接使用，不能假定参数一定已经过buildRequest。
+    // 清空旧负载后重查能力、参数名、数值和组合关系，成功才发布本次字节。
     if (payload) payload->clear();
     if (error) *error = TranslationError();
     if (!payload) return fail(error, "SDK_OUTPUT_REQUIRED", QString::fromUtf8(u8"缺少载荷输出对象"));
@@ -333,12 +349,15 @@ bool QushengSdk::encode(quint8 command, const QVariantMap &parameters, QByteArra
     };
     switch (command) {
     case 0x01: append("enableMask", 2); break;
+    // 这些查询的D段为空；04/23则要求两个固定零字节，不能混作“查询都无数据”。
     case 0x03: case 0x0c: case 0x25: case 0x92: break;
     case 0x04: case 0x23: bytes.append(2, char(0)); break;
     case 0x05: case 0x12: case 0x14: case 0x16: case 0x44: case 0x64: case 0x82: case 0x83: append("devId", 1); break;
     case 0x08: append("intervalMs", 2); break;
     case 0x09: append("enabled", 1); break;
     case 0x11:
+        // D0编号；D1高4位模式、低4位动作；D2～D4速度；D5～D7距离/目标位置。
+        // positionUm沿用历史字段名，含义由mode决定：绝对模式是目标，相对模式是距离。
         append("devId", 1);
         bytes.append(char((parameters.value(QStringLiteral("mode")).toUInt() << 4) | parameters.value(QStringLiteral("action")).toUInt()));
         append("speedUmPerS", 3); append("positionUm", 3); break;
@@ -349,15 +368,18 @@ bool QushengSdk::encode(quint8 command, const QVariantMap &parameters, QByteArra
         append("duration", 4); break;
     case 0x22: append("devId", 1); append("duration", 4); break;
     case 0x24: append("group1Timeout", 4); append("group2Timeout", 4); append("group3Timeout", 4); break;
+    // intervalMs/voltageMv分别使用毫秒/毫伏；客户值的单位转换由映射表达式承担。
     case 0x46: append("devId", 1); append("intervalMs", 3); break;
     case 0x54: append("devId", 1); append("voltageMv", 3); break;
     case 0x63: append("peripheralDelay", 4); append("power24Delay", 4); append("power12Delay", 4); append("power5Delay", 4); break;
     case 0x65: append("devId", 1); append("enabled", 1); break;
     case 0x81: append("devId", 1); append("percent", 1); break;
     case 0x84:
+        // 编号后的5项各占1字节，最后测速间隔占4字节；不是按宿主结构体内存直接复制。
         append("devId", 1); append("speedMode", 1); append("pulsesPerRevolution", 1);
         append("filterWindow", 1); append("minOutput", 1); append("maxOutput", 1); append("measurementInterval", 4); break;
     case 0x91:
+        // 单字节的高2位是控制方式，低6位是输出掩码；有效范围已保证两部分不重叠。
         bytes.append(char((parameters.value(QStringLiteral("mode")).toUInt() << 6) | parameters.value(QStringLiteral("outputMask")).toUInt())); break;
     case 0xa1: append("devId", 1); append("pwm", 1); break;
     default: return fail(error, "SDK_DEFERRED", QString::fromUtf8(u8"该接口暂不能组帧"));

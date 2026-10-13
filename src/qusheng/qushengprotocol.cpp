@@ -2,6 +2,8 @@
 #include "qushengcommandcatalog.h"
 #include "sdk/qushengsdk.h"
 
+// 软件与SDK的适配边界：SDK决定数据字节，适配器决定发送许可、会话序号和回告归属。
+// 接收时先拆完整帧/校验CRC，再匹配请求，最后由SDK解释命令载荷。
 namespace {
 const quint8 FrameByte = 0xaa;
 const int FrameOverhead = 10;
@@ -36,6 +38,7 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
         *error = {"QUSHENG_ADDRESS", QString::fromUtf8(u8"趋盛地址未配置或冲突")}; return false;
     }
     if (m_nextSequence > 255) {
+        // 同一连接不回绕8位序号，以免迟到回告与新的同CMD请求误匹配。
         *error = {"QUSHENG_SEQUENCE_EXHAUSTED", QString::fromUtf8(u8"本次连接已用完8位序号；请重新连接")}; return false;
     }
     const int code = QushengCommandCatalog::commandCode(command.operation);
@@ -69,6 +72,7 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     const quint8 sequence = quint8(m_nextSequence);
     const QByteArray encoded = makeFrame(m_destination, m_source, sequence, quint8(code), request.payload);
     if (encoded.isEmpty()) { *error = {"QUSHENG_LENGTH", QString::fromUtf8(u8"趋盛负载过长")}; return false; }
+    // 只有完整帧生成成功才消耗序号并更新等待对象，失败不会覆盖上一请求的匹配信息。
     ++m_nextSequence; *frame = encoded;
     m_pendingRequestId = command.requestId; m_pendingSequence = sequence; m_hasPendingSequence = true;
     return true;
@@ -96,6 +100,7 @@ QList<ProtocolMessage> QushengProtocol::feedReceivedData(const QByteArray &data,
     }
 
     for (;;) {
+        // 一次readyRead可能是半帧或多帧；循环只消费完整且校验通过的帧。
         const int header = m_buffer.indexOf(QByteArray::fromHex("aaaa"));
         if (header < 0) {
             // 缓存末尾的 AA 可能是拆包帧头的第一个字节，必须保留到下一次接收。
@@ -111,6 +116,7 @@ QList<ProtocolMessage> QushengProtocol::feedReceivedData(const QByteArray &data,
         const quint8 length = quint8(m_buffer.at(4));
         const quint8 inverseLength = quint8(m_buffer.at(5));
         if (quint8(length ^ inverseLength) != 0xff) {
+            // 坏头/坏CRC只前移一字节再找帧头，不能丢弃后面可能存在的有效帧。
             m_buffer.remove(0, 1);
             if (errors) errors->append({"QUSHENG_LENGTH", QString::fromUtf8(u8"趋盛帧长度反码校验失败")});
             continue;
@@ -145,6 +151,7 @@ bool QushengProtocol::matchesReply(const UnifiedCommand &command, const Protocol
         if (QushengSdk::decodeReport(quint8(message.messageType), message.payload, &report, &reportError)) return false;
     }
     // 成功/错误回告长度由SDK逐族检查；序号、地址和命令仍在传输适配层隔离。
+    // 回复地址与请求反向；本地requestId隔离当前调用，线上sequence隔离迟到报文。
     return m_hasPendingSequence && command.requestId == m_pendingRequestId && frame.size() >= FrameOverhead
         && quint8(frame.at(2)) == m_source && quint8(frame.at(3)) == m_destination
         && quint8(frame.at(6)) == m_pendingSequence && quint8(frame.at(7)) == expectedCmd;
@@ -156,6 +163,7 @@ bool QushengProtocol::decodeReply(const UnifiedCommand &command, const ProtocolM
     if (!result || !error) return false;
     *result = UnifiedResult(); result->requestId = command.requestId;
     QushengSdkReply reply;
+    // false表示无法解析；合法设备拒绝返回true但success=false，两者的等待策略不同。
     if (!QushengSdk::decodeReply(quint8(message.messageType), message.payload, &reply, error)) return false;
     result->success = reply.success; result->data = reply.values;
     result->data.insert("basicStatus", reply.basicStatus);

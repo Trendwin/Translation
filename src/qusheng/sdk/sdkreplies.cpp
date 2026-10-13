@@ -1,9 +1,12 @@
 #include "qushengsdk.h"
 #include <QStringList>
 
+// 只解析趋盛命令数据，整帧CRC/地址/序号由QushengProtocol处理。
+// 普通应答先核对执行结果头和长度，再读取扩展字段；上报另走decodeReport。
 namespace {
 quint32 be(const QByteArray &data, int at, int size)
 {
+    // 所有调用点须先通过对应布局长度检查；本工具只读取1～4字节大端无符号值。
     quint32 value = 0;
     for (int i = 0; i < size; ++i) value = (value << 8) | quint8(data.at(at + i));
     return value;
@@ -55,6 +58,7 @@ bool simple(quint8 command)
 
 int successLength(quint8 command, const QByteArray &payload)
 {
+    // 返回值包含4字节执行结果头，不包含AA AA帧头等传输字段；-1表示布局不合法。
     // 查询按各自布局校验，不能仅“至少4字节”就把缺失数据当成0；异常回告另接受4字节。
     switch (command) {
     case 0x03: return payload.size() >= 4 && (payload.size() - 4) % 4 == 0 ? payload.size() : -1;
@@ -80,6 +84,8 @@ int successLength(quint8 command, const QByteArray &payload)
 
 void configuration(QVariantMap *values, const QByteArray &data, int at)
 {
+    // 14查询在应答头后直接返回13设置命令的配置段，故at=4，没有额外DevID。
+    // 先2字节硬件标志，再3个uint16及6个uint32，读取顺序与协议表一致。
     values->insert("hardwareFlags", be(data, at, 2));
     const char *words[] = {"microsteps", "staticCurrent", "runningCurrent"};
     for (int i = 0; i < 3; ++i) values->insert(QLatin1String(words[i]), be(data, at + 2 + 2 * i, 2));
@@ -106,6 +112,8 @@ void fanConfiguration(QVariantMap *values, const QByteArray &data)
 
 void interfaceConfiguration(QVariantMap *values, const QByteArray &data)
 {
+    // 0C在D4给出接口类型，后续是不同长度的串口/CAN/网络分支，不是并排的全部配置。
+    // successLength已按该类型验证负载，避免用网络偏移读取短串口应答。
     const quint8 type = quint8(data.at(4));
     values->insert("interfaceType", type);
     if (type <= 1) {
@@ -141,6 +149,7 @@ bool QushengSdk::decodeReply(quint8 command, const QByteArray &payload,
     // 否则低字节错误会被吞入状态，错误帧反而被当成成功。
     const quint32 deviceError = command == 0x21 ? be(payload, 0, 2) : quint8(payload.at(0));
     const bool shortError = deviceError != 0 && payload.size() == 4;
+    // 拒绝回告允许只有结果头，设备无须附上查询数据；成功查询则必须含完整扩展。
     if (!shortError && successLength(command, payload) != payload.size())
         return fail(error, "SDK_REPLY_LENGTH", QString::fromUtf8(u8"趋盛回告长度与命令布局不符"));
     if (!deviceError && command == 0x12 && (quint8(payload.at(4)) >> 4) > 4)
@@ -176,6 +185,8 @@ bool QushengSdk::decodeReply(quint8 command, const QByteArray &payload,
     }
     case 0x0c: interfaceConfiguration(&values, payload); break;
     case 0x12: {
+        // 应答D4高4位是状态，D5～D7当前位置，D8～D10负反馈位置，两种位置分别保留。
+        // SDK负责解码；“空闲且到达本次目标”由请求层判断，不在这里宣告动作完成。
         const int state = (quint8(payload.at(4)) >> 4) & 0x0f;
         values.insert("motorState", state); values.insert("positionUm", be(payload, 5, 3));
         values.insert("feedbackPositionUm", be(payload, 8, 3)); break;
@@ -220,6 +231,7 @@ bool QushengSdk::decodeReport(quint8 command, const QByteArray &payload,
             return fail(error, "SDK_REPORT_LENGTH", QString::fromUtf8(u8"错误主动上报应由完整四字节记录组成"));
         QVariantList records;
         for (int at = 0; at < payload.size(); at += 4) {
+            // 有效模块编号也用于区分同CMD的设置应答，不能把普通ERR_CODE当成DevID。
             if (!QushengSdk::isDeviceId(quint8(payload.at(at))))
                 return fail(error, "SDK_REPORT_DEVICE", QString::fromUtf8(u8"错误上报的模块编号无效"));
             QVariantMap record;
@@ -229,6 +241,7 @@ bool QushengSdk::decodeReport(quint8 command, const QByteArray &payload,
         reply->values.insert("errors", records); break;
     }
     case 0x17: {
+        // 与12应答不同，上报从D0直接开始编号，不含4字节执行结果头。
         if (payload.size() != 8) return fail(error, "SDK_REPORT_LENGTH", QString::fromUtf8(u8"电机主动上报应为八字节"));
         const int id = quint8(payload.at(0)), state = quint8(payload.at(1)) >> 4;
         if (id < 0x11 || id > 0x1c) return fail(error, "SDK_REPORT_DEVICE", QString::fromUtf8(u8"电机主动上报编号无效"));
@@ -248,5 +261,6 @@ bool QushengSdk::decodeReport(quint8 command, const QByteArray &payload,
         return fail(error, "SDK_NOT_REPORT", QString::fromUtf8(u8"此命令不是本阶段支持的主动上报"));
     }
     reply->success = true;
+    // 这里success只表示上报解析成功；09的具体模块故障仍在values.errors中。
     return true;
 }
