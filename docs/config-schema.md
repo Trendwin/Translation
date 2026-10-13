@@ -39,10 +39,10 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 | ABSOLUTE_MOVE（旧版兼容） | positionUm | 绝对模式4、设备absoluteAction；完成时0x12核对空闲和目标 |
 | RELATIVE_FORWARD（旧版兼容） | distanceUm | 先0x12核对当前位置和终点，再0x11，位置模式2、动作1 |
 | RELATIVE_BACKWARD（旧版兼容） | distanceUm | 先0x12核对当前位置和终点，再0x11，位置模式2、动作3 |
-| QUERY_MOTOR | 空对象 | 0x12，数据为电机DevID；显示状态、电机位置和独立负反馈位置 |
+| QUERY_MOTOR | 空对象或devId | 0x12，未映射编号时使用默认值；显示状态、电机位置和独立负反馈位置 |
 | QUERY_DEVICE_INFO | 空对象 | 0x04，数据0000；显示硬件、IAP、主控版本及设备标识 |
 
-目录元数据保存于 `data/qusheng-commands.json`，随程序资源编译，不写入用户的客户协议格式。其余下发项例如 `QUSHENG_81`（风扇控制）可以选择并保存到 `mappings`；数字参数使用目录的稳定英文 `key`。尚未设置的参数不写入 `parameters`，不用零值代替。结构和字节数据本轮只展示说明。待实现映射只保存 `ack` 策略，不表示已实现回告解析或动作完成判断。
+目录元数据保存于 `data/qusheng-commands.json`，随程序资源编译，不写入用户的客户协议格式。普通下发项例如 `QUSHENG_81`（风扇控制）可以选择并保存到 `mappings`；数字参数使用SDK定义的稳定英文 `key`。尚未设置的参数不写入 `parameters`，运行时由SDK默认规则补齐，不用零值代替。结构和字节数据本轮只展示说明。待实现映射只保存 `ack` 策略，不表示已实现回告解析或动作完成判断。
 
 0x11新建选项只有四种动作。模式、动作、电机编号、速度均不可加入其parameters映射；前进/后退仅positionUm且必须完整，停止/复位允许该关系未设置。旧QUSHENG_11通用参数关系仍可加载保存，但仅供兼容且不能生成目标帧。软件不静默迁移用户的相对移动配置。
 
@@ -52,7 +52,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 简洁表单不再提供偏移/取整控件；已有表达式的offset、round和精确分数保留，普通编辑不会将它们改成零或默认取整。所有命令统一使用external.footer；勾选的省略字段继续写入input.omitFields。旧responsePolicy的ack/complete可在核心加载，但运行均立即反馈；界面载入和保存会清除responsePolicy与input.footer，不保留隐藏的旧控制项。核心校验拒绝独立帧尾覆盖。
 
-高级 linear 公式为 来源 × numerator ÷ denominator + offset，round 可为 exact、floor、ceil、nearest。分子范围 ±1000000000，分母1–1000000000，偏移默认0、范围 ±1000000000；除零、溢出、exact产生余数均拒绝生成目标帧。固定值0–16777214；0xFFFFFF是趋盛特殊持续运行值，本轮禁止作为位置或距离。
+高级 linear 公式为 来源 × numerator ÷ denominator + offset，round 可为 exact、floor、ceil、nearest。分子范围 ±1000000000，分母1–1000000000，偏移默认0、范围 ±1000000000；除零、溢出、exact产生余数均拒绝生成目标帧。运动固定值0–16777214；0xFFFFFF是趋盛特殊持续运行值，软件运动链路禁止作为位置或距离。普通SDK参数按自身类型/范围校验，例如A1的PWM允许-128～127，阀持续时间可为32位无符号整数，不能套用位置范围。
 
 ## 数值与设备 device
 
@@ -73,3 +73,9 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 `dt-preview.json` 是上一阶段的固定1字节命令码/十倍换算回归；其含义不变，仍可加载。ASCII/HEX旧顺序字段配置继续兼容；旧实验 external.format、offset/endian字段、双连接结构明确拒绝，不能静默解释成新配置。
 
 完整帧与缓存均不超过4096字节。全固定长度分帧按长度定位帧尾，允许二进制参数中出现同值尾字节；toFooter模式不支持转义分隔符，尾字段不能包含完整帧尾序列。新可变命令模式在半包、粘包中重新按保存映射确定字段布局与边界。
+
+## SDK默认参数
+
+根对象可选sdkDefaults，以operation为键、各SDK参数数值为值。仅简单接口参与运行；数值类型、枚举、通道和组合关系由SDK校验。参数映射明确设置的值优先，未映射时使用SDK预置、设备参数或SDK软件初始值。参数表的“默认值”不生成field/constant表达式。
+
+运动模板的SDK预置仅devId/speedUmPerS，位置通过映射提供、模式和动作固定；0x01使能掩码必须明确提供。普通SDK指令不要求填写positionUm，允许只映射百分比、持续时间、电压或PWM。未知参数、固定请求字节覆盖、保留位及不合法通道在组帧前拒绝。详见[SDK架构与使用](qusheng-sdk-design.md)。

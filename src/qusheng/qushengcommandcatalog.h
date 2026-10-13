@@ -14,6 +14,8 @@ public:
     static QJsonArray options();
     static QJsonObject find(const QString &operation);
     static bool isExecutable(const QString &operation);
+    static bool usesMotionEditor(const QString &operation);
+    static int commandCode(const QString &operation);
     static bool isReceiveOnly(const QString &operation);
     static bool isAbsoluteMotion(const QString &operation);
     static int fixedAction(const QString &operation);

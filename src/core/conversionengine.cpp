@@ -1,6 +1,7 @@
 #include "conversionengine.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
+#include "qusheng/sdk/qushengsdk.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -244,15 +245,19 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     // 目录完整不等于执行完整。按命中的单条映射阻止待实现指令，避免把其参数误套成运动位置；
     // 同一配置中的已验证运动/查询仍可正常使用。拒绝点必须在组帧之前，不能生成可误发的HEX。
     const QString selectedOperation = matched.value("operation").toString();
-    if (!QushengCommandCatalog::isExecutable(selectedOperation))
-        return fail(error, "COMMAND_NOT_IMPLEMENTED", QString::fromUtf8(u8"“%1”已保存映射，但发送与回告处理待实现；不会生成或发送趋盛目标帧")
-                    .arg(QushengCommandCatalog::name(selectedOperation)));
+    if (!QushengCommandCatalog::isExecutable(selectedOperation)) {
+        const bool layoutPending = QushengCommandCatalog::find(selectedOperation).value("layoutPending").toBool();
+        return fail(error, "COMMAND_NOT_IMPLEMENTED", layoutPending
+            ? QString::fromUtf8(u8"“%1”的协议布局待确认，不生成目标帧").arg(QushengCommandCatalog::name(selectedOperation))
+            : QString::fromUtf8(u8"“%1”已保存映射，软件发送待实现或待确认，不生成目标帧").arg(QushengCommandCatalog::name(selectedOperation)));
+    }
 
     const QJsonObject device = m_config.root.value("device").toObject();
     command->configVersion = m_config.version;
     command->targetDevice = QString::number(device.value("devId").toInt());
     command->operation = matched.value("operation").toString();
-    const bool query = command->operation == "QUERY_MOTOR" || command->operation == "QUERY_DEVICE_INFO";
+    const bool query = QushengCommandCatalog::find(command->operation).value("query").toBool()
+        || command->operation.startsWith("QUERY_");
     const bool relative = command->operation == "RELATIVE_FORWARD" || command->operation == "RELATIVE_BACKWARD";
     command->action = query ? ActionType::Query : ActionType::Execute;
     // 回告立即反馈；旧配置中的 complete 不再延迟显示，也不改变运动完成判断。
@@ -271,7 +276,22 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         preview->parameterTrace.insert(it.key(), trace);
     }
 
-    if (query) return true;
+    if (!QushengCommandCatalog::usesMotionEditor(command->operation)) {
+        const int code = QushengCommandCatalog::commandCode(command->operation);
+        const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
+        QushengSdkRequest sdkRequest;
+        if (!QushengSdk::buildRequest(quint8(code), command->parameters, defaults, device.toVariantMap(), &sdkRequest, error)) return false;
+        command->parameters = sdkRequest.parameters;
+        if (command->parameters.contains("devId")) command->targetDevice = command->parameters.value("devId").toString();
+        for (auto it = sdkRequest.parameterSources.begin(); it != sdkRequest.parameterSources.end(); ++it) {
+            QString label = it.key();
+            for (const auto &spec : QushengSdk::definition(quint8(code)).parameters)
+                if (spec.key == it.key()) { label = spec.label; break; }
+            if (!preview->parameterTrace.contains(it.key())) preview->parameterTrace.insert(it.key(),
+                QString::fromUtf8(u8"%1 = %2（%3）").arg(label, command->parameters.value(it.key()).toString(), it.value()));
+        }
+        return true;
+    }
     // 客户输入是否带单位只由配置的表达式决定，本轮示例直接引用数值。
     // 参数名保留趋盛线上的单位约定；没有配置换算时不擅自乘以客户设备的步距。
     bool positionOk = false;
@@ -285,12 +305,21 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         command->parameters.insert("minPositionUm", device.value("minPositionUm").toInt());
         command->parameters.insert("maxPositionUm", device.value("maxPositionUm").toInt());
     }
-    command->parameters.insert("speedUmPerS", device.value("speedUmPerS").toInt());
     // 新建前进/后退模板各自固定动作1/3；设备默认方向只供旧ABS配置使用，不能覆盖新模板动作。
     const int fixedAction = QushengCommandCatalog::fixedAction(command->operation);
-    command->parameters.insert("absoluteAction", fixedAction ? fixedAction
-                               : relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3)
-                                          : device.value("absoluteAction").toInt());
+    const int action = fixedAction ? fixedAction : relative ? (command->operation == "RELATIVE_FORWARD" ? 1 : 3)
+                                                        : device.value("absoluteAction").toInt();
+    QushengSdkRequest motion;
+    const QVariantMap supplied{{"positionUm", positionUm}, {"mode", relative ? 2 : 4}, {"action", action}};
+    const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
+    if (!QushengSdk::buildRequest(0x11, supplied, defaults, device.toVariantMap(), &motion, error)) return false;
+    command->targetDevice = motion.parameters.value("devId").toString();
+    command->parameters.insert("speedUmPerS", motion.parameters.value("speedUmPerS"));
+    command->parameters.insert("absoluteAction", action);
+    preview->parameterTrace.insert("devId", QString::fromUtf8(u8"电机编号 = %1（%2）")
+                                  .arg(command->targetDevice, motion.parameterSources.value("devId")));
+    preview->parameterTrace.insert("speedUmPerS", QString::fromUtf8(u8"速度 = %1（%2）")
+                                  .arg(command->parameters.value("speedUmPerS").toString(), motion.parameterSources.value("speedUmPerS")));
     command->parameterUnits.insert(positionKey, QStringLiteral("um"));
     command->parameterUnits.insert("speedUmPerS", QStringLiteral("um/s"));
     return true;

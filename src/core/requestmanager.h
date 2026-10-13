@@ -4,6 +4,7 @@
 #include "transport/itransport.h"
 #include <QQueue>
 #include <QTimer>
+#include <QSet>
 
 class RequestManager : public QObject
 {
@@ -42,6 +43,8 @@ private:
     UnifiedCommand m_current,m_probe;
     // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由后续 0x12 查询独立维护。
     bool m_active=false,m_probeActive=false,m_acked=false,m_completionEmitted=false,m_deviceBusy=false;
+    // SDK预置可指定不同电机；查询另一路空闲不能解除前一路的未知运动占用。
+    QSet<QString> m_busyDevices;
     // 相对动作的前置查询不能与动作完成轮询合并：前者成功前绝不能发送运动。
     bool m_preflight=false;
     int m_sendTimeoutMs=1000,m_ackTimeoutMs=800,m_motionTimeoutMs=30000;

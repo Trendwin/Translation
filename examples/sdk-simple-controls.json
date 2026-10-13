@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "name": "单条SDK控制与查询验证（客户协议可编辑）",
+  "external": {
+    "encoding": "ascii",
+    "header": "/",
+    "footer": "R\\r",
+    "byteOrder": "big",
+    "fields": [
+      {
+        "name": "地址",
+        "role": "parameter",
+        "type": "uint",
+        "lengthMode": "fixed",
+        "length": 1,
+        "min": 1,
+        "max": 9
+      },
+      {
+        "name": "命令码",
+        "role": "command",
+        "type": "ascii",
+        "lengthMode": "mappedCommand"
+      },
+      {
+        "name": "数值",
+        "role": "parameter",
+        "type": "int",
+        "lengthMode": "toFooter",
+        "min": -128,
+        "max": 16777214
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "FAN",
+      "operation": "QUSHENG_81",
+      "parameters": {
+        "percent": {
+          "kind": "field",
+          "field": "数值"
+        }
+      }
+    },
+    {
+      "commandCode": "VAL",
+      "operation": "QUSHENG_22",
+      "parameters": {
+        "duration": {
+          "kind": "field",
+          "field": "数值"
+        }
+      }
+    },
+    {
+      "commandCode": "DAC",
+      "operation": "QUSHENG_54",
+      "parameters": {
+        "voltageMv": {
+          "kind": "field",
+          "field": "数值"
+        }
+      }
+    },
+    {
+      "commandCode": "DC",
+      "operation": "QUSHENG_A1",
+      "parameters": {
+        "pwm": {
+          "kind": "field",
+          "field": "数值"
+        }
+      }
+    },
+    {
+      "commandCode": "ADC",
+      "operation": "QUSHENG_44",
+      "parameters": {},
+      "input": {
+        "omitFields": [
+          "数值"
+        ]
+      }
+    },
+    {
+      "commandCode": "DI",
+      "operation": "QUSHENG_92",
+      "parameters": {},
+      "input": {
+        "omitFields": [
+          "数值"
+        ]
+      }
+    },
+    {
+      "commandCode": "STAT",
+      "operation": "QUSHENG_03",
+      "parameters": {},
+      "input": {
+        "omitFields": [
+          "数值"
+        ]
+      }
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "absoluteAction": 1,
+    "speedUmPerS": 1000,
+    "minPositionUm": 0,
+    "maxPositionUm": 6000
+  },
+  "sdkDefaults": {
+    "QUSHENG_81": {
+      "devId": 225
+    },
+    "QUSHENG_22": {
+      "devId": 50
+    },
+    "QUSHENG_44": {
+      "devId": 98
+    }
+  }
+}

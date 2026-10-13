@@ -18,12 +18,18 @@
 
 ```powershell
 $env:PATH = 'C:\Qt\Qt5.14.2\Tools\mingw730_32\bin;C:\Qt\Qt5.14.2\5.14.2\mingw73_32\bin;' + $env:PATH
-New-Item -ItemType Directory -Force build/app,build/core,build/ui | Out-Null
+New-Item -ItemType Directory -Force build/app,build/core,build/ui,build/sdk-requests,build/sdk-replies | Out-Null
 qmake Translation.pro -o build/app/Makefile
 mingw32-make -C build/app -j4
 qmake tests/tests.pro -o build/core/Makefile
 mingw32-make -C build/core -j4
 & build/core/release/tst_framework.exe
+qmake tests/sdk-requests.pro -o build/sdk-requests/Makefile
+mingw32-make -C build/sdk-requests -j4
+& build/sdk-requests/release/tst_sdk_requests.exe
+qmake tests/sdk-replies.pro -o build/sdk-replies/Makefile
+mingw32-make -C build/sdk-replies -j4
+& build/sdk-replies/release/tst_sdk_replies.exe
 qmake tests/ui-tests.pro -o build/ui/Makefile
 mingw32-make -C build/ui -j4
 $env:QT_QPA_PLATFORM = 'offscreen'
@@ -45,6 +51,8 @@ Remove-Item Env:QT_QPA_FONTDIR
 客户协议格式页应显示帧头 `/`、帧尾 `R\r`、地址/命令码/位置三个中文字段；命令映射页应显示11条验证映射，只有三列摘要；选中后在下方编辑。默认示例为 dt-simple-commands.json，运动与查询统一使用R+回车帧尾；原始DT查询另用dt-query-preview.json，参数直接使用数值，不默认乘十。报文调试页输入 `/1A2000R\r` 后可离线预览。未启用、未确认或未连接时，真实发送按钮应禁用并显示原因。高级配置的完整 JSON 不自动应用，须明确点击应用按钮。取消本地等待不会停止设备。
 
 本轮核心与界面测试均通过；offscreen 的 propagateSizeHints 提示属于测试渲染平台提示，不影响断言或实际 Windows 桌面运行。没有完成真实设备验收。
+
+2026-10-13 SDK集成验证：两套kit均成功构建应用，48项核心、22项界面、71项SDK请求、74项SDK回告通过。SDK测试仅依赖QtCore，不链接Widgets/SerialPort。导入sdk-simple-controls.json检查风扇、阀、DAC、直流与查询；参数表可选择默认值、客户字段或固定值，未映射值由SDK补齐，布局待确认条目仍禁止发送。
 
 映射页保留CMD/名称搜索和完整可选池。待实现目标以短标签标记，可保存标量参数关系。类别筛选、完整目录浏览窗口和协议说明已移除；仅接收报文仍明确标记，禁止下发映射。
 

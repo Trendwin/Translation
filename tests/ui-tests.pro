@@ -14,3 +14,5 @@ HEADERS += ../widget.h ../src/core/requestmanager.h ../src/core/translationservi
     ../src/qusheng/qushengcommandcatalog.h \
     ../src/protocol/iinternalprotocol.h ../src/transport/itransport.h \
     ../src/qusheng/qushengprotocol.h ../src/transport/serialtransport.h
+
+include($$PWD/../src/qusheng/sdk/qusheng-sdk.pri)

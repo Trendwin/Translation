@@ -4,6 +4,7 @@
 #include "src/core/translationservice.h"
 #include "src/qusheng/qushengprotocol.h"
 #include "src/qusheng/qushengcommandcatalog.h"
+#include "src/qusheng/sdk/qushengsdk.h"
 #include "src/transport/serialtransport.h"
 
 #include <QAbstractItemView>
@@ -83,8 +84,49 @@ QString displayName(const QString &key)
         {"hardwareVersion", QString::fromUtf8(u8"硬件版本")}, {"iapVersion", QString::fromUtf8(u8"引导程序版本")},
         {"firmwareVersion", QString::fromUtf8(u8"固件版本")}, {"deviceIdentifier", QString::fromUtf8(u8"设备标识")},
         {"boardType", QString::fromUtf8(u8"控制板类型")},
-        {"deviceBusy", QString::fromUtf8(u8"设备忙闲状态")}};
-    return names.value(key, key);
+        {"deviceBusy", QString::fromUtf8(u8"设备忙闲状态")}, {"devId", QString::fromUtf8(u8"设备编号")},
+        {"heartbeat", QString::fromUtf8(u8"心跳")}, {"errors", QString::fromUtf8(u8"故障记录")},
+        {"voltageMv", QString::fromUtf8(u8"电压")},
+        {"faultCode", QString::fromUtf8(u8"故障代码")}, {"raw", QString::fromUtf8(u8"原始数据")},
+        {"inputMask", QString::fromUtf8(u8"输入位图")}, {"configurationRaw", QString::fromUtf8(u8"配置原始数据")},
+        {"flowControl", QString::fromUtf8(u8"流控")}, {"parity", QString::fromUtf8(u8"校验位")},
+        {"stopBits", QString::fromUtf8(u8"停止位")}, {"baudrate", QString::fromUtf8(u8"波特率")},
+        {"canBaudrateIndex", QString::fromUtf8(u8"CAN速率编号")}, {"ip", QString::fromUtf8(u8"本机地址")},
+        {"subnetMask", QString::fromUtf8(u8"子网掩码")}, {"gateway", QString::fromUtf8(u8"网关")},
+        {"dns", QString::fromUtf8(u8"域名服务器")}, {"serverIp", QString::fromUtf8(u8"服务器地址")},
+        {"serverPort", QString::fromUtf8(u8"服务器端口")}};
+    if (names.contains(key)) return names.value(key);
+    for (const QJsonValue &command : QushengCommandCatalog::commands())
+        for (const QJsonValue &parameter : command.toObject().value("parameters").toArray())
+            if (parameter.toObject().value("key").toString() == key) return parameter.toObject().value("label").toString();
+    return key;
+}
+
+QString displayValue(const QString &key, const QVariant &value)
+{
+    if (value.type() == QVariant::ByteArray) return value.toByteArray().toHex(' ').toUpper();
+    if (value.type() == QVariant::List) {
+        QStringList records;
+        for (const QVariant &record : value.toList()) records << displayValue(QString(), record);
+        return records.join(QString::fromUtf8(u8"；"));
+    }
+    if (value.type() == QVariant::Map) {
+        QStringList fields; const QVariantMap record = value.toMap();
+        for (auto it = record.begin(); it != record.end(); ++it)
+            fields << QStringLiteral("%1 = %2").arg(displayName(it.key()), displayValue(it.key(), it.value()));
+        return fields.join(QString::fromUtf8(u8"，"));
+    }
+    if (key == "deviceBusy") return value.toBool() ? QString::fromUtf8(u8"运动中或状态未知") : QString::fromUtf8(u8"空闲");
+    if (key == "heartbeat") return value.toBool() ? QString::fromUtf8(u8"已收到") : QString::fromUtf8(u8"未收到");
+    if (key == "motorState") {
+        const QStringList states = {QString::fromUtf8(u8"未回零"), QString::fromUtf8(u8"空闲"),
+            QString::fromUtf8(u8"回零中"), QString::fromUtf8(u8"运行中"), QString::fromUtf8(u8"报错")};
+        const int state = value.toInt();
+        return value.toString() + QStringLiteral(" (%1)").arg(state >= 0 && state < states.size() ? states.at(state) : QString::fromUtf8(u8"未知状态"));
+    }
+    if ((key == "positionUm" || key == "feedbackPositionUm") && value.toLongLong() == 0xffffff)
+        return QString::fromUtf8(u8"未回零或未配置");
+    return value.toString();
 }
 
 QString itemText(const QTableWidget *table, int row, int column)
@@ -111,7 +153,18 @@ QString operationName(const QString &operation)
     return name == operation ? QString::fromUtf8(u8"未找到指令：%1").arg(operation) : name;
 }
 
-bool isQuery(const QString &operation) { return operation.startsWith("QUERY_"); }
+bool isQuery(const QString &operation)
+{
+    return operation.startsWith("QUERY_") || QushengCommandCatalog::find(operation).value("query").toBool();
+}
+
+bool isMotionEditor(const QString &operation)
+{
+    return operation == "ABSOLUTE_MOVE" || operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD"
+        || operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
+}
+
+bool isRecoveryQuery(const QString &operation) { return operation == "QUERY_MOTOR"; }
 
 QString mappingParameterKey(const QString &operation)
 {
@@ -493,6 +546,7 @@ void Widget::buildUi()
     m_liveReason = new QLabel(this); m_liveReason->setObjectName("liveReason");
     debugLayout->addWidget(m_liveReason);
     m_requestState = new QLabel(QString::fromUtf8(u8"执行状态：空闲"), this);
+    m_requestState->setObjectName("requestState");
     debugLayout->addWidget(m_requestState);
     tabs->insertTab(2, scrollPage(debugGroup), QString::fromUtf8(u8"报文调试"));
 
@@ -603,7 +657,7 @@ void Widget::connectSignals()
             if (!emptyNewRelation && !saveMappingEditor()) return;
             { const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, operation); }
             const bool supported = QushengCommandCatalog::isExecutable(operation);
-            const bool previousSupported = QushengCommandCatalog::isExecutable(m_editorOperation);
+            const bool previousMotion = isMotionEditor(m_editorOperation);
             const bool query = isQuery(operation);
             if (supported && query != isQuery(m_editorOperation)) {
                 for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
@@ -611,8 +665,8 @@ void Widget::connectSignals()
                 if (!query && m_mappingSource->currentData().toString().isEmpty() && m_mappingSource->count() > 2) m_mappingSource->setCurrentIndex(1);
             }
             // 不同指令的参数没有隐含等价关系。完整目录与现有运动模板之间切换时不迁移位置到别的参数。
-            if (!supported) loadCatalogParameters(QJsonObject());
-            else if (!previousSupported) {
+            if (!isMotionEditor(operation)) loadCatalogParameters(QJsonObject());
+            else if (!previousMotion) {
                 selectData(m_mappingSource, ""); m_mappingValue->clear(); m_mappingMultiplier->setText("1");
             }
             m_editorOperation = operation;
@@ -665,19 +719,7 @@ void Widget::connectSignals()
         if (result.success) {
             QStringList lines{QString::fromUtf8(u8"请求 %1：设备回告成功").arg(result.requestId)};
             for (auto it = result.data.begin(); it != result.data.end(); ++it) {
-                QString value = it.value().toString();
-                if (it.key() == "basicStatus") value = it.value().toByteArray().toHex(' ').toUpper();
-                if (it.key() == "deviceBusy") value = it.value().toBool() ? QString::fromUtf8(u8"运动中或状态未知") : QString::fromUtf8(u8"空闲");
-                if (it.key() == "motorState") {
-                    const QStringList states = {QString::fromUtf8(u8"未回零"), QString::fromUtf8(u8"空闲"),
-                        QString::fromUtf8(u8"回零中"), QString::fromUtf8(u8"运行中"), QString::fromUtf8(u8"报错")};
-                    const int state = it.value().toInt();
-                    value += QStringLiteral(" (%1)").arg(state >= 0 && state < states.size() ? states.at(state) : QString::fromUtf8(u8"未知状态"));
-                }
-                // 0xFFFFFF 是协议定义的无效位置标记，不能把它显示成一个可以运动到的普通终点数值。
-                if ((it.key() == "positionUm" || it.key() == "feedbackPositionUm") && it.value().toLongLong() == 0xffffff)
-                    value = QString::fromUtf8(u8"未回零或未配置");
-                lines << QStringLiteral("%1 = %2").arg(displayName(it.key()), value);
+                lines << QStringLiteral("%1 = %2").arg(displayName(it.key()), displayValue(it.key(), it.value()));
             }
             m_replyResult->setPlainText(lines.join('\n'));
         } else {
@@ -707,6 +749,15 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this,
             [this](const ProtocolMessage &message) {
+        // 主动上报只更新显示；不发 completed，也不能代替当前请求的匹配回告或解除运动互锁。
+        QushengSdkReply report; TranslationError error;
+        QStringList lines{QString::fromUtf8(u8"主动或未匹配报文 0x%1").arg(message.messageType, 2, 16, QLatin1Char('0')),
+            QString::fromUtf8(u8"原始帧：") + QString::fromLatin1((message.wireData.isEmpty() ? message.payload : message.wireData).toHex(' ').toUpper())};
+        if (QushengSdk::decodeReport(quint8(message.messageType), message.payload, &report, &error)) {
+            for (auto it = report.values.begin(); it != report.values.end(); ++it)
+                lines << QStringLiteral("%1 = %2").arg(displayName(it.key()), displayValue(it.key(), it.value()));
+        } else lines << QString::fromUtf8(u8"未解析：") + error.message;
+        m_replyResult->append(lines.join('\n'));
         appendLog(QString::fromUtf8(u8"收到主动或迟到的 0x%1 帧，未用于完成当前新请求")
                   .arg(message.messageType, 2, 16, QLatin1Char('0')));
     });
@@ -802,28 +853,26 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     const QString operation = mapping.value("operation").toString();
     m_mappingTable->item(row, 1)->setText((QushengCommandCatalog::isLegacyOperation(operation) ? QString::fromUtf8(u8"旧版") : QString()) + operationName(operation)
         + (QushengCommandCatalog::isExecutable(operation) ? QString() : QString::fromUtf8(u8"（待实现）")));
-    const bool query = isQuery(mapping.value("operation").toString());
-    const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(mapping.value("operation").toString())).toObject();
     QString summary = QString::fromUtf8(u8"无参数");
-    if (!query) {
+    if (isMotionEditor(operation)) {
+        const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
         if (expression.value("kind").toString() == "constant") summary = QString::fromUtf8(u8"固定数值 %1").arg(expression.value("value").toVariant().toString());
         else summary = expression.value("field").toString() + (expression.value("kind").toString() == "linear"
-                     ? QString::fromUtf8(u8" × %1").arg(multiplierText(expression)) : QString::fromUtf8(u8""));
+                     ? QString::fromUtf8(u8" × %1").arg(multiplierText(expression)) : QString());
         if (expression.value("offset").toDouble() != 0 || expression.value("round").toString("exact") != "exact")
             summary += QString::fromUtf8(u8"（高级配置）");
-    }
-    if (!QushengCommandCatalog::isExecutable(mapping.value("operation").toString())) {
-        QStringList references;
-        const QJsonObject parameters = mapping.value("parameters").toObject();
-        const QJsonArray definitions = QushengCommandCatalog::find(mapping.value("operation").toString()).value("parameters").toArray();
-        for (const QJsonValue &value : definitions) {
-            const QJsonObject definition = value.toObject(); const QJsonObject relation = parameters.value(definition.value("key").toString()).toObject();
-            if (relation.isEmpty()) continue;
-            references << definition.value("label").toString() + " = " + (relation.value("kind").toString() == "constant"
-                ? relation.value("value").toVariant().toString() : relation.value("field").toString())
-                + (relation.value("kind").toString() == "linear" ? QString::fromUtf8(u8"（含高级换算）") : QString());
+    } else {
+        QStringList references; const QJsonObject parameters = mapping.value("parameters").toObject();
+        for (const QJsonValue &value : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
+            const QJsonObject definition = value.toObject(); if (!definition.value("editable").toBool()) continue;
+            const QJsonObject relation = parameters.value(definition.value("key").toString()).toObject();
+            const QString source = relation.isEmpty() ? parameterDefaultText(definition, operation)
+                : relation.value("kind").toString() == "constant" ? relation.value("value").toVariant().toString()
+                : relation.value("field").toString() + (relation.value("kind").toString() == "linear"
+                  ? QString::fromUtf8(u8" × %1（高级）").arg(multiplierText(relation)) : QString());
+            references << definition.value("label").toString() + " = " + source;
         }
-        summary = references.isEmpty() ? QString::fromUtf8(u8"待设置") : references.join(QString::fromUtf8(u8"；"));
+        if (!references.isEmpty()) summary = references.join(QString::fromUtf8(u8"；"));
     }
     const QString issue = mappingFieldIssue(mapping);
     m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
@@ -846,7 +895,7 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
     const QString operation = m_mappingOperation->currentData().toString();
     m_mappingParameters->setProperty("operation", operation); m_mappingParameters->setProperty("originalParameters", QVariant::fromValue(parameters));
     m_mappingParameters->setRowCount(0);
-    if (QushengCommandCatalog::isExecutable(operation)) return;
+    if (isMotionEditor(operation)) return;
     for (const QJsonValue &value : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
         const QJsonObject parameter = value.toObject(); if (!parameter.value("editable").toBool()) continue;
         const QString key = parameter.value("key").toString(); const QJsonObject expression = parameters.value(key).toObject();
@@ -857,19 +906,21 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
             label->setText(label->text() + QString::fromUtf8(u8"（高级）"));
         label->setToolTip(parameterTip); label->setData(Qt::UserRole, parameter); label->setData(Qt::UserRole + 1, expression); label->setData(Qt::UserRole + 2, false);
         m_mappingParameters->setItem(row, 0, label);
-        auto *source = new QComboBox(m_mappingParameters); source->addItem(QString::fromUtf8(u8"暂未设置"), "");
+        auto *source = new QComboBox(m_mappingParameters); source->addItem(parameterDefaultText(parameter, operation), "");
         for (int i = 1; i < m_mappingSource->count(); ++i) source->addItem(m_mappingSource->itemText(i), m_mappingSource->itemData(i));
         const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
         if (!selected.isEmpty() && source->findData(selected) < 0) source->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(selected), selected);
         selectData(source, selected); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
+        const QString emptyHint = source->itemText(0).contains(QString::fromUtf8(u8"默认"))
+            ? QString::fromUtf8(u8"无需填写") : QString::fromUtf8(u8"先选择来源");
         auto *fixed = new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(selected == "@constant" ? QString::fromUtf8(u8"填写整数")
-            : selected.isEmpty() ? QString::fromUtf8(u8"先选择来源") : QString::fromUtf8(u8"无需填写"));
+            : selected.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
         fixed->setEnabled(selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
-        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed]() {
+        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint]() {
             label->setData(Qt::UserRole + 2, true); const QString chosen = source->currentData().toString();
             fixed->setEnabled(chosen == "@constant");
             fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
-                : chosen.isEmpty() ? QString::fromUtf8(u8"先选择来源") : QString::fromUtf8(u8"无需填写")); mappingEdited();
+                : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写")); mappingEdited();
         });
         connect(fixed, &QLineEdit::textChanged, this, [this, label]() { label->setData(Qt::UserRole + 2, true); mappingEdited(); });
     }
@@ -877,9 +928,27 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
     m_mappingParameters->setFixedHeight(qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));
 }
 
+QString Widget::parameterDefaultText(const QJsonObject &definition, const QString &operation) const
+{
+    const QString key = definition.value("key").toString();
+    const QJsonObject defaults = m_draftRoot.value("sdkDefaults").toObject().value(operation).toObject();
+    if (defaults.contains(key)) return QString::fromUtf8(u8"默认值（%1）").arg(defaults.value(key).toVariant().toString());
+    const QString deviceKey = definition.value("deviceKey").toString();
+    if (!deviceKey.isEmpty()) {
+        // 默认值来源独立于映射表达式；空来源不会写入固定值，SDK 在本次请求中补齐并保存快照。
+        const QMap<QString, QSpinBox *> values{{"devId", m_devId}, {"speedUmPerS", m_speed},
+            {"destination", m_destination}, {"source", m_source}, {"absoluteAction", m_action},
+            {"minPositionUm", m_minPosition}, {"maxPositionUm", m_maxPosition}};
+        const auto *value = values.value(deviceKey, nullptr);
+        return value ? QString::fromUtf8(u8"设备默认（%1）").arg(value->value()) : QString::fromUtf8(u8"设备默认");
+    }
+    if (definition.contains("default")) return QString::fromUtf8(u8"默认值（%1）").arg(definition.value("default").toVariant().toString());
+    return definition.value("required").toBool() ? QString::fromUtf8(u8"需设置") : QString::fromUtf8(u8"暂未设置");
+}
+
 bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
 {
-    // 未实现指令只记录关系，不偷偷生成 DATA。未设置与固定零不能合并，尚未填写的参数不写入 JSON。
+    // 空来源保留默认值机制；未设置与固定零不能合并。SDK 补齐默认，待实现指令仍不能生成 DATA。
     *parameters = m_mappingParameters->property("originalParameters").toJsonObject();
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         const auto *label = m_mappingParameters->item(row, 0); const QJsonObject definition = label->data(Qt::UserRole).toJsonObject();
@@ -1109,7 +1178,8 @@ void Widget::updateMappingSources()
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)); if (!source) continue;
         const QSignalBlocker sourceBlocker(source); const QString chosen = source->currentData().toString();
-        source->clear(); source->addItem(QString::fromUtf8(u8"暂未设置"), "");
+        source->clear(); source->addItem(parameterDefaultText(m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject(),
+            m_mappingOperation->currentData().toString()), "");
         for (int i = 1; i < m_mappingSource->count(); ++i) source->addItem(m_mappingSource->itemText(i), m_mappingSource->itemData(i));
         if (!chosen.isEmpty() && source->findData(chosen) < 0) source->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(chosen), chosen);
         selectData(source, chosen);
@@ -1119,9 +1189,8 @@ void Widget::updateMappingSources()
 void Widget::updateMappingControls()
 {
     const QString operation = m_mappingOperation->currentData().toString();
-    const bool supported = QushengCommandCatalog::isExecutable(operation);
-    const bool query = isQuery(operation);
-    m_mappingParameters->setVisible(!supported && m_mappingParameters->rowCount() > 0);
+    const bool motion = isMotionEditor(operation);
+    m_mappingParameters->setVisible(!motion && m_mappingParameters->rowCount() > 0);
     const bool constant = m_mappingSource->currentData().toString() == "@constant";
     auto visibility = [](QWidget *control, bool show) {
         control->setVisible(show);
@@ -1131,7 +1200,7 @@ void Widget::updateMappingControls()
     // QFormLayout 放在 group 的纵向布局里；标签按其实际所属表单定位，避免隐藏控件后留下空英文/技术标签。
     for (auto *control : {static_cast<QWidget *>(m_mappingSource), static_cast<QWidget *>(m_mappingValue),
                          static_cast<QWidget *>(m_mappingMultiplier)}) {
-        bool show = supported && !query;
+        bool show = motion;
         if (control == m_mappingValue) show &= constant;
         if (control == m_mappingMultiplier) show &= !constant;
         visibility(control, show);
@@ -1165,12 +1234,11 @@ bool Widget::saveMappingEditor()
     if (QushengCommandCatalog::isReceiveOnly(operation)) return fail(QString::fromUtf8(u8"此指令仅设备主动上报，不能创建下发映射。"));
     mapping.remove("responsePolicy");
     QJsonObject parameters = mapping.value("parameters").toObject();
-    if (!QushengCommandCatalog::isExecutable(operation)) {
+    if (!isMotionEditor(operation)) {
         QString reason;
         if (!catalogParameters(&parameters, &reason)) return fail(reason);
-    } else if (isQuery(operation)) parameters = QJsonObject();
-    else {
-        if (!QushengCommandCatalog::isExecutable(previousOperation)) parameters = QJsonObject();
+    } else {
+        if (!isMotionEditor(previousOperation)) parameters = QJsonObject();
         const QString parameterKey = mappingParameterKey(operation);
         const QString previousKey = mappingParameterKey(previousOperation);
         QJsonObject expression = parameters.value(previousKey).toObject();
@@ -1221,7 +1289,7 @@ bool Widget::saveMappingEditor()
         if (input.isEmpty()) mapping.remove("input"); else mapping.insert("input", input);
     }
     updateMappingSummary(m_mappingEditorRow, mapping);
-    if (!QushengCommandCatalog::isExecutable(operation)) loadCatalogParameters(parameters);
+    if (!isMotionEditor(operation)) loadCatalogParameters(parameters);
     m_mappingEditorDirty = false; m_multiplierChanged = false;
     return true;
 }
@@ -1282,6 +1350,7 @@ void Widget::loadUiFromDraft()
     if (m_mappingTable->rowCount()) m_mappingTable->selectRow(0);
     loadMappingEditor(m_mappingTable->currentRow());
     updateTableControls();
+    refreshMappingSummaries();
     updateLiveState();
 }
 
@@ -1572,11 +1641,13 @@ void Widget::updateLiveState()
             && m_validatedDraft.version == m_activeConfig.version;
     m_deviceConfirmed->setEnabled(m_configEnabled && current);
     const bool recoveryQuery = m_requests->deviceBusy() && m_configEnabled && current && inputIsQuery();
-    bool pendingInput = false;
+    bool pendingInput = false, motionInput = false;
     if (m_configEnabled && current) {
         TranslationError error; const QByteArray bytes = inputBytes(m_activeConfig, &error);
         if (!error.isValid()) {
-            ConversionPreview converted; ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error);
+            ConversionPreview converted;
+            if (ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error))
+                motionInput = isMotionEditor(converted.command.operation);
             pendingInput = error.code == "COMMAND_NOT_IMPLEMENTED";
         }
     }
@@ -1591,13 +1662,13 @@ void Widget::updateLiveState()
         reason = QString::fromUtf8(u8"串口未连接");
     else if (m_requestActive)
         reason = QString::fromUtf8(u8"执行中");
-    else if (m_requests->deviceBusy() && !recoveryQuery)
+    else if (m_requests->deviceBusy() && motionInput)
         reason = QString::fromUtf8(u8"设备运动中或状态未知");
     else if (recoveryQuery)
         reason = QString::fromUtf8(u8"就绪（查询）");
     else reason = QString::fromUtf8(u8"就绪");
     const bool ready = m_configEnabled && current && !pendingInput && m_deviceConfirmed->isChecked()
-            && m_transport->isConnected() && !m_requestActive && (!m_requests->deviceBusy() || recoveryQuery);
+            && m_transport->isConnected() && !m_requestActive && (!m_requests->deviceBusy() || !motionInput);
     m_sendButton->setEnabled(ready);
     m_sendButton->setToolTip(reason);
     m_liveReason->setText(reason);
@@ -1614,7 +1685,7 @@ bool Widget::inputIsQuery() const
     const QByteArray bytes = inputBytes(m_activeConfig, &error);
     if (error.isValid()) return false;
     ConversionPreview result;
-    return ConversionEngine(m_activeConfig).convert(bytes, false, &result, &error) && isQuery(result.command.operation);
+    return ConversionEngine(m_activeConfig).convert(bytes, false, &result, &error) && isRecoveryQuery(result.command.operation);
 }
 
 QByteArray Widget::inputBytes(const ProtocolConfig &config, TranslationError *error) const
@@ -1636,8 +1707,10 @@ QString Widget::previewText(const ConversionPreview &preview) const
     lines << QString::fromUtf8(u8"参数换算：");
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
         lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
-    lines << QString::fromUtf8(u8"统一命令：操作=%1，目标电机编号=%2，配置版本=%3")
-             .arg(operationName(preview.command.operation), preview.command.targetDevice,
+    const QString device = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
+        ? preview.command.targetDevice : QStringLiteral("-");
+    lines << QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3")
+             .arg(operationName(preview.command.operation), device,
                   preview.command.configVersion.left(12));
     for (auto it = preview.command.parameters.begin(); it != preview.command.parameters.end(); ++it)
         // 模型继续携带协议单位供后续标定使用；本轮界面按用户确认只展示直接传递的数值。
@@ -1686,7 +1759,7 @@ void Widget::preview(bool live)
         appendLog(QStringLiteral("%1: %2").arg(conversionError.code, conversionError.message));
         return;
     }
-    if (live && m_requests->deviceBusy() && !isQuery(converted.command.operation)) {
+    if (live && m_requests->deviceBusy() && isMotionEditor(converted.command.operation)) {
         updateLiveState(); appendLog(m_liveReason->text()); return;
     }
     m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"使用当前已启用版本\n")
