@@ -18,11 +18,20 @@
 #include <QSpinBox>
 #include "qusheng/qushengcommandcatalog.h"
 #include <QGroupBox>
+#include <QTemporaryDir>
+#include <QUuid>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include "widget.h"
 #include "transport/serialtransport.h"
 #include "core/translationservice.h"
+
+// 所有旧界面测试也使用独立草稿文件，避免测试覆盖用户数据或在用例间留下配置。
+static QTemporaryDir &testDraftDirectory()
+{ static QTemporaryDir directory; return directory; }
+static QString freshDraftPath()
+{ return testDraftDirectory().filePath(QUuid::createUuid().toString(QUuid::WithoutBraces) + ".json"); }
 
 class WidgetTest : public QObject
 {
@@ -46,6 +55,10 @@ private slots:
     void sdkReportsAreVisibleWithoutCompletingRequests();
     void fixedMotorActionsAndLegacyCompatibility();
     void stopResetMappingsHaveNoDistanceControls();
+    void savedDraftSurvivesRestart();
+    void incompleteDraftSurvivesRestart();
+    void draftWriteFailureIsVisibleAndRetryable();
+    void damagedLocalDraftIsNotOverwritten();
     void fieldNamesFollowAllMappings();
     void fieldIdentitySwapAndDeferredSave();
     void fieldDeletionTypesAndJsonBoundary();
@@ -56,6 +69,7 @@ private:
 
 void WidgetTest::initTestCase()
 {
+    QVERIFY(testDraftDirectory().isValid());
     QVERIFY(m_chinese.load(QStringLiteral(":/translations/qt_zh_CN.qm")));
     qApp->installTranslator(&m_chinese);
     QLineEdit edit;
@@ -74,7 +88,7 @@ static QPushButton *button(Widget &widget, const char *objectName)
 void WidgetTest::draftLifecycleAndVisibleFailures()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     QCOMPARE(widget.findChildren<SerialTransport *>().size(), 1);
     auto *input = widget.findChild<QLineEdit *>("customerInput");
     auto *fields = widget.findChild<QTableWidget *>("fieldTable");
@@ -121,7 +135,7 @@ void WidgetTest::draftLifecycleAndVisibleFailures()
 void WidgetTest::advancedJsonAndDynamicControls()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     auto *fields = widget.findChild<QTableWidget *>("fieldTable");
     auto *maps = widget.findChild<QTableWidget *>("mappingTable");
     auto *json = widget.findChild<QTextEdit *>("advancedJson");
@@ -172,7 +186,7 @@ static int parameterRow(QTableWidget *table, const QString &key)
 void WidgetTest::simpleMappingEditorAndInvalidNumbers()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     auto *maps = widget.findChild<QTableWidget *>("mappingTable");
     auto *source = widget.findChild<QComboBox *>("mappingSource");
     auto *multiplier = widget.findChild<QLineEdit *>("mappingMultiplier");
@@ -204,7 +218,7 @@ void WidgetTest::simpleMappingEditorAndInvalidNumbers()
 void WidgetTest::advancedMappingIsPreserved()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
     QJsonObject mapping = mappings.at(0).toObject();
     QJsonObject expression{{"kind", "linear"}, {"field", QString::fromUtf8(u8"位置")}, {"numerator", 1}, {"denominator", 3},
@@ -250,7 +264,7 @@ void WidgetTest::advancedMappingIsPreserved()
         QJsonObject{{"offset", 0}, {"round", 7}}
     };
     for (const QJsonObject &advanced : invalidAdvanced) {
-        Widget invalid;
+        Widget invalid(nullptr, freshDraftPath());
         QJsonObject invalidRoot = draftRoot(invalid); QJsonArray rows = invalidRoot.value("mappings").toArray();
         QJsonObject row = rows.at(0).toObject(); QJsonObject relation = expression;
         relation.insert("offset", advanced.value("offset")); relation.insert("round", advanced.value("round"));
@@ -272,7 +286,7 @@ void WidgetTest::advancedMappingIsPreserved()
 void WidgetTest::queryAndRelativeMappingControls()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     auto *maps = widget.findChild<QTableWidget *>("mappingTable");
     auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *source = widget.findChild<QComboBox *>("mappingSource");
@@ -330,7 +344,7 @@ void WidgetTest::queryAndRelativeMappingControls()
 
 void WidgetTest::completeCatalogAndSearchPreserveSelection()
 {
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     auto *operation = widget.findChild<QComboBox *>("mappingOperation"); auto *search = widget.findChild<QLineEdit *>("mappingSearch");
     QVERIFY(operation && search);
     QCOMPARE(operation->count(), 59); QCOMPARE(QushengCommandCatalog::commands().size(), 56);
@@ -361,7 +375,7 @@ void WidgetTest::completeCatalogAndSearchPreserveSelection()
 
 void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
 {
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     auto *operation = widget.findChild<QComboBox *>("mappingOperation"); QVERIFY(operation);
     // 独立核对截图里的项，不能仅从同一张目录自动生成期望而遗漏格式乱码。
     QCOMPARE(operation->itemText(operation->findData("QUSHENG_22")), QString::fromUtf8(u8"0x22 | 电磁阀单路控制"));
@@ -406,7 +420,7 @@ void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
 
 void WidgetTest::pendingMappingEditorAndFieldRefresh()
 {
-    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    Widget widget(nullptr, freshDraftPath()); auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     operation->setCurrentIndex(operation->findData("QUSHENG_13"));
     auto *parameters = widget.findChild<QTableWidget *>("mappingParameters"); QVERIFY(parameters);
     QVERIFY(parameters->rowCount() > 2); QVERIFY(!parameters->isHidden());
@@ -442,7 +456,7 @@ void WidgetTest::pendingMappingEditorAndFieldRefresh()
 
 void WidgetTest::pendingAdvancedRelationAndTargetSwitch()
 {
-    Widget widget; QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
+    Widget widget(nullptr, freshDraftPath()); QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
     QJsonObject mapping = mappings.at(0).toObject();
     const QJsonObject expression{{"kind", "linear"}, {"field", QString::fromUtf8(u8"位置")}, {"numerator", 1}, {"denominator", 3}, {"offset", 4}, {"round", "floor"}, {"note", "keep"}};
     mapping.insert("operation", "QUSHENG_13"); mapping.insert("parameters", QJsonObject{{"microsteps", expression}}); mappings[0] = mapping; root.insert("mappings", mappings); applyRoot(widget, root);
@@ -462,7 +476,7 @@ void WidgetTest::pendingAdvancedRelationAndTargetSwitch()
 
 void WidgetTest::simplifiedExpertInterface()
 {
-    Widget widget; widget.show(); QCoreApplication::processEvents();
+    Widget widget(nullptr, freshDraftPath()); widget.show(); QCoreApplication::processEvents();
     auto *tabs = widget.findChild<QTabWidget *>("mainTabs"); QVERIFY(tabs); QCOMPARE(tabs->count(), 5);
     for (const char *name : {"mappingMore", "mappingOffset", "mappingRounding", "mappingDefaultFooter",
                             "mappingProtocolMore", "mappingCommandInfo", "mappingParameterHint", "mappingSearchResult",
@@ -486,7 +500,7 @@ void WidgetTest::simplifiedExpertInterface()
 
 void WidgetTest::unifiedFormatAndVisibleErrors()
 {
-    Widget widget; QVERIFY(!widget.findChild<QWidget *>("mappingResponse")); QVERIFY(!widget.findChild<QWidget *>("mappingFooter"));
+    Widget widget(nullptr, freshDraftPath()); QVERIFY(!widget.findChild<QWidget *>("mappingResponse")); QVERIFY(!widget.findChild<QWidget *>("mappingFooter"));
     auto *maps = widget.findChild<QTableWidget *>("mappingTable"); QCOMPARE(maps->columnCount(), 3);
     // 所有旧行在载入时一起迁移，不能只处理当前选中行；仅删除退役项，不删省略字段和扩展。
     QJsonObject root = draftRoot(widget); QJsonArray rows = root.value("mappings").toArray();
@@ -526,7 +540,7 @@ void WidgetTest::unifiedFormatAndVisibleErrors()
     transport->connectionChanged(false, QString::fromUtf8(u8"找不到串口设备；系统详情：测试详情"));
     QCOMPARE(widget.findChild<QLabel *>("validationState")->text(), QString::fromUtf8(u8"找不到串口设备"));
     // 迁移不修复未获授权的格式错误：坏类型仍保留，让配置校验明确拒绝。
-    Widget invalid; QJsonObject invalidRoot = draftRoot(invalid);
+    Widget invalid(nullptr, freshDraftPath()); QJsonObject invalidRoot = draftRoot(invalid);
     invalidRoot.insert("mappings", "invalid-array"); applyRoot(invalid, invalidRoot);
     QCOMPARE(draftRoot(invalid).value("mappings"), QJsonValue(QStringLiteral("invalid-array")));
     applyRoot(invalid, migrated);
@@ -543,7 +557,7 @@ void WidgetTest::unifiedFormatAndVisibleErrors()
 
 void WidgetTest::genericScalarRanges()
 {
-    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation"); auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    Widget widget(nullptr, freshDraftPath()); auto *operation = widget.findChild<QComboBox *>("mappingOperation"); auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
     operation->setCurrentIndex(operation->findData("QUSHENG_A1"));
     auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(1, 1)); auto *value = qobject_cast<QLineEdit *>(parameters->cellWidget(1, 2));
     source->setCurrentIndex(source->findData("@constant")); value->setText("-20"); widget.findChild<QPushButton *>("saveMappings")->click();
@@ -563,7 +577,7 @@ void WidgetTest::genericScalarRanges()
 
 void WidgetTest::stopResetMappingsHaveNoDistanceControls()
 {
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     for (const QString &operation : {QString("MOTOR_STOP"), QString("MOTOR_RESET")}) {
         QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
         QJsonObject mapping = mappings.first().toObject();
@@ -599,7 +613,7 @@ void WidgetTest::sdkGenericMappingsAndDefaults()
     const QStringList inputs = {"50", "2000", "2000", "-20"};
     const QStringList frames = {"00 81 E0 32", "00 22 31 00 00 07 D0", "00 54 71 00 07 D0", "00 A1 21 EC"};
     for (int i = 0; i < operations.size(); ++i) {
-        Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+        Widget widget(nullptr, freshDraftPath()); auto *operation = widget.findChild<QComboBox *>("mappingOperation");
         operation->setCurrentIndex(operation->findData(operations.at(i)));
         auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
         QVERIFY(!parameters->isHidden()); QVERIFY(widget.findChild<QComboBox *>("mappingSource")->isHidden());
@@ -623,7 +637,7 @@ void WidgetTest::sdkGenericMappingsAndDefaults()
                  qPrintable(widget.findChild<QTextEdit *>("previewOutput")->toPlainText()));
         QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"软件初始值")));
     }
-    Widget widget; QJsonObject root = draftRoot(widget);
+    Widget widget(nullptr, freshDraftPath()); QJsonObject root = draftRoot(widget);
     root.insert("sdkDefaults", QJsonObject{{"QUSHENG_81", QJsonObject{{"devId", 226}, {"percent", 20}}}}); applyRoot(widget, root);
     auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_81"));
     auto *parameters = widget.findChild<QTableWidget *>("mappingParameters"); int percentRow = parameterRow(parameters, "percent"), devRow = parameterRow(parameters, "devId");
@@ -655,7 +669,7 @@ void WidgetTest::sdkQueriesAndRequiredParameters()
     const QStringList queries = {"QUSHENG_03", "QUSHENG_44", "QUSHENG_83", "QUERY_MOTOR", "QUERY_DEVICE_INFO"};
     const QStringList frames = {"00 03", "00 44 61", "00 83 E0", "00 12 11", "00 04 00 00"};
     for (int i = 0; i < queries.size(); ++i) {
-        Widget widget; QJsonObject root = draftRoot(widget); QJsonObject external = root.value("external").toObject();
+        Widget widget(nullptr, freshDraftPath()); QJsonObject root = draftRoot(widget); QJsonObject external = root.value("external").toObject();
         QJsonArray fields = external.value("fields").toArray(); fields.removeAt(2); external.insert("fields", fields); root.insert("external", external);
         QJsonObject mapping = root.value("mappings").toArray().at(0).toObject(); mapping.insert("operation", queries.at(i));
         mapping.insert("parameters", QJsonObject()); mapping.remove("input"); root.insert("mappings", QJsonArray{mapping}); applyRoot(widget, root);
@@ -670,7 +684,7 @@ void WidgetTest::sdkQueriesAndRequiredParameters()
         QVERIFY2(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(frames.at(i)), qPrintable(widget.findChild<QTextEdit *>("previewOutput")->toPlainText()));
         QVERIFY(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().isEmpty());
     }
-    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_01"));
+    Widget widget(nullptr, freshDraftPath()); auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_01"));
     auto *parameters = widget.findChild<QTableWidget *>("mappingParameters"); const int row = parameterRow(parameters, "enableMask"); QVERIFY(row >= 0);
     auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(row, 1)); QCOMPARE(source->itemText(0), QString::fromUtf8(u8"需设置"));
     button(widget, "saveMappings")->click(); button(widget, "previewButton")->click();
@@ -683,7 +697,7 @@ void WidgetTest::sdkQueriesAndRequiredParameters()
 
 void WidgetTest::sdkReportsAreVisibleWithoutCompletingRequests()
 {
-    Widget widget; auto *service = widget.findChild<TranslationService *>(); QVERIFY(service);
+    Widget widget(nullptr, freshDraftPath()); auto *service = widget.findChild<TranslationService *>(); QVERIFY(service);
     auto *result = widget.findChild<QTextEdit *>("replyResult"); auto *state = widget.findChild<QLabel *>("requestState"); QVERIFY(state);
     service->requestStateChanged(9, RequestState::WaitingReply, QString::fromUtf8(u8"等待匹配回告"));
     const QString before = state->text(); QSignalSpy completed(service, &TranslationService::completed);
@@ -708,7 +722,7 @@ void WidgetTest::sdkReportsAreVisibleWithoutCompletingRequests()
 
 void WidgetTest::fixedMotorActionsAndLegacyCompatibility()
 {
-    Widget widget; auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    Widget widget(nullptr, freshDraftPath()); auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *source = widget.findChild<QComboBox *>("mappingSource"); auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
     auto *save = widget.findChild<QPushButton *>("saveMappings");
     auto *maps = widget.findChild<QTableWidget *>("mappingTable"); auto *speed = widget.findChild<QSpinBox *>("defaultMotorSpeed");
@@ -762,7 +776,7 @@ void WidgetTest::fixedMotorActionsAndLegacyCompatibility()
 
 void WidgetTest::fieldNamesFollowAllMappings()
 {
-    Widget widget; auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    Widget widget(nullptr, freshDraftPath()); auto *fields = widget.findChild<QTableWidget *>("fieldTable");
     auto *maps = widget.findChild<QTableWidget *>("mappingTable");
     auto *target = widget.findChild<QTextEdit *>("targetOutput");
     button(widget, "previewButton")->click(); const QString originalFrame = target->toPlainText();
@@ -806,7 +820,7 @@ void WidgetTest::fieldNamesFollowAllMappings()
 
 void WidgetTest::fieldIdentitySwapAndDeferredSave()
 {
-    Widget widget; QJsonObject root = draftRoot(widget); QJsonObject external = root.value("external").toObject();
+    Widget widget(nullptr, freshDraftPath()); QJsonObject root = draftRoot(widget); QJsonObject external = root.value("external").toObject();
     QJsonArray fieldsJson = external.value("fields").toArray(); QJsonObject position = fieldsJson.at(2).toObject();
     position.insert("lengthMode", "fixed"); position.insert("length", 1); fieldsJson[2] = position;
     fieldsJson.append(QJsonObject{{"name", QString::fromUtf8(u8"速度")}, {"role", "parameter"}, {"type", "uint"}, {"lengthMode", "toFooter"}});
@@ -870,7 +884,7 @@ void WidgetTest::fieldIdentitySwapAndDeferredSave()
 void WidgetTest::fieldDeletionTypesAndJsonBoundary()
 {
     for (const QString &change : {QStringLiteral("delete"), QStringLiteral("ascii"), QStringLiteral("fixed")}) {
-        Widget widget; auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+        Widget widget(nullptr, freshDraftPath()); auto *fields = widget.findChild<QTableWidget *>("fieldTable");
         if (change == "delete") { fields->selectRow(2); button(widget, "removeField")->click(); }
         else { const int column = change == "ascii" ? 3 : 2; auto *box = qobject_cast<QComboBox *>(fields->cellWidget(2, column)); box->setCurrentIndex(box->findData(change)); }
         QVERIFY(widget.findChild<QComboBox *>("mappingSource")->currentText().contains(QString::fromUtf8(u8"未找到")));
@@ -880,7 +894,7 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
         button(widget, "previewButton")->click(); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
         QVERIFY(!button(widget, "sendButton")->isEnabled());
     }
-    Widget widget; auto *fields = widget.findChild<QTableWidget *>("fieldTable"); button(widget, "addField")->click();
+    Widget widget(nullptr, freshDraftPath()); auto *fields = widget.findChild<QTableWidget *>("fieldTable"); button(widget, "addField")->click();
     auto *type = qobject_cast<QComboBox *>(fields->cellWidget(3, 3)); type->setCurrentIndex(type->findData("uint"));
     fields->item(3, 5)->setText("1"); fields->item(3, 1)->setText(QString::fromUtf8(u8"辅助"));
     QVERIFY(widget.findChild<QComboBox *>("mappingSource")->findData(QString::fromUtf8(u8"辅助")) >= 0);
@@ -903,7 +917,7 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
 void WidgetTest::renderChinesePages()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
-    Widget widget;
+    Widget widget(nullptr, freshDraftPath());
     widget.show();
     button(widget, "previewButton")->click();
     auto *tabs = widget.findChild<QTabWidget *>(); QVERIFY(tabs);
@@ -940,6 +954,90 @@ void WidgetTest::renderChinesePages()
     if (!renderDir.isEmpty()) QVERIFY(operation->view()->window()->grab().save(QDir(renderDir).filePath("command-dropdown.png")));
     operation->hidePopup();
 
+}
+
+void WidgetTest::savedDraftSurvivesRestart()
+{
+    const QString path = freshDraftPath(); QJsonObject saved; QByteArray previewFrame;
+    {
+        Widget first(nullptr, path);
+        QVERIFY(first.findChild<QLineEdit *>("formatHeader"));
+        first.findChild<QTableWidget *>("fieldTable")->item(2, 1)->setText(QString::fromUtf8(u8"数据位"));
+        first.findChild<QLineEdit *>("formatHeader")->setText("!");
+        first.findChild<QLineEdit *>("formatFooter")->setText("~");
+        first.findChild<QLineEdit *>("mappingCode")->setText("Z");
+        first.findChild<QSpinBox *>("defaultMotorSpeed")->setValue(2500);
+        button(first, "saveFields")->click(); saved = draftRoot(first);
+        DraftStore store(path); TranslationError error; QJsonObject disk;
+        QVERIFY2(store.load(&disk, &error), qPrintable(error.message)); QCOMPARE(disk, saved);
+        QCOMPARE(saved.value("schemaVersion").toInt(), 1);
+        ProtocolConfig config; QVERIFY(ProtocolConfig::fromJson(QJsonDocument(saved).toJson(), &config, &error));
+        ConversionPreview converted; QVERIFY(ConversionEngine(config).convert("!1Z2000~", false, &converted, &error));
+        previewFrame = converted.targetFrame;
+        button(first, "validateConfig")->click(); button(first, "enableConfig")->click();
+    }
+    // 即使启动目录改变，也须优先读取同一用户草稿，而非重新加载示例。
+    const QString originalDirectory = QDir::currentPath(); QVERIFY(QDir::setCurrent(testDraftDirectory().path()));
+    Widget second(nullptr, path); QDir::setCurrent(originalDirectory);
+    QVERIFY(second.findChild<QLineEdit *>("formatHeader"));
+    QCOMPARE(draftRoot(second), saved);
+    QCOMPARE(second.findChild<QTableWidget *>("fieldTable")->item(2, 1)->text(), QString::fromUtf8(u8"数据位"));
+    QCOMPARE(second.findChild<QLineEdit *>("formatHeader")->text(), QString("!"));
+    QCOMPARE(second.findChild<QSpinBox *>("defaultMotorSpeed")->value(), 2500);
+    second.findChild<QLineEdit *>("customerInput")->setText("!1Z2000~"); button(second, "previewButton")->click();
+    QVERIFY(second.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(previewFrame.toHex(' ').toUpper()));
+    QCOMPARE(second.findChild<QLabel *>("activeVersion")->text(), QString::fromUtf8(u8"启用：无"));
+    QVERIFY(!second.findChild<QCheckBox *>("deviceConfirmed")->isChecked());
+    QVERIFY(!button(second, "sendButton")->isEnabled());
+}
+
+void WidgetTest::incompleteDraftSurvivesRestart()
+{
+    const QString path = freshDraftPath(); QJsonObject incomplete;
+    {
+        Widget first(nullptr, path); incomplete = draftRoot(first);
+        QJsonArray mappings = incomplete.value("mappings").toArray(); QJsonObject mapping = mappings.first().toObject();
+        mapping.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "unfinished-field"}}}});
+        mappings[0] = mapping; incomplete.insert("mappings", mappings);
+        // 应用高级JSON和导入均通过同一落盘入口，不要求先成为可发送的有效配置。
+        applyRoot(first, incomplete); button(first, "validateConfig")->click();
+        QVERIFY(first.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"校验失败")));
+    }
+    Widget second(nullptr, path); QCOMPARE(draftRoot(second), incomplete);
+    button(second, "validateConfig")->click();
+    QVERIFY(second.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"unfinished-field")));
+    QVERIFY(!button(second, "sendButton")->isEnabled());
+}
+
+void WidgetTest::draftWriteFailureIsVisibleAndRetryable()
+{
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const QString blockerPath = directory.filePath("not-a-directory");
+    QFile blocker(blockerPath); QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.write("keep"); blocker.close();
+    const QString path = blockerPath + "/draft.json";
+    Widget widget(nullptr, path); const QJsonObject original = draftRoot(widget);
+    widget.findChild<QTableWidget *>("fieldTable")->item(2, 1)->setText(QString::fromUtf8(u8"数据位"));
+    button(widget, "saveFields")->click();
+    QCOMPARE(draftRoot(widget), original);
+    QVERIFY(widget.findChild<QLabel *>("draftVersion")->text().contains(QString::fromUtf8(u8"未保存")));
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"保存失败")));
+    QVERIFY(blocker.open(QIODevice::ReadOnly)); QCOMPARE(blocker.readAll(), QByteArray("keep")); blocker.close();
+    QVERIFY(QFile::remove(blockerPath)); button(widget, "saveFields")->click();
+    DraftStore store(path); QJsonObject disk; TranslationError error;
+    QVERIFY(store.load(&disk, &error)); QCOMPARE(disk, draftRoot(widget));
+    QCOMPARE(disk.value("external").toObject().value("fields").toArray().at(2).toObject().value("name").toString(), QString::fromUtf8(u8"数据位"));
+}
+
+void WidgetTest::damagedLocalDraftIsNotOverwritten()
+{
+    const QString path = freshDraftPath(); QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly)); file.write("{broken-json"); file.close();
+    {
+        Widget widget(nullptr, path);
+        QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"恢复失败")));
+        QVERIFY(!button(widget, "sendButton")->isEnabled());
+    }
+    QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
 }
 
 QTEST_MAIN(WidgetTest)

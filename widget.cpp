@@ -215,17 +215,18 @@ bool decimalRatio(const QString &text, qlonglong *numerator, qlonglong *denomina
 }
 }
 
-Widget::Widget(QWidget *parent)
+Widget::Widget(QWidget *parent, const QString &draftFilePath)
     : QWidget(parent),
       m_protocol(new QushengProtocol(this)),
       m_transport(new SerialTransport(this)),
       m_requests(new RequestManager(m_protocol, m_transport, this)),
-      m_service(new TranslationService(m_requests, this))
+      m_service(new TranslationService(m_requests, this)),
+      m_draftStore(draftFilePath)
 {
     buildUi();
     connectSignals();
     refreshPorts();
-    loadInitialExample();
+    loadInitialDraft();
     filterMappingCommands();
     updateConnectionUi(false, QString::fromUtf8(u8"下游串口未连接"));
 }
@@ -256,7 +257,7 @@ void Widget::buildUi()
     m_encoding = combo(this, {{QString::fromUtf8(u8"ASCII 文本"), QStringLiteral("ascii")},
                               {QString::fromUtf8(u8"HEX 字节"), QStringLiteral("hex")}});
     m_encoding->setToolTip(QString());
-    m_header = new QLineEdit(this);
+    m_header = new QLineEdit(this); m_header->setObjectName("formatHeader");
     m_header->setToolTip(QString());
     m_footer = new QLineEdit(this); m_footer->setObjectName("formatFooter");
     m_footer->setToolTip(QString::fromUtf8(u8"完整报文必须以此内容结束；ASCII 模式可填写 R\\r。"));
@@ -771,8 +772,17 @@ void Widget::connectSignals()
     });
 }
 
-void Widget::loadInitialExample()
+void Widget::loadInitialDraft()
 {
+    TranslationError restoreError;
+    if (m_draftStore.exists()) {
+        QJsonObject draft;
+        if (m_draftStore.load(&draft, &restoreError)) {
+            m_draftRoot = draft; loadUiFromDraft();
+            appendLog(QString::fromUtf8(u8"已恢复本地草稿：") + m_draftStore.filePath());
+            return;
+        }
+    }
     const QStringList candidates = {
         QDir(QCoreApplication::applicationDirPath()).filePath("examples/dt-simple-commands.json"),
         QDir(QCoreApplication::applicationDirPath()).filePath("../../examples/dt-simple-commands.json"),
@@ -787,10 +797,30 @@ void Widget::loadInitialExample()
             loadUiFromDraft();
             m_input->setText(QStringLiteral("/1A2000R\\r"));
             appendLog(QString::fromUtf8(u8"已载入 DT 风格单条命令验证配置，默认按数值直接转换；DT 不是程序内置协议。"));
+            if (restoreError.isValid()) {
+                m_validationState->setText(QString::fromUtf8(u8"恢复失败：%1；原文件已保留").arg(restoreError.message));
+                appendLog(m_validationState->text());
+            }
             return;
         }
     }
     appendLog(QString::fromUtf8(u8"未找到示例配置，请导入 JSON 配置。"));
+    if (restoreError.isValid()) {
+        m_validationState->setText(QString::fromUtf8(u8"恢复失败：%1；原文件已保留").arg(restoreError.message));
+        appendLog(m_validationState->text());
+    }
+}
+
+bool Widget::persistDraft(const QJsonObject &draft)
+{
+    TranslationError error;
+    if (m_draftStore.save(draft, &error)) return true;
+    // 写盘失败不得显示“已保存”，也不得校验旧内存值来掩盖当前未保存的编辑。
+    m_formDirty = true; m_draftValid = false; m_deviceConfirmed->setChecked(false);
+    m_draftVersion->setText(QString::fromUtf8(u8"草稿：未保存"));
+    m_validationState->setText(QString::fromUtf8(u8"保存失败：") + error.message);
+    appendLog(m_validationState->text()); updateLiveState();
+    return false;
 }
 
 void Widget::addFieldRow(const QJsonObject &field)
@@ -1433,6 +1463,7 @@ bool Widget::saveUiToDraft()
         {"devId", m_devId->value()}, {"absoluteAction", m_action->value()},
         {"speedUmPerS", m_speed->value()}, {"minPositionUm", m_minPosition->value()},
         {"maxPositionUm", m_maxPosition->value()}});
+    if (!persistDraft(root)) return false;
     m_draftRoot = root;
     const QSignalBlocker jsonBlocker(m_advancedJson);
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
@@ -1443,7 +1474,7 @@ bool Widget::saveUiToDraft()
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
     m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
-    appendLog(QString::fromUtf8(u8"中文表单已保存到草稿；当前已启用版本未改变。"));
+    appendLog(QString::fromUtf8(u8"草稿已保存到本地；当前已启用版本未改变。"));
     refreshMappingSummaries(); updateMappingControls(); updateLiveState();
     return true;
 }
@@ -1575,6 +1606,7 @@ void Widget::applyAdvancedJson()
         appendLog(m_validationState->text());
         return;
     }
+    if (!persistDraft(document.object())) return;
     m_draftRoot = document.object();
     loadUiFromDraft();
     appendLog(QString::fromUtf8(u8"高级 JSON 已应用到草稿；当前已启用版本未改变。"));
@@ -1591,10 +1623,12 @@ void Widget::importDraft()
         appendLog(m_validationState->text()); return;
     }
     const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    file.close();
     if (!document.isObject()) {
         m_validationState->setText(QString::fromUtf8(u8"导入失败：文件不是有效 JSON 对象"));
         appendLog(m_validationState->text()); return;
     }
+    if (!persistDraft(document.object())) return;
     m_draftRoot = document.object();
     loadUiFromDraft();
     appendLog(QString::fromUtf8(u8"配置已导入为草稿；当前已启用版本未改变。"));
