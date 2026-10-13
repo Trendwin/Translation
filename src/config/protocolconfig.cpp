@@ -383,6 +383,8 @@ bool ProtocolConfig::validate(TranslationError *error) const
                 return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”关系无效；请检查固定值范围或换算设置").arg(code, parameterName));
         }
         const int sdkCode = QushengCommandCatalog::commandCode(operation);
+        // 启用前检查确定的SDK值；客户字段/线性表达式的实际结果要等报文输入后再校验。
+        // 参数不出现在映射中可以使用预置/默认，但无合理默认的业务必填项不能遗漏。
         if (sdkCode >= 0 && QushengSdk::isSupported(quint8(sdkCode)) && !QushengCommandCatalog::usesMotionEditor(operation)
                 && operation != "MOTOR_STOP" && operation != "MOTOR_RESET" && operation != "QUSHENG_11") {
             const QVariantMap preset = sdkDefaults.value(operation).toObject().toVariantMap();
@@ -396,6 +398,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
                 else dynamic = true;
             }
             if (!dynamic) {
+                // 全固定映射可以提前完整补齐并检查组合关系，防止“校验成功”后才发现固定错误。
                 QushengSdkRequest checked; TranslationError sdkError;
                 if (!QushengSdk::buildRequest(quint8(sdkCode), constants, preset, root.value("device").toObject().toVariantMap(), &checked, &sdkError))
                     return fail(error, "CONFIG_SDK_PARAMETER", QString::fromUtf8(u8"命令映射“%1”的SDK参数无效：%2").arg(code, sdkError.message));

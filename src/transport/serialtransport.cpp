@@ -19,6 +19,8 @@ QString serialReason(QSerialPort &port)
 
 SerialTransport::SerialTransport(QObject *parent) : ITransport(parent)
 {
+    // 串口层只转交原始字节，不在readyRead中假定一次读取就是完整协议帧。
+    // 半包/粘包及请求归属分别交给协议适配器、请求管理器处理。
     connect(&m_port, &QSerialPort::readyRead, this, [this]() { emit bytesReceived(m_port.readAll()); });
     connect(&m_port, &QSerialPort::bytesWritten, this, [this](qint64 count) {
         if (!m_pendingRequest) return;
@@ -77,6 +79,7 @@ void SerialTransport::sendBytes(quint64 requestId, const QByteArray &data)
     if (m_pendingRequest) { emit sendFinished(requestId, false, QString::fromUtf8(u8"串口仍在发送上一报文")); return; }
     m_pendingRequest = requestId;
     m_pendingBytes = data.size();
+    // write的返回值是驱动接纳字节数；完整写出由bytesWritten累计确认，设备应答还要另等。
     const qint64 accepted = m_port.write(data);
     if (accepted != data.size() && m_pendingRequest) {
         m_pendingRequest = 0;

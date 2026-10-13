@@ -19,12 +19,15 @@ QByteArray QushengSdk::makeFrame(quint8 destination, quint8 source, quint8 seque
     // 协议长度字节只计payload，最多255。SDK不维护序号或串口；调用者提供请求快照的序号。
     if (payload.size() > 255) return QByteArray();
     QByteArray frame;
+    // 完整布局：AA AA | 目的地址 | 源地址 | 长度 | 长度反码 | 序号 | CMD | D段 | CRC高/低。
+    // 固定开销10字节，长度只计算D段，不能把CRC或CMD算入该长度。
     frame.reserve(payload.size() + 10);
     frame.append(char(0xaa)); frame.append(char(0xaa));
     frame.append(char(destination)); frame.append(char(source));
     frame.append(char(payload.size())); frame.append(char(~quint8(payload.size())));
     frame.append(char(sequence)); frame.append(char(command)); frame.append(payload);
     const quint16 crc = crc16(frame);
+    // CRC本身不参与校验计算，并按高字节在前追加到末尾。
     frame.append(char(crc >> 8)); frame.append(char(crc));
     return frame;
 }
