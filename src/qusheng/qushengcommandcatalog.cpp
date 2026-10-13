@@ -121,7 +121,7 @@ QJsonArray QushengCommandCatalog::options()
         if (entry.value("operation").toString() == "QUSHENG_11") motor = entry;
         else result.append(entry);
     }
-    // 0x11 的四个动作共享固定绝对位置模式，但发送能力分别检查。停止、复位不能借用运动权限。
+    // 四动作共享绝对模式；前进/后退映射目标，停止/复位固定零距离并使用独立完成条件。
     const QStringList operations = {"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
     const QStringList labels = {QString::fromUtf8(u8"步进电机前进"), QString::fromUtf8(u8"步进电机停止"),
                                QString::fromUtf8(u8"步进电机后退"), QString::fromUtf8(u8"步进电机复位")};
@@ -134,7 +134,13 @@ QJsonArray QushengCommandCatalog::options()
             QJsonObject parameter = value.toObject();
             const QString key = parameter.value("key").toString();
             if (key == "devId" || key == "speedUmPerS" || key == "mode" || key == "action") parameter.insert("editable", false);
-            if (key == "positionUm") parameter.insert("max", 0xfffffe);
+            if (key == "positionUm") {
+                parameter.insert("max", 0xfffffe);
+                if (index == 1 || index == 3) {
+                    parameter.insert("editable", false); parameter.insert("fixedValue", 0);
+                    parameter.insert("required", false);
+                }
+            }
             if (key == "mode") parameter.insert("fixedValue", 4);
             if (key == "action") {
                 parameter.insert("fixedValue", index + 1);
@@ -143,10 +149,12 @@ QJsonArray QushengCommandCatalog::options()
             parameters.append(parameter);
         }
         variant.insert("parameters", parameters);
-        variant.insert("description", QString::fromUtf8(u8"固定绝对位置模式；电机编号与速度来自设备默认参数，只有移动距离（绝对目标位置）需要映射。"));
+        variant.insert("description", index == 1 || index == 3
+                       ? QString::fromUtf8(u8"固定绝对位置模式和零距离；电机编号与速度来自设备参数或SDK预置，无需客户距离参数。")
+                       : QString::fromUtf8(u8"固定绝对位置模式；电机编号与速度来自设备参数或SDK预置，只映射绝对目标位置。"));
         variant.insert("note", index == 0 || index == 2
                        ? QString::fromUtf8(u8"移动距离按绝对目标位置解释，不是当前位置加减距离；收到应答后继续查询空闲状态与目标位置。")
-                       : QString::fromUtf8(u8"可选择并保存映射；停止或复位的完成条件尚未确认，本轮禁止生成和发送目标帧。"));
+                       : QString::fromUtf8(u8"距离固定为0；停止后确认空闲，复位后确认空闲且位置有效，不要求客户距离字段。"));
         result.append(variant);
     }
     return result;
@@ -165,8 +173,8 @@ QJsonObject QushengCommandCatalog::find(const QString &operation)
 
 bool QushengCommandCatalog::isExecutable(const QString &operation)
 {
-    // SDK可组帧与软件允许真实发送不是同一状态；此前停止/复位的发送限制继续保留。
-    if (operation == "MOTOR_STOP" || operation == "MOTOR_RESET" || operation == "QUSHENG_11") return false;
+    // 旧通用0x11不能覆盖固定模板模式/动作；四动作已各自接入发送与状态处理。
+    if (operation == "QUSHENG_11") return false;
     const int code = commandCode(operation);
     return code >= 0 && QushengSdk::isSupported(quint8(code));
 }
@@ -175,6 +183,9 @@ bool QushengCommandCatalog::usesMotionEditor(const QString &operation)
 {
     return isAbsoluteMotion(operation) || operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
 }
+
+bool QushengCommandCatalog::isStopOrReset(const QString &operation)
+{ return operation == "MOTOR_STOP" || operation == "MOTOR_RESET"; }
 
 int QushengCommandCatalog::commandCode(const QString &operation)
 {

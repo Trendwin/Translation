@@ -275,6 +275,22 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     preview->matchedCommandCode = incomingCode;
     preview->parameterTrace.clear();
 
+    if (QushengCommandCatalog::isStopOrReset(command->operation)) {
+        // 停止/回物理零点不是“移动到客户给定位置”，不能读取旧草稿中的距离表达式。
+        // 仅电机和速度允许预置，模式/动作/距离由选中的模板固定。
+        QushengSdkRequest control;
+        const QVariantMap supplied{{"mode", 4}, {"action", QushengCommandCatalog::fixedAction(command->operation)}, {"positionUm", 0}};
+        const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
+        if (!QushengSdk::buildRequest(0x11, supplied, defaults, device.toVariantMap(), &control, error)) return false;
+        command->parameters = control.parameters;
+        command->targetDevice = control.parameters.value("devId").toString();
+        for (auto it = control.parameterSources.begin(); it != control.parameterSources.end(); ++it) {
+            const QString source = it.key() == "devId" || it.key() == "speedUmPerS" ? it.value() : QString::fromUtf8(u8"模板固定");
+            preview->parameterTrace.insert(it.key(), QString::fromUtf8(u8"%1（%2）").arg(control.parameters.value(it.key()).toString(), source));
+        }
+        return true;
+    }
+
     const QJsonObject parameters = matched.value("parameters").toObject();
     for (auto it = parameters.begin(); it != parameters.end(); ++it) {
         QVariant output;

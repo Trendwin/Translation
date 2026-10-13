@@ -30,7 +30,7 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
 {
     if (frame) frame->clear();
     if (!frame || !error) return false;
-    // SDK支持组帧，不等于软件已确认停止/复位的执行完成语义；旧许可独立保留。
+    // 发送许可来自编译能力；待实现或布局未确认的接口不能通过直接构造命令绕过。
     if (!QushengCommandCatalog::isExecutable(command.operation)) {
         *error = {"COMMAND_NOT_IMPLEMENTED", QString::fromUtf8(u8"该接口尚未开放软件发送，或协议布局待确认")}; return false;
     }
@@ -45,7 +45,8 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     QVariantMap supplied = command.parameters;
     QVariantMap device;
     device.insert("devId", command.targetDevice.toUInt());
-    if (QushengCommandCatalog::usesMotionEditor(command.operation)) {
+    const bool control = QushengCommandCatalog::isStopOrReset(command.operation);
+    if (QushengCommandCatalog::usesMotionEditor(command.operation) || control) {
         const bool relative = command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD";
         bool idOk = false; const uint id = command.targetDevice.toUInt(&idOk);
         if (!idOk || id < 0x11 || id > 0x1c) {
@@ -54,13 +55,14 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
         const QString positionKey = relative ? QStringLiteral("distanceUm") : QStringLiteral("positionUm");
         bool speedOk = false, positionOk = false, actionOk = false;
         const qlonglong speed = command.parameters.value("speedUmPerS").toLongLong(&speedOk);
-        const qlonglong position = command.parameters.value(positionKey).toLongLong(&positionOk);
+        const qlonglong position = control ? 0 : command.parameters.value(positionKey).toLongLong(&positionOk);
+        if (control) positionOk = true;
         int action = QushengCommandCatalog::fixedAction(command.operation);
         if (relative) action = command.operation == "RELATIVE_FORWARD" ? 1 : 3;
         if (!action) action = command.parameters.value("absoluteAction").toInt(&actionOk);
         else actionOk = true;
         if (!speedOk || !positionOk || !actionOk || speed <= 0 || speed > Maximum24Bit
-                || position < 0 || position >= ContinuousMoveDistance || (action != 1 && action != 3)) {
+                || position < 0 || position >= ContinuousMoveDistance || (action != 1 && action != 3 && !control)) {
             *error = {"QUSHENG_RANGE", QString::fromUtf8(u8"速度、位置或方向不在有效范围")}; return false;
         }
         // 旧应用参数转换为SDK规范，不能把行程元数据或用户注入mode/action传进固定运动模板。

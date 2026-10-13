@@ -66,6 +66,15 @@ private slots:
     void sdkOrdinaryRequestLifecycle();
     void sdkQueryDoesNotUnlockOtherMotor();
     void fixedMotorActionTemplates();
+    void stopAndResetLifecycle_data();
+    void stopAndResetLifecycle();
+    void stopInterruptsMotionAndCancelsQueue();
+    void stopWaitsForWrite_data();
+    void stopWaitsForWrite();
+    void motorControlErrorsKeepBusy();
+    void relativePreflightWaitsForWrite();
+    void finalControlReplyWaitsForWrite();
+    void cancellingQueuedStopKeepsOriginalActive();
     void fixedMotorActionRequestLifecycle_data();
     void fixedMotorActionRequestLifecycle();
 };
@@ -122,7 +131,7 @@ void FrameworkTest::completeCommandCatalogMatchesProtocol()
     QVERIFY(!QushengCommandCatalog::isExecutable("QUSHENG_11"));
     for (const QJsonValue &entry : QushengCommandCatalog::options())
         executableOptions += QushengCommandCatalog::isExecutable(entry.toObject().value("operation").toString()) ? 1 : 0;
-    QCOMPARE(executableOptions, 31);
+    QCOMPARE(executableOptions, 33);
     QVERIFY(QushengCommandCatalog::find("NOT_IN_PROTOCOL").isEmpty());
     QVERIFY(!QushengCommandCatalog::isExecutable("NOT_IN_PROTOCOL"));
     QVERIFY(QushengCommandCatalog::find("QUSHENG_C1").value("note").toString().contains(QString::fromUtf8(u8"重叠")));
@@ -1062,7 +1071,7 @@ void FrameworkTest::fixedMotorActionTemplates()
             if (spec.value("key").toString() == "action") QCOMPARE(spec.value("fixedValue").toInt(), expected.indexOf(operation) + 1);
             if (spec.value("key").toString() == "speedUmPerS") QCOMPARE(spec.value("defaultSource").toString(), QString("device.speedUmPerS"));
         }
-        QCOMPARE(editable, 1);
+        QCOMPARE(editable, QushengCommandCatalog::isStopOrReset(operation) ? 0 : 1);
     }
     QCOMPARE(found, expected);
     for (const QString &operation : {QString("ABSOLUTE_MOVE"), QString("RELATIVE_FORWARD"), QString("RELATIVE_BACKWARD"), QString("QUSHENG_11")}) {
@@ -1083,9 +1092,9 @@ void FrameworkTest::fixedMotorActionTemplates()
         device.insert("speedUmPerS", 1234); device.remove("absoluteAction"); config.root.insert("device", device);
         QVERIFY2(config.validate(&error), qPrintable(error.message));
         ConversionPreview preview;
-        const bool executable = operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
-        QCOMPARE(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error), executable);
-        if (executable) {
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        const bool movement = operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
+        if (movement) {
             QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 20000);
             QCOMPARE(preview.command.parameters.value("speedUmPerS").toInt(), 1234);
             QCOMPARE(quint8(preview.targetFrame.at(9)), quint8(0x40 | QushengCommandCatalog::fixedAction(operation)));
@@ -1102,17 +1111,24 @@ void FrameworkTest::fixedMotorActionTemplates()
             QCOMPARE(error.code, QString("POSITION_LIMIT")); QVERIFY(preview.targetFrame.isEmpty());
             device.insert("maxPositionUm", 50000); config.root.insert("device", device);
         } else {
-            QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED")); QVERIFY(preview.targetFrame.isEmpty());
-            UnifiedCommand pending; pending.operation = operation; pending.targetDevice = "17";
-            pending.parameters = {{"positionUm", 20000}, {"speedUmPerS", 1234}, {"absoluteAction", 1}};
-            QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame("previous valid frame");
-            QVERIFY(!codec.encodeCommand(pending, &frame, &error)); QVERIFY(frame.isEmpty());
-            QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED"));
+            QCOMPARE(preview.targetFrame.mid(8, 8), QByteArray::fromHex(operation == "MOTOR_STOP" ? "11420004d2000000" : "11440004d2000000"));
+            QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 0);
+            QVERIFY(preview.parameterTrace.value("positionUm").contains(QString::fromUtf8(u8"模板固定")));
+            UnifiedCommand forged = preview.command;
+            forged.parameters.insert("positionUm", 0xffffff); forged.parameters.insert("mode", 1); forged.parameters.insert("action", 1);
+            QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
+            QVERIFY(codec.encodeCommand(forged, &frame, &error)); QCOMPARE(frame, preview.targetFrame);
+            QJsonObject preset{{"devId", 18}, {"speedUmPerS", 2000}};
+            config.root.insert("sdkDefaults", QJsonObject{{operation, preset}});
+            QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+            QCOMPARE(preview.targetFrame.mid(8, 8), QByteArray::fromHex(operation == "MOTOR_STOP" ? "12420007d0000000" : "12440007d0000000"));
+            preset.insert("action", 1); config.root.insert("sdkDefaults", QJsonObject{{operation, preset}});
+            QVERIFY(!config.validate(&error)); config.root.remove("sdkDefaults");
         }
         QVERIFY(config.save(directory.filePath("actions.json"), &error));
         ProtocolConfig loaded; QVERIFY(ProtocolConfig::load(directory.filePath("actions.json"), &loaded, &error));
         QCOMPARE(loaded.root, config.root);
-        QCOMPARE(ConversionEngine(loaded).convert("/1A2000R\r", false, &preview, &error), executable);
+        QVERIFY(ConversionEngine(loaded).convert("/1A2000R\r", false, &preview, &error));
         QJsonObject parameters = mapping.value("parameters").toObject();
         parameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 1}});
         mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
@@ -1128,8 +1144,8 @@ void FrameworkTest::fixedMotorActionTemplates()
     QVERIFY(ConversionEngine(sample).convert("!B500\r", false, &result, &error));
     QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11430003e80001f4"));
     for (const QByteArray &input : {QByteArray("!S\r"), QByteArray("!H\r")}) {
-        QVERIFY(!ConversionEngine(sample).convert(input, true, &result, &error));
-        QCOMPARE(error.code, QString("COMMAND_NOT_IMPLEMENTED")); QVERIFY(result.targetFrame.isEmpty());
+        QVERIFY(ConversionEngine(sample).convert(input, true, &result, &error));
+        QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex(input.at(1) == 'S' ? "11420003e8000000" : "11440003e8000000"));
     }
 }
 
@@ -1172,6 +1188,164 @@ void FrameworkTest::fixedMotorActionRequestLifecycle()
     QCOMPARE(finalReply.requestId, quint64(1)); QCOMPARE(finalReply.data.value("positionUm").toInt(), 20000);
     QVERIFY(!finalReply.data.value("deviceBusy").toBool());
     QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+}
+
+static UnifiedCommand motorRequest(quint64 id, const QString &operation)
+{
+    UnifiedCommand command; command.requestId = id; command.operation = operation; command.targetDevice = "17";
+    command.parameters = {{"positionUm", 2000}, {"speedUmPerS", 1000}, {"absoluteAction", 1}};
+    return command;
+}
+
+void FrameworkTest::stopAndResetLifecycle_data()
+{
+    QTest::addColumn<QString>("operation"); QTest::addColumn<int>("state"); QTest::addColumn<quint32>("position");
+    QTest::newRow("stop-idle-at-arbitrary-position") << QString("MOTOR_STOP") << 1 << quint32(777);
+    QTest::newRow("reset-logical-zero-offset") << QString("MOTOR_RESET") << 1 << quint32(777);
+    QTest::newRow("stop-unhomed") << QString("MOTOR_STOP") << 0 << quint32(0xffffff);
+    QTest::newRow("stop-idle-unknown-position") << QString("MOTOR_STOP") << 1 << quint32(0xffffff);
+}
+
+void FrameworkTest::stopAndResetLifecycle()
+{
+    QFETCH(QString, operation); QFETCH(int, state); QFETCH(quint32, position);
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+    manager.setTimeouts(1000, 800, 3000);
+    QSignalSpy states(&manager, &RequestManager::stateChanged), replies(&manager, &RequestManager::replyReceived);
+    manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
+    manager.cancel(1); QVERIFY(manager.deviceBusy()); // 状态未知时仍应允许停止/回零。
+    manager.enqueue(motorRequest(2, operation)); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(transport.sent.last().mid(8, 8), QByteArray::fromHex(operation == "MOTOR_STOP" ? "11420003e8000000" : "11440003e8000000"));
+    transport.receive(QushengProtocol::makeReply(1, 0));
+    QCOMPARE(replies.count(), 1); QVERIFY(manager.deviceBusy());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::InMotion);
+    QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(motorReply(2, operation == "MOTOR_RESET" ? 2 : 3, 0xffffff));
+    QVERIFY(qvariant_cast<RequestState>(states.last().at(1)) != RequestState::Succeeded);
+    QVERIFY(manager.deviceBusy());
+    QTRY_COMPARE(transport.sent.size(), 4);
+    if (operation == "MOTOR_RESET") {
+        transport.receive(motorReply(3, 1, 0xffffff)); // 空闲但位置无效不能冒充回零完成。
+        QVERIFY(manager.deviceBusy()); QTRY_COMPARE(transport.sent.size(), 5);
+        transport.receive(motorReply(4, state, position));
+    } else transport.receive(motorReply(3, state, position));
+    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+    QCOMPARE(manager.deviceBusy(), state == 0 || position == 0xffffff);
+    QVERIFY(!states.last().at(2).toString().contains(QString::fromUtf8(u8"本次目标")));
+}
+
+void FrameworkTest::stopInterruptsMotionAndCancelsQueue()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+    manager.setTimeouts(1000, 800, 3000);
+    QSignalSpy states(&manager, &RequestManager::stateChanged), unmatched(&manager, &RequestManager::unsolicitedMessage);
+    manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
+    transport.receive(QushengProtocol::makeReply(0, 0));
+    manager.enqueue(motorRequest(2, "MOTOR_BACKWARD"));
+    UnifiedCommand stop = motorRequest(3, "MOTOR_STOP"), other = stop; other.targetDevice = "18";
+    QVERIFY(!manager.canInterruptWithStop(other)); QVERIFY(manager.canInterruptWithStop(stop));
+    manager.enqueue(stop); QTRY_COMPARE(transport.sent.size(), 2);
+    bool interrupted = false, queuedCancelled = false;
+    for (const auto &signal : states) if (qvariant_cast<RequestState>(signal.at(1)) == RequestState::Cancelled) {
+        interrupted |= signal.at(0).toULongLong() == 1; queuedCancelled |= signal.at(0).toULongLong() == 2;
+    }
+    QVERIFY(interrupted && queuedCancelled); QCOMPARE(quint8(transport.sent.last().at(9)), quint8(0x42));
+    transport.receive(QushengProtocol::makeReply(0, 0)); QCOMPARE(unmatched.count(), 1);
+    transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(motorReply(2, 1, 777));
+    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+    QVERIFY(!manager.deviceBusy()); QTest::qWait(30); QCOMPARE(transport.sent.size(), 3);
+}
+
+void FrameworkTest::stopWaitsForWrite_data()
+{
+    QTest::addColumn<bool>("earlyReply");
+    QTest::newRow("write-pending") << false;
+    QTest::newRow("reply-before-bytes-written") << true;
+}
+
+void FrameworkTest::stopWaitsForWrite()
+{
+    QFETCH(bool, earlyReply);
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    QSignalSpy states(&manager, &RequestManager::stateChanged);
+    manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
+    if (earlyReply) transport.receive(QushengProtocol::makeReply(0, 0));
+    manager.enqueue(motorRequest(2, "MOTOR_STOP")); QTest::qWait(30); QCOMPARE(transport.sent.size(), 1);
+    transport.sendFinished(1, true, QString()); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(quint8(transport.sent.last().at(9)), quint8(0x42));
+    transport.sendFinished(1, true, QString()); // 旧写出通知不得释放新的停止写操作。
+    transport.sendFinished(2, true, QString());
+    transport.receive(QushengProtocol::makeReply(0, 0));
+    transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
+    transport.sendFinished(2, true, QString()); transport.receive(motorReply(2, 1, 123));
+    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+    QVERIFY(!manager.deviceBusy());
+}
+
+void FrameworkTest::motorControlErrorsKeepBusy()
+{
+    for (const QString &operation : {QString("MOTOR_STOP"), QString("MOTOR_RESET")}) for (int scenario = 0; scenario < 4; ++scenario) {
+        QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+        manager.setTimeouts(1000, 100, 400);
+        QSignalSpy states(&manager, &RequestManager::stateChanged);
+        manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
+        manager.cancel(1); QVERIFY(manager.deviceBusy());
+        manager.enqueue(motorRequest(2, operation)); QTRY_COMPARE(transport.sent.size(), 2);
+        if (scenario == 0) transport.receive(QushengProtocol::makeReply(1, 4));
+        else if (scenario != 1) {
+            transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_VERIFY(transport.sent.size() >= 3);
+            if (scenario == 2) transport.receive(motorReply(2, 4, 0xffffff));
+        }
+        const RequestState terminal = scenario < 1 || scenario == 2 ? RequestState::Failed : RequestState::TimedOut;
+        QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), terminal);
+        QVERIFY(manager.deviceBusy());
+        const int sent = transport.sent.size(); manager.enqueue(motorRequest(3, "MOTOR_FORWARD"));
+        QTRY_COMPARE(states.last().at(0).toULongLong(), quint64(3));
+        QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Failed);
+        QCOMPARE(transport.sent.size(), sent); // 拒绝/超时/错误后不重发控制，也不放行普通运动。
+    }
+}
+
+void FrameworkTest::relativePreflightWaitsForWrite()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    UnifiedCommand relative = motorRequest(1, "RELATIVE_FORWARD");
+    relative.parameters.insert("distanceUm", 500); relative.parameters.insert("minPositionUm", 0); relative.parameters.insert("maxPositionUm", 6000);
+    manager.enqueue(relative); QTRY_COMPARE(transport.sent.size(), 1);
+    transport.receive(motorReply(0, 1, 1000)); QTest::qWait(30); QCOMPARE(transport.sent.size(), 1);
+    transport.sendFinished(1, true, QString()); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(transport.sent.last().mid(8, 8), QByteArray::fromHex("11210003e80001f4"));
+}
+
+void FrameworkTest::finalControlReplyWaitsForWrite()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    QSignalSpy states(&manager, &RequestManager::stateChanged);
+    manager.enqueue(motorRequest(1, "MOTOR_STOP")); QTRY_COMPARE(transport.sent.size(), 1);
+    transport.sendFinished(1, true, QString()); transport.receive(QushengProtocol::makeReply(0, 0));
+    QTRY_COMPARE(transport.sent.size(), 2);
+    manager.enqueue(motorRequest(2, "MOTOR_FORWARD"));
+    transport.receive(motorReply(1, 1, 123));
+    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+    QVERIFY(manager.hasPendingRequests()); QVERIFY(!manager.deviceBusy());
+    QTest::qWait(30); QCOMPARE(transport.sent.size(), 2);
+    transport.sendFinished(1, true, QString()); QTRY_COMPARE(transport.sent.size(), 3);
+    QCOMPARE(quint8(transport.sent.last().at(9)), quint8(0x41));
+}
+
+void FrameworkTest::cancellingQueuedStopKeepsOriginalActive()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
+    const auto stop = motorRequest(2, "MOTOR_STOP"); manager.enqueue(stop); manager.cancel(2);
+    QVERIFY(manager.hasPendingRequests()); QVERIFY(manager.canInterruptWithStop(stop));
+    transport.sendFinished(1, true, QString()); QTest::qWait(30); QCOMPARE(transport.sent.size(), 1);
+    manager.cancel(1); QVERIFY(!manager.hasPendingRequests()); QVERIFY(manager.deviceBusy());
 }
 
 QTEST_GUILESS_MAIN(FrameworkTest)
