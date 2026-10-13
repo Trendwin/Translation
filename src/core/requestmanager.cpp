@@ -38,7 +38,12 @@ RequestManager::RequestManager(IInternalProtocol *protocol,ITransport *transport
 void RequestManager::setTimeouts(int sendMs,int ackMs,int motionMs)
 { m_sendTimeoutMs=qMax(1,sendMs); m_ackTimeoutMs=qMax(1,ackMs); m_motionTimeoutMs=qMax(1,motionMs); }
 void RequestManager::setBusy(bool busy)
-{ if(m_deviceBusy!=busy) { m_deviceBusy=busy; emit deviceBusyChanged(busy); } }
+{
+    if (busy) m_busyDevices.insert(m_current.targetDevice);
+    else m_busyDevices.remove(m_current.targetDevice);
+    const bool anyBusy = !m_busyDevices.isEmpty();
+    if (m_deviceBusy != anyBusy) { m_deviceBusy = anyBusy; emit deviceBusyChanged(anyBusy); }
+}
 
 void RequestManager::enqueue(const UnifiedCommand &command)
 {
@@ -51,6 +56,11 @@ void RequestManager::startNext()
 {
     if(m_active || m_queue.isEmpty()) return;
     m_current=m_queue.dequeue(); m_active=true; m_acked=false; m_probeActive=false; m_completionEmitted=false; m_preflight=false;
+    // 统一编号表示；显式SDK电机查询参数是本次实际查询对象，必须与忙状态归属一致。
+    bool targetOk = false; uint target = m_current.targetDevice.toUInt(&targetOk);
+    if (m_current.operation == "QUERY_MOTOR" && m_current.parameters.contains("devId"))
+        target = m_current.parameters.value("devId").toUInt(&targetOk);
+    if (targetOk) m_current.targetDevice = QString::number(target);
     if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
     // 已经向界面发出 ack 结果并不释放设备；只有完成查询确认空闲后才能接收下一条运动。
     if(m_deviceBusy && isMotion(m_current)) {
@@ -110,7 +120,9 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         const UnifiedCommand &expected=m_probeActive?m_probe:m_current;
         if(!m_active || !m_protocol->matchesReply(expected,message)) { emit unsolicitedMessage(message); continue; }
         UnifiedResult result; TranslationError error;
-        if(!m_protocol->decodeReply(expected,message,&result,&error)) { failCurrent(RequestState::Failed,error.code,error.message); continue; }
+        // 地址/序号正确但布局损坏的帧仍不能结束请求；显示解析错误并保留原应答超时。
+        // 设备明确拒绝会成功解码为success=false，与格式错误不可合并。
+        if(!m_protocol->decodeReply(expected,message,&result,&error)) { emit protocolError(error); continue; }
         // 接纳回告、前置查询和完成轮询均立即显示。显示不触发出队，不能把接纳误当完成。
         // 内部查询沿用业务请求编号；错误序号和不匹配的设备报文不会进入此信号。
         result.requestId=m_current.requestId;
@@ -162,8 +174,8 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         m_acked=true;
         // 0x11 成功回告仅表示命令被接纳，不能合并为“动作完成”。
         emit stateChanged(m_current.requestId,RequestState::Acknowledged,QString::fromUtf8(u8"设备已接纳命令，但这不表示动作已完成"));
-        if (m_current.operation == "QUERY_DEVICE_INFO") {
-            emit stateChanged(m_current.requestId, RequestState::Succeeded, QString::fromUtf8(u8"设备版本回告已解析"));
+        if (!isMotion(m_current) && m_current.operation != "QUERY_MOTOR") {
+            emit stateChanged(m_current.requestId, RequestState::Succeeded, QString::fromUtf8(u8"设备回告已解析"));
             emit completed(result); m_completionEmitted=true; finishCurrent(); continue;
         }
         if(m_current.operation=="QUERY_MOTOR") {

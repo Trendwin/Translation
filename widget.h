@@ -66,6 +66,7 @@ private:
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
+    QString parameterDefaultText(const QJsonObject &definition, const QString &operation) const;
     bool inputIsQuery() const;
     static QString stateText(RequestState state);
 

@@ -2,17 +2,17 @@
 
 ## 数据流
 
-软件输入框 → ConversionEngine → UnifiedCommand → RequestManager → QushengProtocol → 下游串口
+软件输入框 → ConversionEngine → UnifiedCommand → RequestManager → QushengProtocol/SDK → 下游串口
 
 设备回告由下游串口进入QushengProtocol和RequestManager，界面显示原始字节、解析结果和请求状态。运行时只有一个SerialTransport，没有客户侧串口或客户回写接口。
 
 ## 职责
 
-- ProtocolConfig校验schemaVersion JSON，生成SHA-256版本；inputFormat按配置省略字段和覆盖帧尾，不按客户协议名称选择布局。
+- ProtocolConfig校验schemaVersion JSON，生成SHA-256版本；inputFormat按配置省略字段，帧尾只来自共用格式，不按客户协议名称选择布局。
 - ConversionEngine只依赖保存的帧边界、字段表和命令映射，完成通用分帧、字段解析、最长配置命令码匹配及参数换算。
 - UnifiedCommand/UnifiedResult传目标操作、设备、数值、单位约定、响应策略和诊断数据，不携带客户设备内置语法。
-- QushengProtocol仅支持受限的单条绝对/相对运动、0x12电机查询和0x04设备版本查询，保留地址、序号、长度反码和既有CRC校验。
-- QushengCommandCatalog从随程序发布的中文目录加载全部56类目标指令，将0x11展开为四种固定绝对模式动作，共59个新建选项。旧模板单独供既有配置兼容，不加入新建池。执行许可来自编译后的白名单，不能通过JSON中的状态或备注改变。
+- QushengSdk是独立QtCore模块，登记56族、实现30族简单请求/回告及08/09/17/45上报；QushengProtocol只适配业务请求和序号缓存，帧与载荷布局调用SDK。SDK参数定义/默认值/能力为普通指令单一来源，详见qusheng-sdk-design.md。
+- QushengCommandCatalog从随程序发布的中文目录加载全部56类目标指令，将0x11展开为四种固定绝对模式动作，共59个新建选项。旧模板单独供既有配置兼容，不加入新建池。执行许可来自编译后的SDK能力及少量既有运动发送限制，不能通过JSON中的状态或备注改变。
 - RequestManager串行发送请求，分别管理写出、应答和完成，不自动重发运动。
 - Widget用三列映射摘要和选中编辑表单替代复杂横向表格，保留草稿/校验/启用/确认边界。
 
@@ -38,7 +38,7 @@
 
 ## 本轮范围
 
-当前提供单条绝对/相对运动与只读查询。客户代码和大小写对应均由示例JSON描述；通用解析器没有DT、A/a、P/p、D/d等专用判断。新示例直接使用数值，客户与设备物理单位的等价关系另行确认。
+当前提供SDK30族简单控制/查询，动作事件及复杂流程暂缓。客户代码和大小写对应均由示例JSON描述；通用解析器没有DT、A/a、P/p、D/d等专用判断。新示例直接使用数值，客户与设备物理单位的等价关系另行确认。
 
 ITransport、IInternalProtocol、配置表达式和受限目标模板保留扩展边界。本轮不实现位拼接、脚本、动作集、复合指令、循环、TCP或通用CRC编辑。旧未编译的客户回包演示残留已清理；下游演示编码器仅供既有测试回归。
 

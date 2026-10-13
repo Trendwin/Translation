@@ -23,3 +23,5 @@ HEADERS += ../src/model/translationtypes.h \
     ../src/core/conversionengine.h \
     ../src/core/requestmanager.h \
     ../src/transport/itransport.h
+
+include($$PWD/../src/qusheng/sdk/qusheng-sdk.pri)

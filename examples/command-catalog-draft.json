@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "description": "完整指令池编辑示例：客户格式可自行定义。MOVE 已支持预览，FAN 仅保存参数关系，发送待实现。",
+  "description": "完整指令池编辑示例：客户格式可自行定义。MOVE与FAN调用SDK生成目标帧。",
   "external": {
     "encoding": "ascii",
     "header": "!",

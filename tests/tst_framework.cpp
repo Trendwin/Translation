@@ -10,6 +10,7 @@
 #include "demo/demointernalprotocol.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
+#include "qusheng/sdk/qushengsdk.h"
 
 class FakeTransport : public ITransport
 {
@@ -61,6 +62,9 @@ private slots:
     void pendingParameterRelationshipsAreValidated();
     void sharedFooterAndLegacyResponse();
     void mappingSourcesRespectChangedFormat();
+    void sdkSimpleControlsFromConfig();
+    void sdkOrdinaryRequestLifecycle();
+    void sdkQueryDoesNotUnlockOtherMotor();
     void fixedMotorActionTemplates();
     void fixedMotorActionRequestLifecycle_data();
     void fixedMotorActionRequestLifecycle();
@@ -92,6 +96,9 @@ void FrameworkTest::completeCommandCatalogMatchesProtocol()
         actual.insert(code); operations.insert(operation);
         QCOMPARE(command.value("section").toString(), QStringLiteral("3.2.%1").arg(i + 1));
         QVERIFY(!command.value("name").toString().isEmpty());
+        const auto sdkDefinition = QushengSdk::definition(quint8(code.mid(2).toUInt(nullptr, 16)));
+        QCOMPARE(sdkDefinition.code, quint8(code.mid(2).toUInt(nullptr, 16)));
+        QVERIFY(!sdkDefinition.name.isEmpty()); // 所有协议码均登记接口，不能只用总数掩盖缺失。
         QVERIFY(!command.value("category").toString().isEmpty());
         QVERIFY(!command.value("description").toString().isEmpty());
         QVERIFY(command.value("parameters").isArray());
@@ -115,7 +122,7 @@ void FrameworkTest::completeCommandCatalogMatchesProtocol()
     QVERIFY(!QushengCommandCatalog::isExecutable("QUSHENG_11"));
     for (const QJsonValue &entry : QushengCommandCatalog::options())
         executableOptions += QushengCommandCatalog::isExecutable(entry.toObject().value("operation").toString()) ? 1 : 0;
-    QCOMPARE(executableOptions, 4);
+    QCOMPARE(executableOptions, 31);
     QVERIFY(QushengCommandCatalog::find("NOT_IN_PROTOCOL").isEmpty());
     QVERIFY(!QushengCommandCatalog::isExecutable("NOT_IN_PROTOCOL"));
     QVERIFY(QushengCommandCatalog::find("QUSHENG_C1").value("note").toString().contains(QString::fromUtf8(u8"重叠")));
@@ -131,10 +138,9 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
     QVERIFY2(ConversionEngine(config).convert("!MOVE2000\r", false, &result, &error), qPrintable(error.message));
     const QByteArray goodFrame = result.targetFrame;
     QVERIFY(!goodFrame.isEmpty());
-    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", false, &result, &error));
-    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
-    QVERIFY(result.targetFrame.isEmpty());
-    QVERIFY(error.message.contains(QString::fromUtf8(u8"待实现")));
+    QVERIFY(ConversionEngine(config).convert("!FAN50\r", false, &result, &error));
+    QCOMPARE(quint8(result.targetFrame.at(7)), quint8(0x81));
+    QCOMPARE(result.targetFrame.mid(8, 2), QByteArray::fromHex("e032"));
 
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
@@ -144,13 +150,14 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
     QCOMPARE(reloaded.root, config.root);
     QVERIFY(ConversionEngine(reloaded).convert("!MOVE2000\r", false, &result, &error));
     QCOMPARE(result.targetFrame, goodFrame);
-    QVERIFY(!ConversionEngine(reloaded).convert("!FAN50\r", true, &result, &error));
-    QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
-    QVERIFY(result.targetFrame.isEmpty());
+    QVERIFY(ConversionEngine(reloaded).convert("!FAN50\r", true, &result, &error));
+    QCOMPARE(result.targetFrame.mid(8, 2), QByteArray::fromHex("e032"));
 
     // 任意目录状态/高级配置标志都不能授予执行权限，真实发送和预览共享同一编译白名单。
     QJsonArray mappings = config.root.value("mappings").toArray();
     QJsonObject pending = mappings.at(1).toObject();
+    pending.insert("operation", "QUSHENG_13");
+    pending.insert("parameters", QJsonObject());
     pending.insert("executable", true);
     pending.insert("enabled", true);
     pending.insert("catalog", QJsonObject{{"direction", "tx"}, {"executable", true}});
@@ -727,7 +734,8 @@ void FrameworkTest::simpleCommandExamples()
     } else {
         QCOMPARE(preview.fieldOrder.size(), 2);
         QVERIFY(!preview.fields.contains(QString::fromUtf8(u8"位置")));
-        QVERIFY(preview.command.parameters.isEmpty());
+        if (wireCommand == 0x12) QCOMPARE(preview.command.parameters.value("devId").toInt(), 0x11);
+        else QVERIFY(preview.command.parameters.isEmpty());
     }
 }
 
@@ -885,6 +893,112 @@ void FrameworkTest::sharedFooterAndLegacyResponse()
     QTemporaryDir directory; QVERIFY(config.save(directory.filePath("queries.json"), &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("queries.json"), &restored, &error));
     QCOMPARE(config.version, restored.version);
+}
+
+void FrameworkTest::sdkSimpleControlsFromConfig()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY2(ProtocolConfig::load(example("sdk-simple-controls.json"), &config, &error), qPrintable(error.message));
+    const QList<QPair<QByteArray, QByteArray>> samples = {
+        {"/1FAN50R\r", QByteArray::fromHex("e132")}, {"/1VAL1000R\r", QByteArray::fromHex("32000003e8")},
+        {"/1DAC1000R\r", QByteArray::fromHex("710003e8")}, {"/1DC-30R\r", QByteArray::fromHex("21e2")},
+        {"/1ADCR\r", QByteArray::fromHex("62")}, {"/1DIR\r", QByteArray()}, {"/1STATR\r", QByteArray()}
+    };
+    for (const auto &sample : samples) {
+        QVERIFY2(ConversionEngine(config).convert(sample.first, false, &preview, &error), qPrintable(error.message));
+        QCOMPARE(preview.targetFrame.mid(8, sample.second.size()), sample.second);
+        QCOMPARE(quint8(preview.targetFrame.at(4)), quint8(sample.second.size()));
+        QVERIFY(!preview.command.parameters.contains("positionUm"));
+        if (preview.command.operation == "QUSHENG_81") {
+            QCOMPARE(preview.command.parameters.value("devId").toInt(), 225);
+            QVERIFY(preview.parameterTrace.value("devId").contains(QString::fromUtf8(u8"SDK预置")));
+            QVERIFY(preview.parameterTrace.value("percent").contains(QString::fromUtf8(u8"直接引用")));
+        }
+    }
+    // 覆盖预置只能在映射中明确发生；另一个客户字段仍由通用格式解析，不认命令字符。
+    QJsonObject root = config.root; QJsonArray mappings = root.value("mappings").toArray();
+    QJsonObject fan = mappings.first().toObject(); QJsonObject parameters = fan.value("parameters").toObject();
+    parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 226}}); fan.insert("parameters", parameters);
+    fan.insert("commandCode", "CHANGE"); mappings[0] = fan; root.insert("mappings", mappings);
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
+    QVERIFY(ConversionEngine(config).convert("/1CHANGE25R\r", false, &preview, &error));
+    QCOMPARE(preview.targetFrame.mid(8, 2), QByteArray::fromHex("e219"));
+    for (const QByteArray &bad : {QByteArray("/1CHANGE101R\r"), QByteArray("/1DC-129R\r"), QByteArray("/1DAC16777215R\r")}) {
+        QVERIFY(!ConversionEngine(config).convert(bad, false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
+    }
+    QTemporaryDir directory; QVERIFY(config.save(directory.filePath("sdk.json"), &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("sdk.json"), &restored, &error));
+    QCOMPARE(restored.root, config.root); QCOMPARE(restored.version, config.version);
+    QVERIFY(ConversionEngine(restored).convert("/1CHANGE25R\r", false, &preview, &error));
+    QCOMPARE(preview.targetFrame.mid(8, 2), QByteArray::fromHex("e219"));
+    root.insert("sdkDefaults", QJsonObject{{"QUSHENG_81", QJsonObject{{"percent", 101}}}});
+    QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error)); QCOMPARE(error.code, QString("CONFIG_SDK_DEFAULT"));
+    for (const QJsonObject &bad : {QJsonObject{{"QUSHENG_01", QJsonObject{{"enableMask", 1}}}},
+                                  QJsonObject{{"QUSHENG_84", QJsonObject{{"minOutput", 10}, {"maxOutput", 9}}}}}) {
+        root.insert("sdkDefaults", bad);
+        QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error)); QCOMPARE(error.code, QString("CONFIG_SDK_DEFAULT"));
+    }
+    QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
+    root = config.root;
+    root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"devId", 18}, {"speedUmPerS", 2000}}}});
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
+    QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+    QCOMPARE(preview.targetFrame.mid(8, 8), QByteArray::fromHex("12410007d00007d0"));
+    root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"action", 2}}}});
+    QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error));
+}
+
+void FrameworkTest::sdkOrdinaryRequestLifecycle()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
+    RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100, 1000);
+    int completed = 0; UnifiedResult last;
+    connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &result) { ++completed; last = result; });
+    UnifiedCommand fan; fan.requestId = 1; fan.operation = "QUSHENG_81"; fan.parameters = {{"percent", 50}};
+    manager.enqueue(fan); QTRY_COMPARE(transport.sent.size(), 1);
+    QCOMPARE(transport.sent.first().mid(8, 2), QByteArray::fromHex("e032"));
+    // 错误序号、损坏长度不完成请求；有效单条应答不进入电机运动轮询。
+    transport.receive(QushengProtocol::makeFrame(1, 2, 99, 0x81, QByteArray(4, '\0'))); QCOMPARE(completed, 0);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 0, 0x81, QByteArray(3, '\0'))); QCOMPARE(completed, 0);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 0, 0x81, QByteArray(4, '\0')));
+    QTRY_COMPARE(completed, 1); QVERIFY(last.success); QVERIFY(!manager.deviceBusy()); QCOMPARE(transport.sent.size(), 1);
+    UnifiedCommand adc; adc.requestId = 2; adc.operation = "QUSHENG_44";
+    manager.enqueue(adc); QTRY_COMPARE(transport.sent.size(), 2);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x44, QByteArray::fromHex("02000000")));
+    QTRY_COMPARE(completed, 2); QVERIFY(!last.success); QCOMPARE(last.error.code, QString("QUSHENG_REJECTED"));
+    QVERIFY(last.error.message.contains("02")); QCOMPARE(transport.sent.size(), 2);
+    QSignalSpy reports(&manager, &RequestManager::unsolicitedMessage);
+    UnifiedCommand reportSettings; reportSettings.requestId = 3; reportSettings.operation = "QUSHENG_09";
+    manager.enqueue(reportSettings); QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x09, QByteArray::fromHex("11000001")));
+    QCOMPARE(completed, 2); QCOMPARE(reports.count(), 1); // 同序号主动故障不是设置失败。
+    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x09, QByteArray(4, '\0'))); QTRY_COMPARE(completed, 3);
+    UnifiedCommand heartbeat; heartbeat.requestId = 4; heartbeat.operation = "QUSHENG_08";
+    manager.enqueue(heartbeat); QTRY_COMPARE(transport.sent.size(), 4);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 3, 0x08, QByteArray()));
+    QCOMPARE(completed, 3); QCOMPARE(reports.count(), 2);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 3, 0x08, QByteArray(4, '\0'))); QTRY_COMPARE(completed, 4);
+}
+
+void FrameworkTest::sdkQueryDoesNotUnlockOtherMotor()
+{
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
+    RequestManager manager(&codec, &transport); int completed = 0;
+    connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &) { ++completed; });
+    UnifiedCommand move; move.requestId = 1; move.operation = "MOTOR_FORWARD"; move.targetDevice = "017";
+    move.parameters = {{"positionUm", 2000}, {"speedUmPerS", 1000}};
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(), 1);
+    manager.cancel(1); QVERIFY(manager.deviceBusy()); QTRY_COMPARE(completed, 1);
+    UnifiedCommand query; query.requestId = 2; query.operation = "QUERY_MOTOR"; query.targetDevice = "17";
+    query.parameters.insert("devId", 18); // 实际SDK请求对象优先于旧式targetDevice，不能误清17。
+    manager.enqueue(query); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(quint8(transport.sent.last().at(8)), quint8(18));
+    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12, QByteArray::fromHex("00000000100007d0ffffff")));
+    QTRY_COMPARE(completed, 2); QVERIFY(manager.deviceBusy());
+    query.requestId = 3; query.parameters.insert("devId", 17);
+    manager.enqueue(query); QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12, QByteArray::fromHex("00000000100007d0ffffff")));
+    QTRY_COMPARE(completed, 3); QVERIFY(!manager.deviceBusy());
 }
 
 void FrameworkTest::mappingSourcesRespectChangedFormat()

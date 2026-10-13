@@ -1,5 +1,6 @@
 #include "protocolconfig.h"
 #include "qusheng/qushengcommandcatalog.h"
+#include "qusheng/sdk/qushengsdk.h"
 
 #include <QCryptographicHash>
 #include <QFile>
@@ -228,6 +229,38 @@ bool ProtocolConfig::validate(TranslationError *error) const
     const QJsonArray mappings = root.value("mappings").toArray();
     if (mappings.isEmpty()) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"至少需要一条命令映射"));
     QSet<QString> commandCodes;
+    // SDK预置按操作保存。校验的是被声明的默认参数，不要求提前填写其它业务必填项。
+    if (root.contains("sdkDefaults") && !root.value("sdkDefaults").isObject())
+        return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"SDK默认参数必须为对象"));
+    const QJsonObject sdkDefaults = root.value("sdkDefaults").toObject();
+    for (auto it = sdkDefaults.begin(); it != sdkDefaults.end(); ++it) {
+        const int sdkCode = QushengCommandCatalog::commandCode(it.key());
+        if (sdkCode < 0 || !it.value().isObject())
+            return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"SDK预置的指令或参数对象无效：%1").arg(it.key()));
+        const auto definition = QushengSdk::definition(quint8(sdkCode));
+        const QJsonObject preset = it.value().toObject();
+        for (auto p = preset.begin(); p != preset.end(); ++p) {
+            if (QushengCommandCatalog::usesMotionEditor(it.key()) && p.key() != "devId" && p.key() != "speedUmPerS")
+                return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"运动模板仅预置电机编号和速度；模式、动作固定，位置请使用参数映射"));
+            if (QushengCommandCatalog::usesMotionEditor(it.key()) && p.key() == "speedUmPerS" && !integer(p.value(), 1, 0xfffffe))
+                return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"运动模板的SDK预置速度必须为1～16777214"));
+            bool found = false;
+            for (const auto &spec : definition.parameters) if (spec.key == p.key()) {
+                found = integer(p.value(), spec.minimum, spec.maximum)
+                    && (spec.allowedValues.isEmpty() || spec.allowedValues.contains(qint64(p.value().toDouble())));
+                break;
+            }
+            if (!found) return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"SDK预置“%1”的参数“%2”无效").arg(it.key(), p.key()));
+        }
+        if (definition.support == QushengSdkSupport::Simple) {
+            QushengSdkRequest checked; TranslationError sdkError;
+            // 预置应在启用前检查保留位、通道及组合关系；必填业务值可由具体映射以后提供。
+            if (!QushengSdk::buildRequest(quint8(sdkCode), QVariantMap(), preset.toVariantMap(),
+                    root.value("device").toObject().toVariantMap(), &checked, &sdkError)
+                    && sdkError.code != "SDK_PARAMETER_REQUIRED")
+                return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"SDK预置“%1”无效：%2").arg(it.key(), sdkError.message));
+        }
+    }
     bool requiresLegacyDirection = false;
     for (const QJsonValue &value : mappings) {
         const QJsonObject mapping = value.toObject();
@@ -237,10 +270,8 @@ bool ProtocolConfig::validate(TranslationError *error) const
         commandCodes.insert(code);
         const QString operation = mapping.value("operation").toString();
         requiresLegacyDirection |= operation == "ABSOLUTE_MOVE";
-        const bool query = operation == "QUERY_MOTOR" || operation == "QUERY_DEVICE_INFO";
         const bool relative = operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
         const QJsonObject catalogEntry = QushengCommandCatalog::find(operation);
-        const bool executable = QushengCommandCatalog::isExecutable(operation);
         if (catalogEntry.isEmpty())
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"目标指令不在趋盛协议目录中"));
         if (QushengCommandCatalog::isReceiveOnly(operation))
@@ -252,8 +283,8 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (!mapping.value("parameters").isObject())
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"参数关系必须为对象；查询使用空对象"));
         const QJsonObject parameters = mapping.value("parameters").toObject();
-        if (executable && (query ? !parameters.isEmpty()
-                  : (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm"))))
+        if (QushengCommandCatalog::usesMotionEditor(operation)
+                && (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm")))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离；查询无参数且收到回告后返回"));
         // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
         if (mapping.contains("input") && !mapping.value("input").isObject())
@@ -317,7 +348,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
         for (auto it = parameters.begin(); it != parameters.end(); ++it) {
             qint64 minimum = 0, maximum = 0xfffffe;
             QString parameterName = relative ? QString::fromUtf8(u8"移动距离") : QString::fromUtf8(u8"目标位置");
-            if (!executable) {
+            if (!QushengCommandCatalog::usesMotionEditor(operation)) {
                 QJsonObject parameterSpec;
                 for (const QJsonValue &parameter : catalogEntry.value("parameters").toArray())
                     if (parameter.toObject().value("key").toString() == it.key()) {
@@ -350,6 +381,25 @@ bool ProtocolConfig::validate(TranslationError *error) const
             }
             if (!it.value().isObject() || !validExpression(expression, numericParameters, minimum, maximum))
                 return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”关系无效；请检查固定值范围或换算设置").arg(code, parameterName));
+        }
+        const int sdkCode = QushengCommandCatalog::commandCode(operation);
+        if (sdkCode >= 0 && QushengSdk::isSupported(quint8(sdkCode)) && !QushengCommandCatalog::usesMotionEditor(operation)
+                && operation != "MOTOR_STOP" && operation != "MOTOR_RESET" && operation != "QUSHENG_11") {
+            const QVariantMap preset = sdkDefaults.value(operation).toObject().toVariantMap();
+            for (const auto &spec : QushengSdk::definition(quint8(sdkCode)).parameters)
+                if (spec.required && !parameters.contains(spec.key) && !preset.contains(spec.key))
+                    return fail(error, "CONFIG_SDK_PARAMETER", QString::fromUtf8(u8"命令映射“%1”的SDK参数“%2”需明确提供").arg(code, spec.label));
+            QVariantMap constants; bool dynamic = false;
+            for (auto p = parameters.begin(); p != parameters.end(); ++p) {
+                const QJsonObject expression = p.value().toObject();
+                if (expression.value("kind").toString() == "constant") constants.insert(p.key(), expression.value("value").toVariant());
+                else dynamic = true;
+            }
+            if (!dynamic) {
+                QushengSdkRequest checked; TranslationError sdkError;
+                if (!QushengSdk::buildRequest(quint8(sdkCode), constants, preset, root.value("device").toObject().toVariantMap(), &checked, &sdkError))
+                    return fail(error, "CONFIG_SDK_PARAMETER", QString::fromUtf8(u8"命令映射“%1”的SDK参数无效：%2").arg(code, sdkError.message));
+            }
         }
     }
 

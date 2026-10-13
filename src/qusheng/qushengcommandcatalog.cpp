@@ -1,4 +1,5 @@
 #include "qushengcommandcatalog.h"
+#include "sdk/qushengsdk.h"
 
 #include <QFile>
 #include <QJsonDocument>
@@ -10,7 +11,38 @@ QJsonArray QushengCommandCatalog::commands()
     static const QJsonArray catalog = []() {
         QFile file(QStringLiteral(":/protocol/qusheng-commands.json"));
         if (!file.open(QIODevice::ReadOnly)) return QJsonArray();
-        return QJsonDocument::fromJson(file.readAll()).object().value("commands").toArray();
+        QJsonArray entries = QJsonDocument::fromJson(file.readAll()).object().value("commands").toArray();
+        for (int i = 0; i < entries.size(); ++i) {
+            QJsonObject entry = entries.at(i).toObject();
+            bool ok = false; const int code = entry.value("code").toString().mid(2).toInt(&ok, 16);
+            if (!ok) continue;
+            const QushengCommandDefinition definition = QushengSdk::definition(quint8(code));
+            entry.insert("query", definition.query);
+            entry.insert("sdkSupported", definition.support == QushengSdkSupport::Simple);
+            entry.insert("layoutPending", definition.support == QushengSdkSupport::LayoutPending);
+            if (definition.support == QushengSdkSupport::Simple) {
+                // 参数类型、默认值、能力均来自SDK；目录保留名称/章节，不再另存可执行白名单。
+                QJsonArray parameters;
+                for (const QushengParameterDefinition &spec : definition.parameters) {
+                    QJsonObject parameter{{"key", spec.key}, {"label", spec.label}, {"type", spec.type},
+                        {"min", double(spec.minimum)}, {"max", double(spec.maximum)}, {"editable", true},
+                        {"required", spec.required}, {"optional", !spec.required}, {"deviceKey", spec.deviceKey},
+                        {"description", QString::fromUtf8(u8"%1；数值范围%2～%3。未映射时由SDK补齐，必填业务值必须明确设置。")
+                         .arg(spec.label).arg(spec.minimum).arg(spec.maximum)}};
+                    if (!spec.deviceKey.isEmpty()) parameter.insert("defaultSource", "device." + spec.deviceKey);
+                    if (spec.defaultValue.isValid()) parameter.insert("default", QJsonValue::fromVariant(spec.defaultValue));
+                    QJsonArray allowed; for (qint64 value : spec.allowedValues) allowed.append(double(value));
+                    if (!allowed.isEmpty()) parameter.insert("allowedValues", allowed);
+                    parameters.append(parameter);
+                }
+                entry.insert("parameters", parameters);
+                const QString oldNote = entry.value("note").toString();
+                if (oldNote.isEmpty() || oldNote.contains(QString::fromUtf8(u8"尚未实现")))
+                    entry.insert("note", QString::fromUtf8(u8"单条SDK接口；未映射参数使用预置、设备参数或软件初始值。"));
+            }
+            entries[i] = entry;
+        }
+        return entries;
     }();
     return catalog;
 }
@@ -100,7 +132,11 @@ QJsonArray QushengCommandCatalog::options()
         QJsonArray parameters;
         for (const QJsonValue &value : motor.value("parameters").toArray()) {
             QJsonObject parameter = value.toObject();
-            if (parameter.value("key").toString() == "action") {
+            const QString key = parameter.value("key").toString();
+            if (key == "devId" || key == "speedUmPerS" || key == "mode" || key == "action") parameter.insert("editable", false);
+            if (key == "positionUm") parameter.insert("max", 0xfffffe);
+            if (key == "mode") parameter.insert("fixedValue", 4);
+            if (key == "action") {
                 parameter.insert("fixedValue", index + 1);
                 parameter.insert("description", QString::fromUtf8(u8"D1低四位；由所选动作固定为%1，不能由客户参数覆盖。").arg(index + 1));
             }
@@ -129,9 +165,23 @@ QJsonObject QushengCommandCatalog::find(const QString &operation)
 
 bool QushengCommandCatalog::isExecutable(const QString &operation)
 {
-    // 许可必须由代码决定。即使高级配置或目录 JSON 写入 enabled/executable，也不能开启发送。
-    return QStringList({"ABSOLUTE_MOVE", "RELATIVE_FORWARD", "RELATIVE_BACKWARD",
-                        "MOTOR_FORWARD", "MOTOR_BACKWARD", "QUERY_MOTOR", "QUERY_DEVICE_INFO"}).contains(operation);
+    // SDK可组帧与软件允许真实发送不是同一状态；此前停止/复位的发送限制继续保留。
+    if (operation == "MOTOR_STOP" || operation == "MOTOR_RESET" || operation == "QUSHENG_11") return false;
+    const int code = commandCode(operation);
+    return code >= 0 && QushengSdk::isSupported(quint8(code));
+}
+
+bool QushengCommandCatalog::usesMotionEditor(const QString &operation)
+{
+    return isAbsoluteMotion(operation) || operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD";
+}
+
+int QushengCommandCatalog::commandCode(const QString &operation)
+{
+    if (usesMotionEditor(operation) || operation == "MOTOR_STOP" || operation == "MOTOR_RESET" || operation == "QUSHENG_11") return 0x11;
+    bool ok = false;
+    const int code = find(operation).value("code").toString().mid(2).toInt(&ok, 16);
+    return ok ? code : -1;
 }
 
 bool QushengCommandCatalog::isAbsoluteMotion(const QString &operation)
