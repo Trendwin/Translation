@@ -8,10 +8,14 @@
 #include "src/transport/serialtransport.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QListView>
 #include <QFile>
@@ -816,7 +820,8 @@ bool Widget::persistDraft(const QJsonObject &draft)
     TranslationError error;
     if (m_draftStore.save(draft, &error)) return true;
     // 写盘失败不得显示“已保存”，也不得校验旧内存值来掩盖当前未保存的编辑。
-    m_formDirty = true; m_draftValid = false; m_deviceConfirmed->setChecked(false);
+    if (!m_jsonDirty) m_formDirty = true;
+    m_draftValid = false; m_deviceConfirmed->setChecked(false);
     m_draftVersion->setText(QString::fromUtf8(u8"草稿：未保存"));
     m_validationState->setText(QString::fromUtf8(u8"保存失败：") + error.message);
     appendLog(m_validationState->text()); updateLiveState();
@@ -1597,19 +1602,66 @@ void Widget::enableDraft()
     updateLiveState();
 }
 
-void Widget::applyAdvancedJson()
+bool Widget::applyAdvancedJson()
 {
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(m_advancedJson->toPlainText().toUtf8(), &parseError);
     if (!document.isObject()) {
         m_validationState->setText(QString::fromUtf8(u8"JSON 无效：%1").arg(parseError.errorString()));
         appendLog(m_validationState->text());
-        return;
+        return false;
     }
-    if (!persistDraft(document.object())) return;
+    if (!persistDraft(document.object())) return false;
     m_draftRoot = document.object();
     loadUiFromDraft();
     appendLog(QString::fromUtf8(u8"高级 JSON 已应用到草稿；当前已启用版本未改变。"));
+    return true;
+}
+
+void Widget::closeEvent(QCloseEvent *event)
+{
+    // 提交仍在编辑的表格单元格和设备数字，再判断是否有未保存修改。
+    QWidget *editor = QApplication::focusWidget();
+    if (editor && isAncestorOf(editor)) editor->clearFocus();
+    if (!m_formDirty && !m_jsonDirty) {
+        event->accept();
+        return;
+    }
+
+    const bool conflict = m_formDirty && m_jsonDirty;
+    QDialog prompt(this);
+    prompt.setWindowTitle(QString::fromUtf8(u8"未保存修改"));
+    prompt.setObjectName("unsavedClosePrompt");
+    auto *layout = new QVBoxLayout(&prompt);
+    layout->addWidget(new QLabel(conflict
+        ? QString::fromUtf8(u8"表单和高级 JSON 都有修改，请取消关闭并选择要保存的内容。")
+        : QString::fromUtf8(u8"是否保存修改到草稿后关闭？"), &prompt));
+    auto *buttons = new QDialogButtonBox(&prompt);
+    layout->addWidget(buttons);
+    auto *save = buttons->addButton(QString::fromUtf8(u8"保存"), QDialogButtonBox::AcceptRole);
+    auto *discard = buttons->addButton(QString::fromUtf8(u8"放弃"), QDialogButtonBox::DestructiveRole);
+    auto *cancel = buttons->addButton(QString::fromUtf8(u8"取消"), QDialogButtonBox::RejectRole);
+    save->setEnabled(!conflict);
+    cancel->setDefault(true);
+    cancel->setFocus();
+    enum CloseChoice { CancelClose = 0, SaveDraft = 1, DiscardDraft = 2 };
+    connect(save, &QPushButton::clicked, &prompt, [&prompt]() { prompt.done(SaveDraft); });
+    connect(discard, &QPushButton::clicked, &prompt, [&prompt]() { prompt.done(DiscardDraft); });
+    connect(cancel, &QPushButton::clicked, &prompt, &QDialog::reject);
+    const int choice = prompt.exec();
+    if (choice == DiscardDraft) {
+        event->accept();
+        return;
+    }
+    if (choice == SaveDraft) {
+        const bool saved = m_jsonDirty ? applyAdvancedJson() : saveUiToDraft();
+        if (saved) {
+            event->accept();
+            return;
+        }
+    }
+    // 取消、关闭提示框或保存失败都保留编辑窗口与原落盘草稿。
+    event->ignore();
 }
 
 void Widget::importDraft()

@@ -30,6 +30,9 @@ public:
     explicit Widget(QWidget *parent = nullptr, const QString &draftFilePath = QString());
     ~Widget() override = default;
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private:
     void buildUi();
     void connectSignals();
@@ -44,7 +47,7 @@ private:
     void enableDraft();
     void importDraft();
     void exportDraft();
-    void applyAdvancedJson();
+    bool applyAdvancedJson();
     void refreshPorts();
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();

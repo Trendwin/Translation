@@ -12,6 +12,8 @@
 #include <QTextEdit>
 #include <QTranslator>
 #include <QMenu>
+#include <QDialog>
+#include <QTimer>
 #include <QListView>
 #include <QStandardItemModel>
 #include <QScrollArea>
@@ -59,6 +61,14 @@ private slots:
     void incompleteDraftSurvivesRestart();
     void draftWriteFailureIsVisibleAndRetryable();
     void damagedLocalDraftIsNotOverwritten();
+    void closeSavesFormAndMapping();
+    void closeCancelAndDiscardPreserveSavedDraft();
+    void closeSavesAdvancedJson();
+    void closeSaveFailuresAreRetryable();
+    void closeConflictingEditorsRequiresChoice();
+    void closeCleanDraftAndDebugInput();
+    void closeCommitsActiveCellEditor();
+    void closeEscapeCancels();
     void fieldNamesFollowAllMappings();
     void fieldIdentitySwapAndDeferredSave();
     void fieldDeletionTypesAndJsonBoundary();
@@ -83,6 +93,196 @@ void WidgetTest::initTestCase()
 static QPushButton *button(Widget &widget, const char *objectName)
 {
     return widget.findChild<QPushButton *>(QString::fromLatin1(objectName));
+}
+
+static bool closeWithChoice(Widget &widget, const QString &choice, bool *seen,
+                            bool *saveEnabled = nullptr)
+{
+    *seen = false;
+    // 使用可见窗口模拟用户关闭。
+    widget.show();
+    QCoreApplication::processEvents();
+    QTimer::singleShot(0, &widget, [&widget, choice, seen, saveEnabled]() {
+        auto *prompt = widget.findChild<QDialog *>("unsavedClosePrompt");
+        if (!prompt) return;
+        *seen = true;
+        for (auto *action : prompt->findChildren<QPushButton *>()) {
+            if (action->text() == QString::fromUtf8(u8"保存") && saveEnabled)
+                *saveEnabled = action->isEnabled();
+        }
+        for (auto *action : prompt->findChildren<QPushButton *>()) {
+            if (action->text() == choice) { action->click(); return; }
+        }
+        prompt->reject();
+    });
+    return widget.close();
+}
+
+static QByteArray draftBytes(const QString &path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return QByteArray();
+    return file.readAll();
+}
+
+void WidgetTest::closeSavesFormAndMapping()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    widget.findChild<QTableWidget *>("fieldTable")->item(2, 1)->setText(QString::fromUtf8(u8"数据位"));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("NEW");
+    bool seen;
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    Widget restored(nullptr, path);
+    QCOMPARE(restored.findChild<QTableWidget *>("fieldTable")->item(2, 1)->text(), QString::fromUtf8(u8"数据位"));
+    QCOMPARE(restored.findChild<QLineEdit *>("mappingCode")->text(), QStringLiteral("NEW"));
+    QVERIFY(!restored.findChild<QCheckBox *>("deviceConfirmed")->isChecked());
+}
+
+void WidgetTest::closeCancelAndDiscardPreserveSavedDraft()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    button(widget, "saveFields")->click();
+    const QByteArray original = draftBytes(path);
+    QVERIFY(!original.isEmpty());
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    fields->item(2, 1)->setText(QString::fromUtf8(u8"未保存字段"));
+    bool seen;
+    QVERIFY(!closeWithChoice(widget, QString::fromUtf8(u8"取消"), &seen));
+    QVERIFY(seen);
+    QCOMPARE(fields->item(2, 1)->text(), QString::fromUtf8(u8"未保存字段"));
+    QCOMPARE(draftBytes(path), original);
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"放弃"), &seen));
+    QVERIFY(seen);
+    QCOMPARE(draftBytes(path), original);
+}
+
+void WidgetTest::closeSavesAdvancedJson()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    auto *json = widget.findChild<QTextEdit *>("advancedJson");
+    QJsonObject root = QJsonDocument::fromJson(json->toPlainText().toUtf8()).object();
+    root.insert("name", QString::fromUtf8(u8"关闭保存的草稿"));
+    json->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson()));
+    bool seen;
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    QCOMPARE(QJsonDocument::fromJson(draftBytes(path)).object(), root);
+}
+
+void WidgetTest::closeSaveFailuresAreRetryable()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    button(widget, "saveFields")->click();
+    const QByteArray original = draftBytes(path);
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    fields->item(2, 8)->setText("abc");
+    bool seen;
+    QVERIFY(!closeWithChoice(widget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    QCOMPARE(draftBytes(path), original);
+    fields->item(2, 8)->setText("6000");
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"保存"), &seen));
+
+    const QString blocked = freshDraftPath();
+    QVERIFY(QDir().mkdir(blocked));
+    Widget jsonWidget(nullptr, blocked);
+    auto *json = jsonWidget.findChild<QTextEdit *>("advancedJson");
+    json->setPlainText("{");
+    QVERIFY(!closeWithChoice(jsonWidget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    QVERIFY(jsonWidget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"JSON 无效")));
+    json->setPlainText("{\"schemaVersion\":1,\"name\":\"retry\"}");
+    QVERIFY(!closeWithChoice(jsonWidget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    QVERIFY(jsonWidget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"保存失败")));
+    QVERIFY(QDir().rmdir(blocked));
+    bool saveEnabled = false;
+    QVERIFY(closeWithChoice(jsonWidget, QString::fromUtf8(u8"保存"), &seen, &saveEnabled));
+    QVERIFY(seen && saveEnabled);
+    QCOMPARE(QJsonDocument::fromJson(draftBytes(blocked)).object().value("name").toString(), QStringLiteral("retry"));
+}
+
+void WidgetTest::closeConflictingEditorsRequiresChoice()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    button(widget, "saveFields")->click();
+    const QByteArray original = draftBytes(path);
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    fields->item(2, 1)->setText(QString::fromUtf8(u8"表单修改"));
+    auto *json = widget.findChild<QTextEdit *>("advancedJson");
+    const QString editedJson = json->toPlainText() + " ";
+    json->setPlainText(editedJson);
+    bool seen, saveEnabled = true;
+    QVERIFY(!closeWithChoice(widget, QString::fromUtf8(u8"取消"), &seen, &saveEnabled));
+    QVERIFY(seen && !saveEnabled);
+    QCOMPARE(draftBytes(path), original);
+    QCOMPARE(json->toPlainText(), editedJson);
+    QCOMPARE(fields->item(2, 1)->text(), QString::fromUtf8(u8"表单修改"));
+}
+
+void WidgetTest::closeCleanDraftAndDebugInput()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1A100R\\r");
+    bool seen;
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"取消"), &seen));
+    QVERIFY(!seen);
+    QVERIFY(!QFile::exists(path));
+    QCoreApplication::processEvents(); // 清理没有出现提示时的定时回调。
+}
+
+void WidgetTest::closeCommitsActiveCellEditor()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    widget.show();
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    fields->setCurrentCell(2, 8);
+    fields->editItem(fields->item(2, 8));
+    QCoreApplication::processEvents();
+    auto *editor = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+    QVERIFY(editor && fields->isAncestorOf(editor));
+    editor->selectAll();
+    QTest::keyClicks(editor, "5000");
+    bool seen;
+    QVERIFY(closeWithChoice(widget, QString::fromUtf8(u8"保存"), &seen));
+    QVERIFY(seen);
+    Widget restored(nullptr, path);
+    QCOMPARE(restored.findChild<QTableWidget *>("fieldTable")->item(2, 8)->text(), QStringLiteral("5000"));
+}
+
+void WidgetTest::closeEscapeCancels()
+{
+    Widget widget(nullptr, freshDraftPath());
+    widget.show();
+    QCoreApplication::processEvents();
+    widget.findChild<QLineEdit *>("mappingCode")->setText("UNSAVED");
+    bool seen = false;
+    bool cancelIsDefault = false;
+    QTimer::singleShot(0, &widget, [&widget, &seen, &cancelIsDefault]() {
+        auto *prompt = widget.findChild<QDialog *>("unsavedClosePrompt");
+        if (!prompt) return;
+        seen = true;
+        for (auto *action : prompt->findChildren<QPushButton *>())
+            if (action->isDefault() && action->text() == QString::fromUtf8(u8"取消")) cancelIsDefault = true;
+        const QString renderDirectory = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+        if (!renderDirectory.isEmpty()) {
+            QDir().mkpath(renderDirectory);
+            prompt->grab().save(QDir(renderDirectory).filePath("unsaved-close.png"));
+        }
+        QTest::keyClick(prompt, Qt::Key_Escape);
+    });
+    QVERIFY(!widget.close());
+    QVERIFY(seen);
+    QVERIFY(cancelIsDefault);
+    QCOMPARE(widget.findChild<QLineEdit *>("mappingCode")->text(), QStringLiteral("UNSAVED"));
 }
 
 void WidgetTest::draftLifecycleAndVisibleFailures()
