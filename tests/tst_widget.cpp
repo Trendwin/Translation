@@ -45,6 +45,7 @@ private slots:
     void sdkQueriesAndRequiredParameters();
     void sdkReportsAreVisibleWithoutCompletingRequests();
     void fixedMotorActionsAndLegacyCompatibility();
+    void stopResetMappingsHaveNoDistanceControls();
     void fieldNamesFollowAllMappings();
     void fieldIdentitySwapAndDeferredSave();
     void fieldDeletionTypesAndJsonBoundary();
@@ -366,9 +367,9 @@ void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
     QCOMPARE(operation->itemText(operation->findData("QUSHENG_22")), QString::fromUtf8(u8"0x22 | 电磁阀单路控制"));
     QCOMPARE(operation->itemText(operation->findData("QUSHENG_17")), QString::fromUtf8(u8"0x17 | 电机运动完成上报 (仅接收)"));
     QCOMPARE(operation->itemText(operation->findData("MOTOR_FORWARD")), QString::fromUtf8(u8"0x11 | 步进电机前进"));
-    QCOMPARE(operation->itemText(operation->findData("MOTOR_STOP")), QString::fromUtf8(u8"0x11 | 步进电机停止 (待实现)"));
+    QCOMPARE(operation->itemText(operation->findData("MOTOR_STOP")), QString::fromUtf8(u8"0x11 | 步进电机停止"));
     QCOMPARE(operation->itemText(operation->findData("MOTOR_BACKWARD")), QString::fromUtf8(u8"0x11 | 步进电机后退"));
-    QCOMPARE(operation->itemText(operation->findData("MOTOR_RESET")), QString::fromUtf8(u8"0x11 | 步进电机复位 (待实现)"));
+    QCOMPARE(operation->itemText(operation->findData("MOTOR_RESET")), QString::fromUtf8(u8"0x11 | 步进电机复位"));
     QCOMPARE(operation->itemText(operation->findData("QUERY_MOTOR")), QString::fromUtf8(u8"0x12 | 电机信息查询"));
     QCOMPARE(operation->itemText(operation->findData("QUERY_DEVICE_INFO")), QString::fromUtf8(u8"0x04 | 设备信息查询"));
     QCOMPARE(operation->itemData(operation->findData("QUSHENG_22"), Qt::ToolTipRole).toString(), QString::fromUtf8(u8"电磁阀单路控制"));
@@ -554,12 +555,41 @@ void WidgetTest::genericScalarRanges()
     source = qobject_cast<QComboBox *>(parameters->cellWidget(0, 1)); value = qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2));
     source->setCurrentIndex(source->findData("@constant")); value->setText("4294967295"); widget.findChild<QPushButton *>("saveMappings")->click();
     QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("peripheralDelay").toObject().value("value").toDouble(), 4294967295.0);
-    operation->setCurrentIndex(operation->findData("MOTOR_STOP")); QCOMPARE(parameters->rowCount(), 1);
-    source = qobject_cast<QComboBox *>(parameters->cellWidget(0, 1)); value = qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2));
-    source->setCurrentIndex(source->findData("@constant")); value->setText("16777215"); widget.findChild<QPushButton *>("saveMappings")->click();
-    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("operation").toString(), QString("QUSHENG_63"));
-    value->setText("1"); widget.findChild<QPushButton *>("saveMappings")->click();
-    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().value("positionUm").toObject().value("value").toInt(), 1);
+    operation->setCurrentIndex(operation->findData("MOTOR_STOP")); QCOMPARE(parameters->rowCount(), 0);
+    widget.findChild<QPushButton *>("saveMappings")->click();
+    QCOMPARE(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("operation").toString(), QString("MOTOR_STOP"));
+    QVERIFY(draftRoot(widget).value("mappings").toArray().at(0).toObject().value("parameters").toObject().isEmpty());
+}
+
+void WidgetTest::stopResetMappingsHaveNoDistanceControls()
+{
+    Widget widget;
+    for (const QString &operation : {QString("MOTOR_STOP"), QString("MOTOR_RESET")}) {
+        QJsonObject root = draftRoot(widget); QJsonArray mappings = root.value("mappings").toArray();
+        QJsonObject mapping = mappings.first().toObject();
+        mapping.insert("operation", operation); mapping.insert("commandCode", "Z");
+        // 旧草稿曾保存距离关系，载入后应清理，不要求客户字段继续存在。
+        mapping.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "old-deleted-field"}}}});
+        mapping.insert("input", QJsonObject{{"omitFields", QJsonArray{QString::fromUtf8(u8"位置")}}});
+        mappings[0] = mapping; root.insert("mappings", mappings);
+        root.insert("sdkDefaults", QJsonObject{{operation, QJsonObject{{"devId", 18}, {"speedUmPerS", 2000}}}});
+        QJsonObject external = root.value("external").toObject(); external.insert("header", "!"); external.insert("footer", "~"); root.insert("external", external);
+        applyRoot(widget, root);
+        auto *selected = widget.findChild<QComboBox *>("mappingOperation");
+        QCOMPARE(selected->currentData().toString(), operation);
+        QVERIFY(!selected->currentText().contains(QString::fromUtf8(u8"待实现")));
+        QCOMPARE(widget.findChild<QTableWidget *>("mappingParameters")->rowCount(), 0);
+        QVERIFY(widget.findChild<QLineEdit *>("mappingMultiplier")->isHidden());
+        QVERIFY(widget.findChild<QComboBox *>("mappingSource")->isHidden());
+        QVERIFY(draftRoot(widget).value("mappings").toArray().first().toObject().value("parameters").toObject().isEmpty());
+        widget.findChild<QLineEdit *>("customerInput")->setText("!1Z~");
+        button(widget, "previewButton")->click();
+        const QString target = widget.findChild<QTextEdit *>("targetOutput")->toPlainText();
+        QVERIFY(target.contains(operation == "MOTOR_STOP" ? "12 42 00 07 D0 00 00 00" : "12 44 00 07 D0 00 00 00"));
+        button(widget, "validateConfig")->click();
+        QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"通过")));
+        QVERIFY(!widget.findChild<QLabel *>("liveReason")->text().contains(QString::fromUtf8(u8"待实现")));
+    }
 }
 
 void WidgetTest::sdkGenericMappingsAndDefaults()
@@ -697,13 +727,12 @@ void WidgetTest::fixedMotorActionsAndLegacyCompatibility()
     widget.show(); widget.findChild<QTabWidget *>()->setCurrentIndex(1); QCoreApplication::processEvents();
     if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("motor-backward.png")));
     for (const QString &pending : {QStringLiteral("MOTOR_STOP"), QStringLiteral("MOTOR_RESET")}) {
-        operation->setCurrentIndex(operation->findData(pending)); QCOMPARE(parameters->rowCount(), 1); QVERIFY(source->isHidden());
-        QCOMPARE(parameters->item(0, 0)->data(Qt::UserRole).toJsonObject().value("key").toString(), QString("positionUm"));
-        QVERIFY(operation->currentText().contains(QString::fromUtf8(u8"待实现"))); save->click();
+        operation->setCurrentIndex(operation->findData(pending)); QCOMPARE(parameters->rowCount(), 0); QVERIFY(source->isHidden());
+        QVERIFY(!operation->currentText().contains(QString::fromUtf8(u8"待实现"))); save->click();
         mapping = draftRoot(widget).value("mappings").toArray().at(0).toObject(); QCOMPARE(mapping.value("operation").toString(), pending);
         QVERIFY(mapping.value("parameters").toObject().isEmpty()); // 未设置与固定零不是同一状态。
         applyRoot(widget, draftRoot(widget)); QCOMPARE(operation->currentData().toString(), pending);
-        button(widget, "previewButton")->click(); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+        button(widget, "previewButton")->click(); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("AA AA"));
         QCoreApplication::processEvents();
         if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath(pending.toLower() + ".png")));
     }

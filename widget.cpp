@@ -734,9 +734,9 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::requestStateChanged, this,
             [this](quint64 id, RequestState state, const QString &detail) {
-        m_requestActive = state == RequestState::Queued || state == RequestState::Sending
-                || state == RequestState::Written || state == RequestState::WaitingReply
-                || state == RequestState::Acknowledged || state == RequestState::InMotion;
+        // 请求可以已经显示成功，但仍等本地写完；也可能取消的是排队停止而原运动仍在执行。
+        // 是否还有请求由管理器决定，不能仅凭最近一个状态信号推断串口可用。
+        m_requestActive = m_requests->hasPendingRequests();
         m_requestState->setText(QString::fromUtf8(u8"执行状态：请求 %1，%2；%3")
                                 .arg(id).arg(stateText(state), detail));
         appendLog(QString::fromUtf8(u8"请求 %1：%2；%3").arg(id).arg(stateText(state), detail));
@@ -765,6 +765,9 @@ void Widget::connectSignals()
         appendLog(busy ? QString::fromUtf8(u8"设备状态：运动中或最终状态未知")
                        : QString::fromUtf8(u8"设备状态：已确认空闲"));
         updateLiveState();
+    });
+    connect(m_requests, &RequestManager::activityChanged, this, [this]() {
+        m_requestActive = m_requests->hasPendingRequests(); updateLiveState();
     });
 }
 
@@ -950,6 +953,7 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
 {
     // 空来源保留默认值机制；未设置与固定零不能合并。SDK 补齐默认，待实现指令仍不能生成 DATA。
     *parameters = m_mappingParameters->property("originalParameters").toJsonObject();
+    if (QushengCommandCatalog::isStopOrReset(m_mappingOperation->currentData().toString())) parameters->remove("positionUm");
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         const auto *label = m_mappingParameters->item(row, 0); const QJsonObject definition = label->data(Qt::UserRole).toJsonObject();
         const QString key = definition.value("key").toString();
@@ -1303,6 +1307,10 @@ void Widget::loadUiFromDraft()
     for (int i = 0; i < mappings.size(); ++i) {
         if (!mappings.at(i).isObject()) continue;
         QJsonObject mapping = mappings.at(i).toObject(); const QJsonObject previous = mapping;
+        if (QushengCommandCatalog::isStopOrReset(mapping.value("operation").toString()) && mapping.value("parameters").isObject()) {
+            QJsonObject parameters = mapping.value("parameters").toObject(); parameters.remove("positionUm");
+            mapping.insert("parameters", parameters);
+        }
         mapping.remove("responsePolicy");
         if (mapping.value("input").isObject()) {
             QJsonObject input = mapping.value("input").toObject(); input.remove("footer");
@@ -1312,7 +1320,7 @@ void Widget::loadUiFromDraft()
     }
     if (migrated) {
         m_draftRoot.insert("mappings", mappings);
-        appendLog(QString::fromUtf8(u8"已清理旧映射的反馈时机和独立帧尾。"));
+        appendLog(QString::fromUtf8(u8"已清理旧映射中的不适用设置。"));
     }
     m_loadingUi = true;
     const QSignalBlocker jsonBlocker(m_advancedJson);
@@ -1641,13 +1649,15 @@ void Widget::updateLiveState()
             && m_validatedDraft.version == m_activeConfig.version;
     m_deviceConfirmed->setEnabled(m_configEnabled && current);
     const bool recoveryQuery = m_requests->deviceBusy() && m_configEnabled && current && inputIsQuery();
-    bool pendingInput = false, motionInput = false;
+    bool pendingInput = false, motionInput = false, stopInterrupt = false;
     if (m_configEnabled && current) {
         TranslationError error; const QByteArray bytes = inputBytes(m_activeConfig, &error);
         if (!error.isValid()) {
             ConversionPreview converted;
-            if (ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error))
+            if (ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error)) {
                 motionInput = isMotionEditor(converted.command.operation);
+                stopInterrupt = m_requests->canInterruptWithStop(converted.command);
+            }
             pendingInput = error.code == "COMMAND_NOT_IMPLEMENTED";
         }
     }
@@ -1660,7 +1670,7 @@ void Widget::updateLiveState()
         reason = QString::fromUtf8(u8"待确认参数");
     else if (!m_transport->isConnected())
         reason = QString::fromUtf8(u8"串口未连接");
-    else if (m_requestActive)
+    else if (m_requestActive && !stopInterrupt)
         reason = QString::fromUtf8(u8"执行中");
     else if (m_requests->deviceBusy() && motionInput)
         reason = QString::fromUtf8(u8"设备运动中或状态未知");
@@ -1668,7 +1678,7 @@ void Widget::updateLiveState()
         reason = QString::fromUtf8(u8"就绪（查询）");
     else reason = QString::fromUtf8(u8"就绪");
     const bool ready = m_configEnabled && current && !pendingInput && m_deviceConfirmed->isChecked()
-            && m_transport->isConnected() && !m_requestActive && (!m_requests->deviceBusy() || !motionInput);
+            && m_transport->isConnected() && (!m_requestActive || stopInterrupt) && (!m_requests->deviceBusy() || !motionInput);
     m_sendButton->setEnabled(ready);
     m_sendButton->setToolTip(reason);
     m_liveReason->setText(reason);
@@ -1729,8 +1739,7 @@ void Widget::preview(bool live)
     if (live) {
         if (!m_configEnabled || !m_draftValid || m_formDirty || m_jsonDirty
                 || m_validatedDraft.version != m_activeConfig.version
-                || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()
-                || m_requestActive) {
+                || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()) {
             updateLiveState();
             appendLog(m_liveReason->text());
             return;
@@ -1760,6 +1769,9 @@ void Widget::preview(bool live)
         return;
     }
     if (live && m_requests->deviceBusy() && isMotionEditor(converted.command.operation)) {
+        updateLiveState(); appendLog(m_liveReason->text()); return;
+    }
+    if (live && m_requestActive && !m_requests->canInterruptWithStop(converted.command)) {
         updateLiveState(); appendLog(m_liveReason->text()); return;
     }
     m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"使用当前已启用版本\n")

@@ -8,7 +8,14 @@ namespace {
 bool isRelative(const UnifiedCommand &command)
 { return command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD"; }
 bool isMotion(const UnifiedCommand &command)
-{ return QushengCommandCatalog::isAbsoluteMotion(command.operation) || isRelative(command); }
+{ return QushengCommandCatalog::isAbsoluteMotion(command.operation) || isRelative(command)
+      || QushengCommandCatalog::isStopOrReset(command.operation); }
+bool sameMotor(const UnifiedCommand &left, const UnifiedCommand &right)
+{
+    bool leftOk = false, rightOk = false;
+    const uint leftId = left.targetDevice.toUInt(&leftOk), rightId = right.targetDevice.toUInt(&rightOk);
+    return leftOk && rightOk && leftId == rightId;
+}
 }
 
 RequestManager::RequestManager(IInternalProtocol *protocol,ITransport *transport,QObject *parent)
@@ -45,7 +52,7 @@ void RequestManager::setTimeouts(int sendMs,int ackMs,int motionMs)
 void RequestManager::setBusy(bool busy)
 {
     // 只更新当前目标的占用；查询另一路空闲不能清掉此前未知的运动状态。
-    // 汇总busy仍阻止新运动，不在此引入多电机并发调度。
+    // 汇总busy仍阻止普通位置运动；停止/复位作为恢复路径例外，不引入多电机并发调度。
     if (busy) m_busyDevices.insert(m_current.targetDevice);
     else m_busyDevices.remove(m_current.targetDevice);
     const bool anyBusy = !m_busyDevices.isEmpty();
@@ -55,9 +62,38 @@ void RequestManager::setBusy(bool busy)
 void RequestManager::enqueue(const UnifiedCommand &command)
 {
     // 按值入队保存本次命令快照，不在排到队首时重新读取用户正在编辑的配置。
-    m_queue.enqueue(command);
+    if (command.operation == "MOTOR_STOP") {
+        // 停止后不应自动恢复同一电机已排队的运动；其他模块的控制/查询仍保留顺序。
+        for (int i = m_queue.size() - 1; i >= 0; --i) {
+            if (!sameMotor(m_queue.at(i), command) || !isMotion(m_queue.at(i)) || m_queue.at(i).operation == "MOTOR_STOP") continue;
+            const quint64 id = m_queue.takeAt(i).requestId;
+            UnifiedResult cancelled; cancelled.requestId = id;
+            cancelled.error = {"QUEUED_MOTION_STOPPED", QString::fromUtf8(u8"停止请求已取消同一电机尚未发送的运动")};
+            emit stateChanged(id, RequestState::Cancelled, cancelled.error.message); emit completed(cancelled);
+        }
+        m_queue.prepend(command);
+        interruptForStop();
+    } else m_queue.enqueue(command);
     emit stateChanged(command.requestId,RequestState::Queued,QString::fromUtf8(u8"请求已进入发送队列"));
+    emit activityChanged();
     QTimer::singleShot(0,this,&RequestManager::startNext);
+}
+
+bool RequestManager::canInterruptWithStop(const UnifiedCommand &command) const
+{
+    return command.operation == "MOTOR_STOP" && m_active && !m_finishAfterWrite && isMotion(m_current)
+        && m_current.operation != "MOTOR_STOP" && sameMotor(m_current, command);
+}
+
+bool RequestManager::interruptForStop()
+{
+    if (m_writePending || m_queue.isEmpty() || !canInterruptWithStop(m_queue.head())) return false;
+    // 只终止原运动的本地完成跟踪；此时设备可能仍在运动，不能清除占用或宣告原目标已完成。
+    setBusy(true);
+    failCurrent(RequestState::Cancelled, "MOTION_INTERRUPTED_BY_STOP", QString::fromUtf8(u8"原运动等待已被停止请求替代；原目标未确认完成"));
+    // 在旧请求终止信号后恢复新停止请求的排队状态，界面仍显示存在待执行请求。
+    emit stateChanged(m_queue.head().requestId, RequestState::Queued, QString::fromUtf8(u8"即将发送停止命令"));
+    return true;
 }
 
 void RequestManager::startNext()
@@ -71,7 +107,7 @@ void RequestManager::startNext()
     if (targetOk) m_current.targetDevice = QString::number(target);
     if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
     // 已经向界面发出 ack 结果并不释放设备；只有完成查询确认空闲后才能接收下一条运动。
-    if(m_deviceBusy && isMotion(m_current)) {
+    if(m_deviceBusy && isMotion(m_current) && !QushengCommandCatalog::isStopOrReset(m_current.operation)) {
         failCurrent(RequestState::Failed,"DEVICE_BUSY",QString::fromUtf8(u8"上一动作仍在执行，或设备最终状态尚未确认")); return;
     }
     if (isRelative(m_current)) {
@@ -90,13 +126,14 @@ void RequestManager::sendCurrent()
     emit frameReady(m_current.requestId,frame);
     emit stateChanged(m_current.requestId,RequestState::Sending,QString::fromUtf8(u8"正在向下游串口写出趋盛帧"));
     m_sendTimer.start(m_sendTimeoutMs);
+    m_writePending = true;
     m_transport->sendBytes(m_current.requestId,frame);
 }
 
 void RequestManager::onSendFinished(quint64 requestId,bool success,const QString &reason)
 {
     if(!m_active || requestId!=m_current.requestId) return;
-    if(m_acked && !m_probeActive) return; // 回告可能早于本地 bytesWritten；不能把已应答状态退回等待应答。
+    m_writePending = false;
     m_sendTimer.stop();
     if(!success) {
         if(m_preflight) { setBusy(true); failCurrent(RequestState::Failed,"POSITION_QUERY_FAILED",QString::fromUtf8(u8"相对运动前的当前位置查询写出失败，未发送运动：%1").arg(reason)); return; }
@@ -104,6 +141,10 @@ void RequestManager::onSendFinished(quint64 requestId,bool success,const QString
         if(isMotion(m_current)) setBusy(true);
         failCurrent(RequestState::Failed,"SEND_FAILED",reason); return;
     }
+    if (m_finishAfterWrite) { finishCurrent(); return; }
+    if (interruptForStop()) return;
+    if (m_sendAfterProbe) { m_sendAfterProbe = false; sendCurrent(); return; }
+    if(m_acked && !m_probeActive) { scheduleProbe(); return; } // 早到回告不能退回等待应答。
     emit stateChanged(requestId,RequestState::Written,QString::fromUtf8(u8"字节已写出，尚未收到设备命令应答"));
     emit stateChanged(requestId,RequestState::WaitingReply,m_probeActive
                       ? QString::fromUtf8(u8"等待 0x12 状态查询回告")
@@ -127,7 +168,7 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             emit unsolicitedMessage(message); continue;
         }
         const UnifiedCommand &expected=m_probeActive?m_probe:m_current;
-        if(!m_active || !m_protocol->matchesReply(expected,message)) { emit unsolicitedMessage(message); continue; }
+        if(!m_active || m_finishAfterWrite || !m_protocol->matchesReply(expected,message)) { emit unsolicitedMessage(message); continue; }
         UnifiedResult result; TranslationError error;
         // 地址/序号正确但布局损坏的帧仍不能结束请求；显示解析错误并保留原应答超时。
         // 设备明确拒绝会成功解码为success=false，与格式错误不可合并。
@@ -139,7 +180,9 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             result.data.insert("deviceBusy",result.data.value("motorState").toInt()!=1);
         else if(result.success && isMotion(expected)) result.data.insert("deviceBusy",true);
         emit replyReceived(result);
-        m_sendTimer.stop(); m_ackTimer.stop();
+        // 若回告先到，仍等bytesWritten确认前帧已完全写出，停止/后续查询不能与它重叠。
+        if (!m_writePending) m_sendTimer.stop();
+        m_ackTimer.stop();
         if(m_probeActive) {
             m_probeActive=false;
             if (m_preflight) {
@@ -165,7 +208,9 @@ void RequestManager::onBytesReceived(const QByteArray &data)
                     setBusy(false); failCurrent(RequestState::Failed,"POSITION_LIMIT",QString::fromUtf8(u8"相对运动终点超出已配置行程，未发送运动")); continue;
                 }
                 m_current.parameters.insert("expectedPositionUm", target);
-                sendCurrent(); continue;
+                if (m_writePending) m_sendAfterProbe = true;
+                else sendCurrent();
+                continue;
             }
             if(!result.success) { scheduleProbe(); continue; }
             const int state=result.data.value("motorState").toInt();
@@ -173,11 +218,21 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             const quint32 targetPosition = m_current.parameters.value(isRelative(m_current) ? "expectedPositionUm" : "positionUm").toUInt();
             // 仅“空闲”不足以证明本次运动完成：设备可能从未执行或停在其他位置。
             // 同时核对终点，未满足时继续查询直到动作总超时。
-            if(state==1 && position==targetPosition) {
-                setBusy(false);
+            const bool stopping = m_current.operation == "MOTOR_STOP", resetting = m_current.operation == "MOTOR_RESET";
+            if (stopping && state == 0) {
+                // 停止回告已成功，但未回零状态不能证明位置有效；显示结果并保留未知占用。
+                // 允许随后复位，不能借此放行普通位置运动，也不把状态0显示成“已确认空闲”。
+                setBusy(true);
+                emit stateChanged(m_current.requestId, RequestState::Succeeded, QString::fromUtf8(u8"停止命令已应答；设备未回零，位置仍未知"));
+                finishCurrent(true);
+            } else if(state==1 && (stopping || (resetting ? position != 0xffffff : position==targetPosition))) {
+                // 停止不核对原目标；复位确认空闲+有效位置，不假定物理零点对应逻辑位置0。
+                setBusy(stopping && position == 0xffffff);
                 if(!m_completionEmitted) { result.requestId=m_current.requestId; result.data.insert("deviceBusy",false); emit completed(result); m_completionEmitted=true; }
-                emit stateChanged(m_current.requestId,RequestState::Succeeded,QString::fromUtf8(u8"设备已空闲且位置等于本次目标"));
-                finishCurrent();
+                const QString detail = stopping ? (position == 0xffffff ? QString::fromUtf8(u8"设备已空闲，但位置仍未知") : QString::fromUtf8(u8"停止后设备已确认空闲"))
+                    : resetting ? QString::fromUtf8(u8"复位后设备已空闲且位置有效") : QString::fromUtf8(u8"设备已空闲且位置等于本次目标");
+                emit stateChanged(m_current.requestId,RequestState::Succeeded,detail);
+                finishCurrent(true);
             } else if(state==4) failCurrent(RequestState::Failed,"MOTOR_ERROR",QString::fromUtf8(u8"0x12 状态查询报告电机错误"));
             else scheduleProbe();
             continue;
@@ -189,7 +244,7 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         if (!isMotion(m_current) && m_current.operation != "QUERY_MOTOR") {
             // 普通SDK命令以有效执行结果为结束条件，不套用电机位置轮询。
             emit stateChanged(m_current.requestId, RequestState::Succeeded, QString::fromUtf8(u8"设备回告已解析"));
-            emit completed(result); m_completionEmitted=true; finishCurrent(); continue;
+            emit completed(result); m_completionEmitted=true; finishCurrent(true); continue;
         }
         if(m_current.operation=="QUERY_MOTOR") {
             const int motorState=result.data.value("motorState").toInt();
@@ -202,7 +257,7 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             }
             result.data.insert("deviceBusy",m_deviceBusy);
             emit stateChanged(m_current.requestId,RequestState::Succeeded,QString::fromUtf8(u8"状态查询回告已解析"));
-            emit completed(result); m_completionEmitted=true; finishCurrent(); continue;
+            emit completed(result); m_completionEmitted=true; finishCurrent(true); continue;
         }
         setBusy(true);
         // 统一在有效接纳回告到达时反馈一次结果；旧响应策略不再推迟反馈。
@@ -220,7 +275,7 @@ void RequestManager::scheduleProbe()
 void RequestManager::startProbe()
 {
     // 内部查询只携带当前目标编号；地址/序号由同一适配器生成，不复用上次查询帧。
-    if(!m_active || (!m_acked && !m_preflight) || m_probeActive || !m_transport->isConnected()) return;
+    if(!m_active || m_finishAfterWrite || (!m_acked && !m_preflight) || m_probeActive || m_writePending || !m_transport->isConnected()) return;
     m_probe=UnifiedCommand(); m_probe.requestId=m_current.requestId;
     m_probe.targetDevice=m_current.targetDevice; m_probe.operation="QUERY_MOTOR";
     m_probe.action=ActionType::Query;
@@ -228,15 +283,19 @@ void RequestManager::startProbe()
     if(!m_protocol->encodeCommand(m_probe,&frame,&error)) { failCurrent(RequestState::Failed,error.code,error.message); return; }
     m_probeActive=true; emit frameReady(m_current.requestId,frame);
     m_sendTimer.start(m_sendTimeoutMs);
+    m_writePending = true;
     m_transport->sendBytes(m_current.requestId,frame);
 }
 
-void RequestManager::finishCurrent()
+void RequestManager::finishCurrent(bool waitForWrite)
 {
     // 结束本地请求不等于设备空闲，因此只清定时器/等待标志，保留未知运动占用。
     // 延后启动下一请求，避免当前回告处理尚未退出就递归进入另一轮发送。
-    m_sendTimer.stop(); m_ackTimer.stop(); m_motionTimer.stop(); m_pollTimer.stop();
-    m_active=false; m_probeActive=false; m_acked=false; m_preflight=false;
+    m_ackTimer.stop(); m_motionTimer.stop(); m_pollTimer.stop();
+    if (waitForWrite && m_writePending) { m_finishAfterWrite = true; return; }
+    m_sendTimer.stop();
+    m_active=false; m_probeActive=false; m_acked=false; m_preflight=false; m_writePending=false; m_sendAfterProbe=false; m_finishAfterWrite=false;
+    emit activityChanged();
     QTimer::singleShot(0,this,&RequestManager::startNext);
 }
 
@@ -263,7 +322,7 @@ void RequestManager::cancel(quint64 requestId)
     for(int i=0;i<m_queue.size();++i) if(m_queue.at(i).requestId==requestId) {
         m_queue.removeAt(i); UnifiedResult result; result.requestId=requestId;
         result.error={"CANCELLED",QString::fromUtf8(u8"排队请求已在发送前取消")};
-        emit stateChanged(requestId,RequestState::Cancelled,result.error.message); emit completed(result); return;
+        emit stateChanged(requestId,RequestState::Cancelled,result.error.message); emit completed(result); emit activityChanged(); return;
     }
 }
 

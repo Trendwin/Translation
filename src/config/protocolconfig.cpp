@@ -240,9 +240,10 @@ bool ProtocolConfig::validate(TranslationError *error) const
         const auto definition = QushengSdk::definition(quint8(sdkCode));
         const QJsonObject preset = it.value().toObject();
         for (auto p = preset.begin(); p != preset.end(); ++p) {
-            if (QushengCommandCatalog::usesMotionEditor(it.key()) && p.key() != "devId" && p.key() != "speedUmPerS")
+            const bool motorTemplate = QushengCommandCatalog::usesMotionEditor(it.key()) || QushengCommandCatalog::isStopOrReset(it.key());
+            if (motorTemplate && p.key() != "devId" && p.key() != "speedUmPerS")
                 return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"运动模板仅预置电机编号和速度；模式、动作固定，位置请使用参数映射"));
-            if (QushengCommandCatalog::usesMotionEditor(it.key()) && p.key() == "speedUmPerS" && !integer(p.value(), 1, 0xfffffe))
+            if (motorTemplate && p.key() == "speedUmPerS" && !integer(p.value(), 1, 0xfffffe))
                 return fail(error, "CONFIG_SDK_DEFAULT", QString::fromUtf8(u8"运动模板的SDK预置速度必须为1～16777214"));
             bool found = false;
             for (const auto &spec : definition.parameters) if (spec.key == p.key()) {
@@ -346,6 +347,9 @@ bool ProtocolConfig::validate(TranslationError *error) const
         // 标量按自身表示范围检查，例如有符号PWM和32位固件长度，不能套用运动的24位位置范围。
         // 位结构、嵌套命令和可变字节串仍只读，首版不通过数值表达式伪造复杂协议布局。
         for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+            // 旧停止/复位草稿曾允许填写positionUm；现在固定零距离，兼容读取但不求值。
+            // 界面载入时清理该旧关系，mode/action等其他参数仍不能绕过固定模板。
+            if (QushengCommandCatalog::isStopOrReset(operation) && it.key() == "positionUm") continue;
             qint64 minimum = 0, maximum = 0xfffffe;
             QString parameterName = relative ? QString::fromUtf8(u8"移动距离") : QString::fromUtf8(u8"目标位置");
             if (!QushengCommandCatalog::usesMotionEditor(operation)) {
