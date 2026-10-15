@@ -40,6 +40,7 @@ class WidgetTest : public QObject
     Q_OBJECT
 private slots:
     void initTestCase();
+    void debugSendNeedsNoWorkflowOrSavedDraft();
     void draftLifecycleAndVisibleFailures();
     void advancedJsonAndDynamicControls();
     void simpleMappingEditorAndInvalidNumbers();
@@ -285,6 +286,39 @@ void WidgetTest::closeEscapeCancels()
     QCOMPARE(widget.findChild<QLineEdit *>("mappingCode")->text(), QStringLiteral("UNSAVED"));
 }
 
+void WidgetTest::debugSendNeedsNoWorkflowOrSavedDraft()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr,path);
+    auto *service = widget.findChild<TranslationService *>();
+    QSignalSpy results(service,&TranslationService::completed);
+    auto *send = button(widget,"sendButton");
+    QVERIFY(send->isEnabled()); QVERIFY(button(widget,"queryButton")->isEnabled());
+    auto *json = widget.findChild<QTextEdit *>("advancedJson");
+    const QString original = json->toPlainText();
+    widget.findChild<QLineEdit *>("mappingCode")->setText("Z");
+    widget.findChild<QTableWidget *>("fieldTable")->item(2,8)->setText("1000");
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1Z7000R\\r");
+    send->click(); QTRY_COMPARE(results.count(),1);
+    QCOMPARE(qvariant_cast<UnifiedResult>(results.last().at(0)).error.code,QStringLiteral("DISCONNECTED"));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("00 1B 58"));
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("Z"));
+    QVERIFY(!QFile::exists(path)); QCOMPARE(json->toPlainText(),original);
+    QVERIFY(send->isEnabled()); send->click(); QTRY_COMPARE(results.count(),2);
+    QVERIFY(!widget.findChild<QCheckBox *>("deviceConfirmed")->isChecked());
+    button(widget,"queryButton")->click(); QTRY_COMPARE(results.count(),3);
+    // 未应用JSON也直接用于本次调试，不覆盖已保存草稿；坏JSON明确报错。
+    json->setPlainText(original);
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1A2000R\\r");
+    send->click(); QTRY_COMPARE(results.count(),4);
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("00 07 D0"));
+    json->setPlainText("{"); send->click(); QCoreApplication::processEvents();
+    QCOMPARE(results.count(),4);
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"JSON")));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    QVERIFY(send->isEnabled()); QVERIFY(!QFile::exists(path));
+}
+
 void WidgetTest::draftLifecycleAndVisibleFailures()
 {
     QDir::setCurrent(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().absoluteFilePath(".."));
@@ -307,14 +341,14 @@ void WidgetTest::draftLifecycleAndVisibleFailures()
     QVERIFY(target->toPlainText().contains("AA AA 02 01 08 F7 00 11"));
     fields->item(2, 8)->setText("1000");
     validateButton->click(); enableButton->click();
-    QVERIFY(reason->text().contains(QString::fromUtf8(u8"未启用")));
+    QVERIFY(reason->text().contains(QString::fromUtf8(u8"串口未连接")));
     previewButton->click(); QVERIFY(target->toPlainText().isEmpty());
     QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"保存")));
     saveButton->click(); validateButton->click(); enableButton->click();
     auto *confirm = widget.findChild<QCheckBox *>("deviceConfirmed");
     QVERIFY(confirm->isEnabled()); confirm->setChecked(true);
     QVERIFY(reason->text().contains(QString::fromUtf8(u8"串口未连接")));
-    QVERIFY(!sendButton->isEnabled());
+    QVERIFY(sendButton->isEnabled());
     previewButton->click(); QVERIFY(target->toPlainText().isEmpty());
     QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"最大值")));
     input->setText("/1A500R\\r"); previewButton->click();
@@ -648,7 +682,9 @@ void WidgetTest::pendingMappingEditorAndFieldRefresh()
     button(widget, "previewButton")->click();
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
     QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"待实现")));
-    QVERIFY(widget.findChild<QLabel *>("liveReason")->text().contains(QString::fromUtf8(u8"发送待实现")));
+    QVERIFY(button(widget,"sendButton")->isEnabled());
+    button(widget,"sendButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"待实现")));
     const QJsonObject saved = draftRoot(widget); applyRoot(widget, saved);
     QCOMPARE(draftRoot(widget), saved); QCOMPARE(operation->currentData().toString(), QString("QUSHENG_13"));
     QCOMPARE(qobject_cast<QLineEdit *>(parameters->cellWidget(0, 2))->text(), QString("17"));
@@ -990,7 +1026,7 @@ void WidgetTest::fieldNamesFollowAllMappings()
     fields->item(2, 1)->setText(QString::fromUtf8(u8"数据参数"));
     QCOMPARE(draftRoot(widget), oldDraft); // 编辑表单尚未保存，不触碰草稿/已启用快照。
     QCOMPARE(widget.findChild<QLabel *>("activeVersion")->text(), active); QVERIFY(!confirm->isChecked());
-    QVERIFY(!button(widget, "sendButton")->isEnabled());
+    QVERIFY(button(widget, "sendButton")->isEnabled());
     auto *omissions = widget.findChild<QGroupBox *>("mappingOmissions"); bool checkedNewName = false;
     for (QCheckBox *check : omissions->findChildren<QCheckBox *>())
         if (check->property("fieldName").toString() == QString::fromUtf8(u8"数据参数")) checkedNewName = check->isChecked();
@@ -1092,7 +1128,7 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
         button(widget, "saveFields")->click(); button(widget, "validateConfig")->click();
         QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"失败")));
         button(widget, "previewButton")->click(); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
-        QVERIFY(!button(widget, "sendButton")->isEnabled());
+        QVERIFY(button(widget, "sendButton")->isEnabled());
     }
     Widget widget(nullptr, freshDraftPath()); auto *fields = widget.findChild<QTableWidget *>("fieldTable"); button(widget, "addField")->click();
     auto *type = qobject_cast<QComboBox *>(fields->cellWidget(3, 3)); type->setCurrentIndex(type->findData("uint"));
@@ -1188,7 +1224,7 @@ void WidgetTest::savedDraftSurvivesRestart()
     QVERIFY(second.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(previewFrame.toHex(' ').toUpper()));
     QCOMPARE(second.findChild<QLabel *>("activeVersion")->text(), QString::fromUtf8(u8"启用：无"));
     QVERIFY(!second.findChild<QCheckBox *>("deviceConfirmed")->isChecked());
-    QVERIFY(!button(second, "sendButton")->isEnabled());
+    QVERIFY(button(second, "sendButton")->isEnabled());
 }
 
 void WidgetTest::incompleteDraftSurvivesRestart()
@@ -1206,7 +1242,7 @@ void WidgetTest::incompleteDraftSurvivesRestart()
     Widget second(nullptr, path); QCOMPARE(draftRoot(second), incomplete);
     button(second, "validateConfig")->click();
     QVERIFY(second.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"unfinished-field")));
-    QVERIFY(!button(second, "sendButton")->isEnabled());
+    QVERIFY(button(second, "sendButton")->isEnabled());
 }
 
 void WidgetTest::draftWriteFailureIsVisibleAndRetryable()
@@ -1235,7 +1271,7 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
     {
         Widget widget(nullptr, path);
         QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"恢复失败")));
-        QVERIFY(!button(widget, "sendButton")->isEnabled());
+        QVERIFY(button(widget, "sendButton")->isEnabled());
     }
     QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
 }

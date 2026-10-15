@@ -20,6 +20,10 @@ struct TranslationError
 struct UnifiedCommand
 {
     quint64 requestId = 0;
+    // 报文调试直接发送编码后的动作，不做相对终点前置查询；地址随每次点击快照排队。
+    bool packetDebug = false;
+    quint8 destinationAddress = 0;
+    quint8 sourceAddress = 0;
     QString configVersion;
     QString targetDevice;
     ActionType action = ActionType::Unknown;

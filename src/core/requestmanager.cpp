@@ -100,7 +100,7 @@ void RequestManager::startNext()
     if (targetOk) m_current.targetDevice = QString::number(target);
     if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
     // 设备忙闲仅用于显示；不以之前的运动或未知状态阻止用户再次发送。
-    if (isRelative(m_current)) {
+    if (isRelative(m_current) && !m_current.packetDebug) {
         m_preflight = true;
         emit stateChanged(m_current.requestId, RequestState::Sending, QString::fromUtf8(u8"先查询当前位置并校验相对运动终点；尚未发送运动"));
         startProbe(); return;

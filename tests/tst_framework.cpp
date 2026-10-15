@@ -34,6 +34,9 @@ class FrameworkTest : public QObject
     Q_OBJECT
 private slots:
     void configuredDtStyleAndRoundTrip();
+    void debugSequenceWraps();
+    void debugRelativeSendsWithoutPreflight();
+    void debugQueuedAddressesAreSnapshots();
     void configurationChangesNeedNoCppChange();
     void genericParserRejectsInvalidInputs();
     void hexEndianAndGenericStreamFraming();
@@ -1324,6 +1327,46 @@ void FrameworkTest::reportedStatusDoesNotGateSending()
     transport.receive(QushengProtocol::makeReply(1,0));
     QTRY_VERIFY(!manager.hasPendingRequests());
     QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
+}
+
+void FrameworkTest::debugSequenceWraps()
+{
+    QushengProtocol codec;
+    UnifiedCommand query; query.operation="QUERY_MOTOR"; query.targetDevice="17";
+    query.packetDebug=true; query.destinationAddress=2; query.sourceAddress=1;
+    QByteArray frame; TranslationError error;
+    for (int i=0;i<600;++i) {
+        query.requestId=i+1;
+        QVERIFY2(codec.encodeCommand(query,&frame,&error),qPrintable(error.message));
+        QCOMPARE(quint8(frame.at(6)),quint8(i));
+    }
+}
+
+void FrameworkTest::debugRelativeSendsWithoutPreflight()
+{
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport; RequestManager manager(&codec,&transport);
+    UnifiedCommand move=motorRequest(1,"RELATIVE_FORWARD"); move.packetDebug=true;
+    move.parameters.insert("distanceUm",7000);
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(),1);
+    QCOMPARE(quint8(transport.sent.first().at(7)),quint8(0x11));
+    QCOMPARE(transport.sent.first().mid(8,8),QByteArray::fromHex("11210003e8001b58"));
+    transport.receive(QushengProtocol::makeReply(0,0)); QTRY_VERIFY(!manager.hasPendingRequests());
+    QTest::qWait(300); QCOMPARE(transport.sent.size(),1);
+}
+
+void FrameworkTest::debugQueuedAddressesAreSnapshots()
+{
+    QushengProtocol codec; FakeTransport transport; RequestManager manager(&codec,&transport);
+    UnifiedCommand first=motorRequest(1,"MOTOR_FORWARD"); first.packetDebug=true;
+    first.destinationAddress=2; first.sourceAddress=1;
+    UnifiedCommand second=first; second.requestId=2; second.destinationAddress=3; second.sourceAddress=5;
+    manager.enqueue(first); manager.enqueue(second); QTRY_COMPARE(transport.sent.size(),1);
+    codec.setAddresses(9,8); // 编辑/启用另一地址不会修改本次回告匹配或已入队的地址。
+    transport.receive(QushengProtocol::makeReply(0,0)); QTRY_COMPARE(transport.sent.size(),2);
+    QCOMPARE(quint8(transport.sent.last().at(2)),quint8(3));
+    QCOMPARE(quint8(transport.sent.last().at(3)),quint8(5));
+    transport.receive(QushengProtocol::makeFrame(5,3,1,0x11,QByteArray(4,'\0')));
+    QTRY_VERIFY(!manager.hasPendingRequests());
 }
 
 void FrameworkTest::relativePreflightWaitsForWrite()

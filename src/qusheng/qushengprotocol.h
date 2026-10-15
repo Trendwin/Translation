@@ -26,6 +26,7 @@ private:
     quint8 m_source = 0;
     mutable quint16 m_nextSequence = 0;
     mutable quint8 m_pendingSequence = 0;
+    mutable quint8 m_pendingDestination = 0, m_pendingSource = 0;
     mutable quint64 m_pendingRequestId = 0;
     mutable bool m_hasPendingSequence = false;
 };

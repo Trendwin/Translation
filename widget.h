@@ -40,6 +40,9 @@ private:
     bool persistDraft(const QJsonObject &draft);
     void loadUiFromDraft();
     bool saveUiToDraft();
+    bool collectUiDraft(QJsonObject *draft);
+    bool storeUiDraft(const QJsonObject &draft);
+    bool debugConfig(ProtocolConfig *config);
     bool draftSaved();
     void updateTableControls();
     void markDraftDirty();

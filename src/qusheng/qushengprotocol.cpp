@@ -34,10 +34,12 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     if (!QushengCommandCatalog::isExecutable(command.operation)) {
         *error = {"COMMAND_NOT_IMPLEMENTED", QString::fromUtf8(u8"该接口尚未开放软件发送，或协议布局待确认")}; return false;
     }
-    if (m_destination == 0 || m_source == 0 || m_destination == m_source) {
+    const quint8 destination = command.destinationAddress ? command.destinationAddress : m_destination;
+    const quint8 source = command.sourceAddress ? command.sourceAddress : m_source;
+    if (destination == 0 || source == 0 || destination == source) {
         *error = {"QUSHENG_ADDRESS", QString::fromUtf8(u8"趋盛地址未配置或冲突")}; return false;
     }
-    if (m_nextSequence > 255) {
+    if (m_nextSequence > 255 && !command.packetDebug) {
         // 同一连接不回绕8位序号，以免迟到回告与新的同CMD请求误匹配。
         *error = {"QUSHENG_SEQUENCE_EXHAUSTED", QString::fromUtf8(u8"本次连接已用完8位序号；请重新连接")}; return false;
     }
@@ -72,10 +74,11 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     QushengSdkRequest request;
     if (!QushengSdk::buildRequest(quint8(code), supplied, QVariantMap(), device, &request, error)) return false;
     const quint8 sequence = quint8(m_nextSequence);
-    const QByteArray encoded = makeFrame(m_destination, m_source, sequence, quint8(code), request.payload);
+    const QByteArray encoded = makeFrame(destination, source, sequence, quint8(code), request.payload);
     if (encoded.isEmpty()) { *error = {"QUSHENG_LENGTH", QString::fromUtf8(u8"趋盛负载过长")}; return false; }
     // 只有完整帧生成成功才消耗序号并更新等待对象，失败不会覆盖上一请求的匹配信息。
     ++m_nextSequence; *frame = encoded;
+    m_pendingDestination = destination; m_pendingSource = source;
     m_pendingRequestId = command.requestId; m_pendingSequence = sequence; m_hasPendingSequence = true;
     return true;
 }
@@ -155,7 +158,7 @@ bool QushengProtocol::matchesReply(const UnifiedCommand &command, const Protocol
     // 成功/错误回告长度由SDK逐族检查；序号、地址和命令仍在传输适配层隔离。
     // 回复地址与请求反向；本地requestId隔离当前调用，线上sequence隔离迟到报文。
     return m_hasPendingSequence && command.requestId == m_pendingRequestId && frame.size() >= FrameOverhead
-        && quint8(frame.at(2)) == m_source && quint8(frame.at(3)) == m_destination
+        && quint8(frame.at(2)) == m_pendingSource && quint8(frame.at(3)) == m_pendingDestination
         && quint8(frame.at(6)) == m_pendingSequence && quint8(frame.at(7)) == expectedCmd;
 }
 
