@@ -60,9 +60,8 @@ private:
     void appendLog(const QString &text);
     void addFieldRow(const QJsonObject &field = QJsonObject());
     void addMappingRow(const QJsonObject &mapping = QJsonObject());
-    void loadMappingEditor(int row);
-    bool saveMappingEditor();
-    bool readMappingEditor(QJsonObject *mapping);
+    void resetMappingForm();
+    bool readNewMapping(QJsonObject *mapping);
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
     void rebuildMappingOmissions(const QJsonObject &input);
@@ -71,7 +70,6 @@ private:
     QString mappingFieldIssue(const QJsonObject &mapping) const;
     void refreshMappingSummaries();
     void updateMappingControls();
-    void mappingEdited();
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
@@ -115,13 +113,8 @@ private:
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
     QGroupBox *m_mappingOmissions = nullptr;
-    int m_mappingEditorRow = -1;
-    // 选中或明确保存时的原行；切换目标的中间保存不能成为“添加”覆盖旧行的依据。
-    QJsonObject m_mappingEditorOriginal;
     bool m_loadingMapping = false;
     bool m_syncingFields = false;
-    bool m_mappingEditorDirty = false;
-    bool m_multiplierChanged = false;
     QString m_editorOperation;
     QTextEdit *m_advancedJson = nullptr;
 
