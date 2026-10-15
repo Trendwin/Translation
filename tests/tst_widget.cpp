@@ -62,6 +62,10 @@ private slots:
     void sdkReportsAreVisibleWithoutCompletingRequests();
     void fixedMotorActionsAndLegacyCompatibility();
     void stopResetMappingsHaveNoDistanceControls();
+    void resetAndStopOmitClientParameters();
+    void oldResetDraftRestoresMissingOmissions();
+    void explicitStopInputIsPreserved();
+    void mappingButtonsStayTogether();
     void savedDraftSurvivesRestart();
     void incompleteDraftSurvivesRestart();
     void draftWriteFailureIsVisibleAndRetryable();
@@ -742,6 +746,78 @@ void WidgetTest::genericScalarRanges()
     auto *value=qobject_cast<QLineEdit *>(params->cellWidget(row,2));value->setText("-129");button(widget,"addMapping")->click();QCOMPARE(mappingRows(widget).size(),count);
     value->setText("-20");button(widget,"addMapping")->click();QCOMPARE(mappingRows(widget).size(),count+1);
     QCOMPARE(mappingRows(widget).last().toObject().value("parameters").toObject().value("pwm").toObject().value("value").toInt(),-20);
+}
+
+void WidgetTest::resetAndStopOmitClientParameters()
+{
+    Widget widget(nullptr,freshDraftPath());
+    widget.findChild<QTableWidget *>("fieldTable")->item(2,1)->setText(QString::fromUtf8(u8"数据位"));
+    auto *op=widget.findChild<QComboBox *>("mappingOperation");
+    const QList<QPair<QString,QString>> actions{{"Z","MOTOR_RESET"},{"S","MOTOR_STOP"}};
+    for(const auto &action:actions) {
+        widget.findChild<QLineEdit *>("mappingCode")->setText(action.first);op->setCurrentIndex(op->findData(action.second));
+        bool omitted=false;
+        for(QCheckBox *check:widget.findChild<QGroupBox *>("mappingOmissions")->findChildren<QCheckBox *>())
+            if(check->property("fieldName").toString()==QString::fromUtf8(u8"数据位")) omitted=check->isChecked();
+        QVERIFY(omitted);
+        const QString renderDir=qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+        if(action.first=="Z" && !renderDir.isEmpty()) {
+            widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);widget.show();QCoreApplication::processEvents();QDir().mkpath(renderDir);
+            QVERIFY(widget.grab().save(QDir(renderDir).filePath("reset-omissions-and-buttons.png")));
+        }
+        button(widget,"addMapping")->click();
+        const QJsonObject mapping=mappingRows(widget).last().toObject();
+        QVERIFY(mapping.value("input").toObject().value("omitFields").toArray().contains(QString::fromUtf8(u8"数据位")));
+        button(widget,"saveMappings")->click();
+        widget.findChild<QLineEdit *>("customerInput")->setText("/1"+action.first+"R\\r");
+        button(widget,"previewButton")->click();
+        const QString payload=action.first=="Z"?"11 44 00 03 E8 00 00 00":"11 42 00 03 E8 00 00 00";
+        QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(payload));
+        button(widget,"sendButton")->click();
+        QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(payload));
+        QCoreApplication::processEvents();
+    }
+    // 回到有客户参数的前进模板，默认重新读取数据位。
+    op->setCurrentIndex(op->findData("MOTOR_RESET"));op->setCurrentIndex(op->findData("MOTOR_FORWARD"));
+    for(QCheckBox *check:widget.findChild<QGroupBox *>("mappingOmissions")->findChildren<QCheckBox *>())
+        if(check->property("fieldRole").toString()=="parameter") QVERIFY(!check->isChecked());
+}
+
+void WidgetTest::oldResetDraftRestoresMissingOmissions()
+{
+    Widget seed(nullptr,freshDraftPath());QJsonObject root=draftRoot(seed);
+    QJsonArray mappings=root.value("mappings").toArray();
+    mappings.append(QJsonObject{{"commandCode","Z"},{"operation","MOTOR_RESET"},{"parameters",QJsonObject()},{"note","keep"}});
+    root.insert("mappings",mappings);const QString path=freshDraftPath();DraftStore store(path);TranslationError error;
+    QVERIFY(store.save(root,&error));const QByteArray original=draftBytes(path);
+    Widget restored(nullptr,path);
+    const QJsonObject migrated=mappingRows(restored).last().toObject();
+    QVERIFY(migrated.value("input").toObject().value("omitFields").toArray().contains(QString::fromUtf8(u8"位置")));
+    QCOMPARE(migrated.value("note").toString(),QStringLiteral("keep"));QCOMPARE(draftBytes(path),original);
+    restored.findChild<QLineEdit *>("customerInput")->setText("/1ZR\\r");button(restored,"previewButton")->click();
+    QVERIFY(restored.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("11 44 00 03 E8 00 00 00"));
+    button(restored,"saveMappings")->click();Widget again(nullptr,path);QCOMPARE(mappingRows(again),mappingRows(restored));
+}
+
+void WidgetTest::explicitStopInputIsPreserved()
+{
+    Widget widget(nullptr,freshDraftPath());QJsonObject root=draftRoot(widget);QJsonArray rows=root.value("mappings").toArray();
+    const QJsonObject mapping{{"commandCode","S"},{"operation","MOTOR_STOP"},{"parameters",QJsonObject()},
+        {"input",QJsonObject{{"omitFields",QJsonArray()},{"note","explicit"}}}};
+    rows.append(mapping);root.insert("mappings",rows);applyRoot(widget,root);
+    QCOMPARE(mappingRows(widget).last().toObject(),mapping);
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1S0R\\r");button(widget,"previewButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("11 42"));
+}
+
+void WidgetTest::mappingButtonsStayTogether()
+{
+    Widget widget(nullptr,freshDraftPath());widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    widget.show();QCoreApplication::processEvents();
+    auto *add=button(widget,"addMapping");auto *remove=button(widget,"removeMapping");auto *save=button(widget,"saveMappings");
+    const QPoint a=add->mapTo(&widget,QPoint()),b=remove->mapTo(&widget,QPoint()),c=save->mapTo(&widget,QPoint());
+    QCOMPARE(a.y(),b.y());QCOMPARE(b.y(),c.y());QVERIFY(a.x()<b.x() && b.x()<c.x());
+    QVERIFY(!widget.findChild<QGroupBox *>("mappingEditor")->isAncestorOf(add));
 }
 
 void WidgetTest::stopResetMappingsHaveNoDistanceControls()
