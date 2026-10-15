@@ -880,7 +880,7 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     m_mappingTable->item(row, 0)->setData(Qt::UserRole, mapping);
     m_mappingTable->item(row, 0)->setText(mapping.value("commandCode").toString());
     const QString operation = mapping.value("operation").toString();
-    m_mappingTable->item(row, 1)->setText((QushengCommandCatalog::isLegacyOperation(operation) ? QString::fromUtf8(u8"旧版") : QString()) + operationName(operation)
+    m_mappingTable->item(row, 1)->setText(operationName(operation)
         + (QushengCommandCatalog::isExecutable(operation) ? QString() : QString::fromUtf8(u8"（待实现）")));
     QString summary = QString::fromUtf8(u8"无参数");
     if (isMotionEditor(operation)) {
