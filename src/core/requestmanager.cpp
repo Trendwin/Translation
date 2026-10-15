@@ -44,8 +44,8 @@ void RequestManager::setTimeouts(int sendMs,int ackMs)
 { m_sendTimeoutMs=qMax(1,sendMs); m_ackTimeoutMs=qMax(1,ackMs); }
 void RequestManager::setBusy(bool busy)
 {
-    // 只更新当前目标的占用；查询另一路空闲不能清掉此前未知的运动状态。
-    // 汇总busy仍阻止普通位置运动；停止/复位作为恢复路径例外，不引入多电机并发调度。
+    // 状态按目标保存并汇总显示；查询另一路空闲不能清掉此前未知的运动状态。
+    // 此状态不作为发送条件，完整写出与应答等待仍由请求队列管理。
     if (busy) m_busyDevices.insert(m_current.targetDevice);
     else m_busyDevices.remove(m_current.targetDevice);
     const bool anyBusy = !m_busyDevices.isEmpty();
@@ -99,11 +99,8 @@ void RequestManager::startNext()
         target = m_current.parameters.value("devId").toUInt(&targetOk);
     if (targetOk) m_current.targetDevice = QString::number(target);
     if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
-    // 命令应答不等于设备空闲；普通运动须由用户手动查询恢复已知空闲状态。
-    if(m_deviceBusy && isMotion(m_current) && !QushengCommandCatalog::isStopOrReset(m_current.operation)) {
-        failCurrent(RequestState::Failed,"DEVICE_BUSY",QString::fromUtf8(u8"上一动作仍在执行，或设备最终状态尚未确认")); return;
-    }
-    if (isRelative(m_current)) {
+    // 设备忙闲仅用于显示；不以之前的运动或未知状态阻止用户再次发送。
+    if (isRelative(m_current) && !m_current.packetDebug) {
         m_preflight = true;
         emit stateChanged(m_current.requestId, RequestState::Sending, QString::fromUtf8(u8"先查询当前位置并校验相对运动终点；尚未发送运动"));
         startProbe(); return;
@@ -228,10 +225,10 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             emit completed(result); m_completionEmitted=true; finishCurrent(true); continue;
         }
         setBusy(true);
-        // 接纳只结束本地请求；保留未知占用，不宣告动作完成，也不主动发送查询。
+        // 接纳结束本地请求；状态仅供参考，不宣告动作完成，也不主动发送查询。
         result.data.insert("deviceBusy",true);
         emit completed(result); m_completionEmitted=true;
-        emit stateChanged(m_current.requestId,RequestState::Acknowledged,QString::fromUtf8(u8"设备已应答，动作完成未确认；可手动查询状态"));
+        emit stateChanged(m_current.requestId,RequestState::Acknowledged,QString::fromUtf8(u8"设备已应答，可继续发送；动作完成未确认"));
         finishCurrent(true);
     }
 }

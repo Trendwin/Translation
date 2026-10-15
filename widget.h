@@ -40,6 +40,9 @@ private:
     bool persistDraft(const QJsonObject &draft);
     void loadUiFromDraft();
     bool saveUiToDraft();
+    bool collectUiDraft(QJsonObject *draft);
+    bool storeUiDraft(const QJsonObject &draft);
+    bool debugConfig(ProtocolConfig *config);
     bool draftSaved();
     void updateTableControls();
     void markDraftDirty();
@@ -72,7 +75,6 @@ private:
     void loadCatalogParameters(const QJsonObject &parameters);
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
     QString parameterDefaultText(const QJsonObject &definition, const QString &operation) const;
-    bool inputIsQuery() const;
     static QString stateText(RequestState state);
 
     QushengProtocol *m_protocol = nullptr;

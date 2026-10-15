@@ -168,8 +168,6 @@ bool isMotionEditor(const QString &operation)
         || operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
 }
 
-bool isRecoveryQuery(const QString &operation) { return operation == "QUERY_MOTOR"; }
-
 QString mappingParameterKey(const QString &operation)
 {
     return operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD" ? QStringLiteral("distanceUm") : QStringLiteral("positionUm");
@@ -237,7 +235,7 @@ Widget::Widget(QWidget *parent, const QString &draftFilePath)
 
 void Widget::buildUi()
 {
-    setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换"));
+    setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换（报文调试版）"));
     resize(1100, 740);
     auto *root = new QVBoxLayout(this);
     auto *versions = new QHBoxLayout;
@@ -701,13 +699,15 @@ void Widget::connectSignals()
     connect(m_input, &QLineEdit::textChanged, this, &Widget::updateLiveState);
     connect(m_sendButton, &QPushButton::clicked, this, [this]() { preview(true); });
     connect(m_queryButton, &QPushButton::clicked, this, [this]() {
-        if (!m_configEnabled || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()
-                || m_requestActive) return;
+        ProtocolConfig config;
+        if (!debugConfig(&config)) return;
+        const QJsonObject device = config.root.value("device").toObject();
         UnifiedCommand query;
-        query.operation = "QUERY_MOTOR";
-        query.action = ActionType::Query;
-        query.targetDevice = QString::number(m_activeConfig.root.value("device").toObject().value("devId").toInt());
-        query.configVersion = m_activeConfig.version;
+        query.operation = "QUERY_MOTOR"; query.action = ActionType::Query; query.packetDebug = true;
+        query.targetDevice = QString::number(device.value("devId").toInt());
+        query.configVersion = config.version;
+        query.destinationAddress = quint8(device.value("destination").toInt());
+        query.sourceAddress = quint8(device.value("source").toInt());
         m_lastRequestId = m_service->submitUnifiedCommand(query);
     });
     connect(m_cancelButton, &QPushButton::clicked, this, [this]() {
@@ -754,7 +754,7 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this,
             [this](const ProtocolMessage &message) {
-        // 主动上报只更新显示；不发 completed，也不能代替当前请求的匹配回告或解除运动互锁。
+        // 主动上报只更新显示；不发 completed，也不能代替当前请求的匹配回告。
         QushengSdkReply report; TranslationError error;
         QStringList lines{QString::fromUtf8(u8"主动或未匹配报文 0x%1").arg(message.messageType, 2, 16, QLatin1Char('0')),
             QString::fromUtf8(u8"原始帧：") + QString::fromLatin1((message.wireData.isEmpty() ? message.payload : message.wireData).toHex(' ').toUpper())};
@@ -1404,6 +1404,13 @@ bool Widget::saveUiToDraft()
         appendLog(m_validationState->text());
         return false;
     }
+    QJsonObject root;
+    if (!collectUiDraft(&root)) return false;
+    return storeUiDraft(root);
+}
+
+bool Widget::collectUiDraft(QJsonObject *draft)
+{
     if (!synchronizeFieldNames() || !saveMappingEditor()) return false;
     // 所有数字先严格读取，任何失败都保留旧草稿；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
@@ -1468,6 +1475,12 @@ bool Widget::saveUiToDraft()
         {"devId", m_devId->value()}, {"absoluteAction", m_action->value()},
         {"speedUmPerS", m_speed->value()}, {"minPositionUm", m_minPosition->value()},
         {"maxPositionUm", m_maxPosition->value()}});
+    *draft = root;
+    return true;
+}
+
+bool Widget::storeUiDraft(const QJsonObject &root)
+{
     if (!persistDraft(root)) return false;
     m_draftRoot = root;
     const QSignalBlocker jsonBlocker(m_advancedJson);
@@ -1734,54 +1747,50 @@ void Widget::updateLiveState()
     const bool current = m_draftValid && !m_formDirty && !m_jsonDirty
             && m_validatedDraft.version == m_activeConfig.version;
     m_deviceConfirmed->setEnabled(m_configEnabled && current);
-    const bool recoveryQuery = m_requests->deviceBusy() && m_configEnabled && current && inputIsQuery();
-    bool pendingInput = false, motionInput = false, stopInterrupt = false;
-    if (m_configEnabled && current) {
-        TranslationError error; const QByteArray bytes = inputBytes(m_activeConfig, &error);
-        if (!error.isValid()) {
-            ConversionPreview converted;
-            if (ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error)) {
-                motionInput = isMotionEditor(converted.command.operation);
-                stopInterrupt = m_requests->canInterruptWithStop(converted.command);
-            }
-            pendingInput = error.code == "COMMAND_NOT_IMPLEMENTED";
-        }
-    }
-    QString reason;
-    if (!m_configEnabled) reason = QString::fromUtf8(u8"未启用");
-    else if (!current)
-        reason = QString::fromUtf8(u8"草稿已修改");
-    else if (pendingInput) reason = QString::fromUtf8(u8"发送待实现");
-    else if (!m_deviceConfirmed->isChecked())
-        reason = QString::fromUtf8(u8"待确认参数");
-    else if (!m_transport->isConnected())
-        reason = QString::fromUtf8(u8"串口未连接");
-    else if (m_requestActive && !stopInterrupt)
-        reason = QString::fromUtf8(u8"执行中");
-    else if (m_requests->deviceBusy() && motionInput)
-        reason = QString::fromUtf8(u8"设备运动中或状态未知，请手动查询状态");
-    else if (recoveryQuery)
-        reason = QString::fromUtf8(u8"就绪（查询）");
-    else reason = QString::fromUtf8(u8"就绪");
-    const bool ready = m_configEnabled && current && !pendingInput && m_deviceConfirmed->isChecked()
-            && m_transport->isConnected() && (!m_requestActive || stopInterrupt) && (!m_requests->deviceBusy() || !motionInput);
-    m_sendButton->setEnabled(ready);
+    const QString reason = !m_transport->isConnected() ? QString::fromUtf8(u8"报文调试：串口未连接")
+        : m_requestActive ? QString::fromUtf8(u8"报文调试：可继续发送（排队）")
+                          : QString::fromUtf8(u8"报文调试：可直接发送");
+    // 按钮始终可点击，错误在点击时具体显示，不用工作流或设备状态禁用发送。
+    m_sendButton->setEnabled(true);
+    m_queryButton->setEnabled(true);
     m_sendButton->setToolTip(reason);
     m_liveReason->setText(reason);
-    m_liveReason->setStyleSheet(ready ? QStringLiteral("color:#087a32") : QStringLiteral("color:#a04400"));
+    m_liveReason->setStyleSheet(m_transport->isConnected() ? QStringLiteral("color:#087a32") : QStringLiteral("color:#a04400"));
     m_cancelButton->setEnabled(m_requestActive);
-    m_queryButton->setEnabled(m_configEnabled && current && m_deviceConfirmed->isChecked()
-                             && m_transport->isConnected() && !m_requestActive);
 }
 
-bool Widget::inputIsQuery() const
+bool Widget::debugConfig(ProtocolConfig *config)
 {
-    // 恢复查询必须由当前已启用配置合法解析，不能凭输入字符串看起来像某种查询便绕过运动互锁。
+    QJsonObject root = m_draftRoot;
+    if (m_jsonDirty) {
+        const QJsonDocument json = QJsonDocument::fromJson(m_advancedJson->toPlainText().toUtf8());
+        if (!json.isObject()) {
+            m_previewOutput->setPlainText(QString::fromUtf8(u8"发送失败：高级 JSON 不是有效对象"));
+            return false;
+        }
+        root = json.object();
+    } else if (m_formDirty || m_mappingEditorDirty) {
+        if (!collectUiDraft(&root)) {
+            m_previewOutput->setPlainText(m_validationState->text());
+            return false;
+        }
+    }
+    // 调试快照不落盘：忽略软件字段范围/行程，协议本身的数值字节宽度仍由编码器检查。
+    QJsonObject external = root.value("external").toObject();
+    QJsonArray fields = external.value("fields").toArray();
+    for (int i=0;i<fields.size();++i) {
+        QJsonObject field = fields.at(i).toObject(); field.remove("min"); field.remove("max"); fields[i]=field;
+    }
+    external.insert("fields",fields); root.insert("external",external);
+    QJsonObject device = root.value("device").toObject();
+    device.insert("minPositionUm",0); device.insert("maxPositionUm",0xfffffe); root.insert("device",device);
     TranslationError error;
-    const QByteArray bytes = inputBytes(m_activeConfig, &error);
-    if (error.isValid()) return false;
-    ConversionPreview result;
-    return ConversionEngine(m_activeConfig).convert(bytes, false, &result, &error) && isRecoveryQuery(result.command.operation);
+    if (!ProtocolConfig::fromJson(QJsonDocument(root).toJson(),config,&error)) {
+        m_previewOutput->setPlainText(QString::fromUtf8(u8"报文生成失败：%1").arg(error.message));
+        appendLog(error.code + ": " + error.message);
+        return false;
+    }
+    return true;
 }
 
 QByteArray Widget::inputBytes(const ProtocolConfig &config, TranslationError *error) const
@@ -1823,14 +1832,7 @@ void Widget::preview(bool live)
     }
     ProtocolConfig config;
     if (live) {
-        if (!m_configEnabled || !m_draftValid || m_formDirty || m_jsonDirty
-                || m_validatedDraft.version != m_activeConfig.version
-                || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()) {
-            updateLiveState();
-            appendLog(m_liveReason->text());
-            return;
-        }
-        config = m_activeConfig; // 真实请求固定使用接收瞬间的已启用快照。
+        if (!debugConfig(&config)) return;
     } else {
         TranslationError configError;
         if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &configError)) {
@@ -1854,13 +1856,7 @@ void Widget::preview(bool live)
         appendLog(QStringLiteral("%1: %2").arg(conversionError.code, conversionError.message));
         return;
     }
-    if (live && m_requests->deviceBusy() && isMotionEditor(converted.command.operation)) {
-        updateLiveState(); appendLog(m_liveReason->text()); return;
-    }
-    if (live && m_requestActive && !m_requests->canInterruptWithStop(converted.command)) {
-        updateLiveState(); appendLog(m_liveReason->text()); return;
-    }
-    m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"使用当前已启用版本\n")
+    m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"报文调试：使用当前编辑内容\n")
                                        : QString::fromUtf8(u8"使用当前已保存草稿\n")) + previewText(converted));
     m_targetOutput->setPlainText(QString::fromUtf8(u8"预览帧（未发送）：\n")
                                  + converted.targetFrame.toHex(' ').toUpper());
@@ -1870,6 +1866,10 @@ void Widget::preview(bool live)
     }
     m_rawReply->clear();
     m_replyResult->clear();
+    converted.command.packetDebug = true;
+    const QJsonObject device = config.root.value("device").toObject();
+    converted.command.destinationAddress = quint8(device.value("destination").toInt());
+    converted.command.sourceAddress = quint8(device.value("source").toInt());
     m_lastRequestId = m_service->submitUnifiedCommand(converted.command);
 }
 

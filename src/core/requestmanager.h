@@ -15,6 +15,7 @@ public:
     void cancel(quint64 requestId);
     void setTimeoutMs(int milliseconds) { m_ackTimeoutMs=milliseconds; }
     void setTimeouts(int sendMs,int ackMs);
+    // 忙闲仅供状态显示，不限制后续请求发送。
     bool deviceBusy() const { return m_deviceBusy; }
     // 只允许停止替代同一电机的运动等待；不能把不同目标或普通控制误当作可中断运动。
     bool canInterruptWithStop(const UnifiedCommand &command) const;
