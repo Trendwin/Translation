@@ -43,7 +43,7 @@ private slots:
     void parameterRelationsAndRounding();
     void signedFixedFieldsAndOverflow();
     void fixedBinaryFramesWithEmbeddedFooter();
-    void ackAndMotionTimeouts();
+    void ackTimeoutAndNoCompletionPolling();
     void cancelThenQueryRecoversBusyState();
     void demoFramingRegression();
     void codecReplyAndCrc();
@@ -456,42 +456,19 @@ void FrameworkTest::sequenceExhaustionIsFailClosed()
 
 void FrameworkTest::managerAckIsNotCompletion()
 {
-    QushengProtocol codec;
-    codec.setAddresses(2, 1);
-    FakeTransport transport;
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
     RequestManager manager(&codec, &transport);
-    manager.setTimeouts(100, 100, 2000);
-    int completed = 0;
-    UnifiedResult last;
-    QObject::connect(&manager, &RequestManager::completed, &manager,
-                     [&](const UnifiedResult &result) { ++completed; last = result; });
-    UnifiedCommand move;
-    move.requestId = 1;
-    move.targetDevice = "17";
-    move.operation = "ABSOLUTE_MOVE";
-    move.responsePolicy = "complete";
-    move.parameters.insert("positionUm", 20000);
-    move.parameters.insert("speedUmPerS", 1000);
-    move.parameters.insert("absoluteAction", 1);
-    manager.enqueue(move);
-    QTRY_COMPARE(transport.sent.size(), 1);
-    transport.receive(QushengProtocol::makeReply(0, 0));
-    QTest::qWait(10);
-    QCOMPARE(completed, 1);
-    QVERIFY(manager.deviceBusy());
-    transport.receive(QushengProtocol::makeFrame(1, 2, 99, 0x17,
-                                                  QByteArray::fromHex("1110004e20ffffff")));
-    QCOMPARE(completed, 1);
-    QTRY_VERIFY(transport.sent.size() >= 2);
-    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12,
-                                                  QByteArray::fromHex("0000000030004e20ffffff")));
-    QCOMPARE(completed, 1);
-    QTRY_VERIFY(transport.sent.size() >= 3);
-    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12,
-                                                  QByteArray::fromHex("0000000010004e20ffffff")));
-    QTRY_COMPARE(completed, 1);
-    QVERIFY(last.success);
-    QVERIFY(!manager.deviceBusy());
+    QSignalSpy results(&manager, &RequestManager::completed), states(&manager, &RequestManager::stateChanged);
+    UnifiedCommand move; move.requestId=1; move.targetDevice="17"; move.operation="ABSOLUTE_MOVE";
+    move.parameters={{"positionUm",2000},{"speedUmPerS",1000},{"absoluteAction",1}};
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(),1);
+    transport.receive(QushengProtocol::makeReply(0,0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(results.count(),1); QVERIFY(manager.deviceBusy());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+    // 接纳不是动作完成；主动/迟到报文不触发新查询，也不误解锁。
+    transport.receive(QushengProtocol::makeFrame(1,2,99,0x17,QByteArray::fromHex("11100007d0ffffff")));
+    QTest::qWait(350); QCOMPARE(transport.sent.size(),1); QVERIFY(manager.deviceBusy());
 }
 
 void FrameworkTest::managerStalledWriteAndRejection()
@@ -500,7 +477,7 @@ void FrameworkTest::managerStalledWriteAndRejection()
     codec.setAddresses(2, 1);
     FakeTransport transport;
     RequestManager manager(&codec, &transport);
-    manager.setTimeouts(20, 50, 100);
+    manager.setTimeouts(20, 50);
     int completed = 0;
     UnifiedResult last;
     QObject::connect(&manager, &RequestManager::completed, &manager,
@@ -662,28 +639,21 @@ void FrameworkTest::fixedBinaryFramesWithEmbeddedFooter()
     QCOMPARE(result.command.parameters.value("positionUm").toLongLong(), 20000LL);
 }
 
-void FrameworkTest::ackAndMotionTimeouts()
+void FrameworkTest::ackTimeoutAndNoCompletionPolling()
 {
-    QushengProtocol codec; codec.setAddresses(2, 1);
-    FakeTransport transport;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(50, 30, 60);
-    QSignalSpy states(&manager, &RequestManager::stateChanged);
-    int completed = 0; UnifiedResult last;
-    QObject::connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &r) { ++completed; last = r; });
-    UnifiedCommand query; query.requestId = 1; query.operation = "QUERY_MOTOR"; query.targetDevice = "17";
-    manager.enqueue(query);
-    QTRY_COMPARE(completed, 1); QCOMPARE(last.error.code, QStringLiteral("ACK_TIMEOUT"));
-    UnifiedCommand move; move.requestId = 2; move.operation = "ABSOLUTE_MOVE"; move.targetDevice = "17";
-    move.responsePolicy = "ack";
-    move.parameters = {{"positionUm", 20000}, {"speedUmPerS", 1000}, {"absoluteAction", 1}};
-    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(), 2);
-    transport.receive(QushengProtocol::makeReply(1, 0));
-    QTRY_COMPARE(completed, 2); QVERIFY(last.success);
-    QVERIFY(manager.deviceBusy());
-    TranslationError finalError;
-    QObject::connect(&manager, &RequestManager::protocolError, &manager, [&](const TranslationError &e) { finalError = e; });
-    QTRY_COMPARE(finalError.code, QStringLiteral("MOTION_TIMEOUT"));
-    QCOMPARE(completed, 2); QVERIFY(manager.deviceBusy());
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport;
+    RequestManager manager(&codec,&transport); manager.setTimeouts(50,30);
+    QSignalSpy results(&manager,&RequestManager::completed), errors(&manager,&RequestManager::protocolError);
+    UnifiedCommand query; query.requestId=1; query.operation="QUERY_MOTOR"; query.targetDevice="17";
+    manager.enqueue(query); QTRY_COMPARE(results.count(),1);
+    QCOMPARE(qvariant_cast<UnifiedResult>(results.last().at(0)).error.code,QStringLiteral("ACK_TIMEOUT"));
+    UnifiedCommand move; move.requestId=2; move.operation="ABSOLUTE_MOVE"; move.targetDevice="17";
+    move.parameters={{"positionUm",2000},{"speedUmPerS",1000},{"absoluteAction",1}};
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(),2);
+    transport.receive(QushengProtocol::makeReply(1,0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    QTest::qWait(350); QCOMPARE(transport.sent.size(),2); QCOMPARE(results.count(),2);
+    QCOMPARE(errors.count(),0); QVERIFY(manager.deviceBusy());
 }
 
 void FrameworkTest::cancelThenQueryRecoversBusyState()
@@ -846,11 +816,9 @@ void FrameworkTest::relativeMoveChecksPositionBeforeSending()
         QCOMPARE(quint8(transport.sent.at(1).at(7)), quint8(0x11));
         QCOMPARE(quint8(transport.sent.at(1).at(9)), quint8(input.at(2) == 'p' ? 0x21 : 0x23));
         transport.receive(QushengProtocol::makeReply(1, 0)); QCOMPARE(completed, 1); QVERIFY(manager.deviceBusy());
-        QTRY_COMPARE(transport.sent.size(), 3); transport.receive(motorReply(2, 1, 1000));
-        QCOMPARE(completed, 1); QVERIFY(manager.deviceBusy()); // 空闲但位置不符，不能冒充完成。
-        QTRY_COMPARE(transport.sent.size(), 4); transport.receive(motorReply(3, 1, input.at(2) == 'p' ? 1500 : 500));
-        QTRY_COMPARE(completed, 1); QVERIFY(result.success); QVERIFY(!manager.deviceBusy());
-        QCOMPARE(transport.sent.size(), 4); // 只发一条运动，另外三条均为状态查询。
+        QTRY_VERIFY(!manager.hasPendingRequests());
+        QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
+        QVERIFY(result.success); QVERIFY(manager.deviceBusy()); // 仅保留一次前置查询与一次运动。
     }
 }
 
@@ -861,7 +829,7 @@ void FrameworkTest::relativeMoveRejectsUnsafeStartAndTimeout()
     QVERIFY(ConversionEngine(config).convert("/1D2000R\r", false, &preview, &error));
     for (int scenario = 0; scenario < 4; ++scenario) {
         QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
-        RequestManager manager(&codec, &transport); manager.setTimeouts(50, 30, 300);
+        RequestManager manager(&codec, &transport); manager.setTimeouts(50, 30);
         UnifiedResult result; int completed = 0;
         connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &r) {result=r; ++completed;});
         preview.command.requestId = 1; manager.enqueue(preview.command); QTRY_COMPARE(transport.sent.size(), 1);
@@ -960,7 +928,7 @@ void FrameworkTest::sdkSimpleControlsFromConfig()
 void FrameworkTest::sdkOrdinaryRequestLifecycle()
 {
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100, 1000);
+    RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100);
     int completed = 0; UnifiedResult last;
     connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &result) { ++completed; last = result; });
     UnifiedCommand fan; fan.requestId = 1; fan.operation = "QUSHENG_81"; fan.parameters = {{"percent", 50}};
@@ -1161,33 +1129,23 @@ void FrameworkTest::fixedMotorActionRequestLifecycle_data()
 void FrameworkTest::fixedMotorActionRequestLifecycle()
 {
     QFETCH(QString, operation); QFETCH(QString, policy);
-    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(100, 100, 2000);
-    QSignalSpy received(&manager, &RequestManager::replyReceived);
-    QSignalSpy states(&manager, &RequestManager::stateChanged);
-    int completed = 0; UnifiedResult last;
-    connect(&manager, &RequestManager::completed, &manager, [&](const UnifiedResult &result) { ++completed; last = result; });
-    UnifiedCommand move; move.requestId = 1; move.targetDevice = "17"; move.operation = operation;
-    move.responsePolicy = policy; move.parameters = {{"positionUm", 20000}, {"speedUmPerS", 1000}};
-    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(), 1);
-    QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x11)); // 新动作绝不走旧相对运动的前置查询。
-    transport.receive(QushengProtocol::makeReply(0, 0));
-    QCOMPARE(completed, 1); QCOMPARE(received.count(), 1); QVERIFY(manager.deviceBusy());
-    transport.receive(QushengProtocol::makeReply(99, 0)); QCOMPARE(received.count(), 1);
-    QTRY_COMPARE(transport.sent.size(), 2);
-    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12, QByteArray::fromHex("0000000010004e1fffffff")));
-    QCOMPARE(received.count(), 2);
-    QCOMPARE(qvariant_cast<UnifiedResult>(received.last().at(0)).data.value("positionUm").toInt(), 19999);
-    QVERIFY(manager.deviceBusy()); // 空闲但目标不符不能完成，也不能释放后续运动。
-    QCOMPARE(completed, 1);
-    QTRY_COMPARE(transport.sent.size(), 3);
-    transport.receive(QushengProtocol::makeFrame(1, 2, 2, 0x12, QByteArray::fromHex("0000000010004e20ffffff")));
-    QTRY_COMPARE(completed, 1); QVERIFY(last.success); QVERIFY(!manager.deviceBusy());
-    QCOMPARE(received.count(), 3);
-    const UnifiedResult finalReply = qvariant_cast<UnifiedResult>(received.last().at(0));
-    QCOMPARE(finalReply.requestId, quint64(1)); QCOMPARE(finalReply.data.value("positionUm").toInt(), 20000);
-    QVERIFY(!finalReply.data.value("deviceBusy").toBool());
-    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport;
+    RequestManager manager(&codec,&transport);
+    QSignalSpy results(&manager,&RequestManager::completed), states(&manager,&RequestManager::stateChanged);
+    UnifiedCommand move; move.requestId=1; move.targetDevice="17"; move.operation=operation;
+    move.responsePolicy=policy; move.parameters={{"positionUm",2000},{"speedUmPerS",1000}};
+    manager.enqueue(move); QTRY_COMPARE(transport.sent.size(),1);
+    QCOMPARE(quint8(transport.sent.first().at(7)),quint8(0x11));
+    transport.receive(QushengProtocol::makeReply(0,0)); QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(results.count(),1); QVERIFY(manager.deviceBusy());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+    QTest::qWait(300); QCOMPARE(transport.sent.size(),1);
+    // 手动查询仍可使用，且不会继续触发下一次查询。
+    UnifiedCommand query; query.requestId=2; query.targetDevice="17"; query.operation="QUERY_MOTOR";
+    manager.enqueue(query); QTRY_COMPARE(transport.sent.size(),2);
+    transport.receive(motorReply(1,1,2000)); QTRY_VERIFY(!manager.hasPendingRequests());
+    QVERIFY(!manager.deviceBusy()); QCOMPARE(results.count(),2);
+    QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
 }
 
 static UnifiedCommand motorRequest(quint64 id, const QString &operation)
@@ -1208,39 +1166,26 @@ void FrameworkTest::stopAndResetLifecycle_data()
 
 void FrameworkTest::stopAndResetLifecycle()
 {
-    QFETCH(QString, operation); QFETCH(int, state); QFETCH(quint32, position);
-    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
-    manager.setTimeouts(1000, 800, 3000);
-    QSignalSpy states(&manager, &RequestManager::stateChanged), replies(&manager, &RequestManager::replyReceived);
-    manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
-    manager.cancel(1); QVERIFY(manager.deviceBusy()); // 状态未知时仍应允许停止/回零。
-    manager.enqueue(motorRequest(2, operation)); QTRY_COMPARE(transport.sent.size(), 2);
-    QCOMPARE(transport.sent.last().mid(8, 8), QByteArray::fromHex(operation == "MOTOR_STOP" ? "11420003e8000000" : "11440003e8000000"));
-    transport.receive(QushengProtocol::makeReply(1, 0));
-    QCOMPARE(replies.count(), 1); QVERIFY(manager.deviceBusy());
-    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::InMotion);
-    QTRY_COMPARE(transport.sent.size(), 3);
-    transport.receive(motorReply(2, operation == "MOTOR_RESET" ? 2 : 3, 0xffffff));
-    QVERIFY(qvariant_cast<RequestState>(states.last().at(1)) != RequestState::Succeeded);
-    QVERIFY(manager.deviceBusy());
-    QTRY_COMPARE(transport.sent.size(), 4);
-    if (operation == "MOTOR_RESET") {
-        transport.receive(motorReply(3, 1, 0xffffff)); // 空闲但位置无效不能冒充回零完成。
-        QVERIFY(manager.deviceBusy()); QTRY_COMPARE(transport.sent.size(), 5);
-        transport.receive(motorReply(4, state, position));
-    } else transport.receive(motorReply(3, state, position));
-    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
-    QCOMPARE(manager.deviceBusy(), state == 0 || position == 0xffffff);
-    QVERIFY(!states.last().at(2).toString().contains(QString::fromUtf8(u8"本次目标")));
+    QFETCH(QString, operation); QFETCH(int,state); QFETCH(quint32,position);
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport; RequestManager manager(&codec,&transport);
+    QSignalSpy states(&manager,&RequestManager::stateChanged);
+    manager.enqueue(motorRequest(1,operation)); QTRY_COMPARE(transport.sent.size(),1);
+    transport.receive(QushengProtocol::makeReply(0,0)); QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+    QVERIFY(manager.deviceBusy()); QTest::qWait(250); QCOMPARE(transport.sent.size(),1);
+    UnifiedCommand query; query.requestId=2; query.operation="QUERY_MOTOR"; query.targetDevice="17";
+    manager.enqueue(query); QTRY_COMPARE(transport.sent.size(),2);
+    transport.receive(motorReply(1,state,position)); QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(manager.deviceBusy(),state==0 || position==0xffffff);
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),state==0 || position==0xffffff ? RequestState::Failed : RequestState::Succeeded);
 }
 
 void FrameworkTest::stopInterruptsMotionAndCancelsQueue()
 {
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
-    manager.setTimeouts(1000, 800, 3000);
+    manager.setTimeouts(1000, 800);
     QSignalSpy states(&manager, &RequestManager::stateChanged), unmatched(&manager, &RequestManager::unsolicitedMessage);
     manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
-    transport.receive(QushengProtocol::makeReply(0, 0));
     manager.enqueue(motorRequest(2, "MOTOR_BACKWARD"));
     UnifiedCommand stop = motorRequest(3, "MOTOR_STOP"), other = stop; other.targetDevice = "18";
     QVERIFY(!manager.canInterruptWithStop(other)); QVERIFY(manager.canInterruptWithStop(stop));
@@ -1251,10 +1196,10 @@ void FrameworkTest::stopInterruptsMotionAndCancelsQueue()
     }
     QVERIFY(interrupted && queuedCancelled); QCOMPARE(quint8(transport.sent.last().at(9)), quint8(0x42));
     transport.receive(QushengProtocol::makeReply(0, 0)); QCOMPARE(unmatched.count(), 1);
-    transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
-    transport.receive(motorReply(2, 1, 777));
-    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
-    QVERIFY(!manager.deviceBusy()); QTest::qWait(30); QCOMPARE(transport.sent.size(), 3);
+    transport.receive(QushengProtocol::makeReply(1, 0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+    QVERIFY(manager.deviceBusy()); QTest::qWait(300); QCOMPARE(transport.sent.size(),2);
 }
 
 void FrameworkTest::stopWaitsForWrite_data()
@@ -1268,7 +1213,7 @@ void FrameworkTest::stopWaitsForWrite()
 {
     QFETCH(bool, earlyReply);
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800);
     QSignalSpy states(&manager, &RequestManager::stateChanged);
     manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
     if (earlyReply) transport.receive(QushengProtocol::makeReply(0, 0));
@@ -1278,40 +1223,37 @@ void FrameworkTest::stopWaitsForWrite()
     transport.sendFinished(1, true, QString()); // 旧写出通知不得释放新的停止写操作。
     transport.sendFinished(2, true, QString());
     transport.receive(QushengProtocol::makeReply(0, 0));
-    transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
-    transport.sendFinished(2, true, QString()); transport.receive(motorReply(2, 1, 123));
-    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
-    QVERIFY(!manager.deviceBusy());
+    transport.receive(QushengProtocol::makeReply(1, 0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+    QVERIFY(manager.deviceBusy()); QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
 }
 
 void FrameworkTest::motorControlErrorsKeepBusy()
 {
-    for (const QString &operation : {QString("MOTOR_STOP"), QString("MOTOR_RESET")}) for (int scenario = 0; scenario < 4; ++scenario) {
-        QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
-        manager.setTimeouts(1000, 100, 400);
-        QSignalSpy states(&manager, &RequestManager::stateChanged);
-        manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
-        manager.cancel(1); QVERIFY(manager.deviceBusy());
-        manager.enqueue(motorRequest(2, operation)); QTRY_COMPARE(transport.sent.size(), 2);
-        if (scenario == 0) transport.receive(QushengProtocol::makeReply(1, 4));
-        else if (scenario != 1) {
-            transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_VERIFY(transport.sent.size() >= 3);
-            if (scenario == 2) transport.receive(motorReply(2, 4, 0xffffff));
+    for (const QString &operation : {QString("MOTOR_STOP"),QString("MOTOR_RESET")}) {
+        for (int scenario=0;scenario<3;++scenario) {
+            QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport; RequestManager manager(&codec,&transport);
+            manager.setTimeouts(100,50); QSignalSpy states(&manager,&RequestManager::stateChanged);
+            manager.enqueue(motorRequest(1,"MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(),1); manager.cancel(1);
+            manager.enqueue(motorRequest(2,operation)); QTRY_COMPARE(transport.sent.size(),2);
+            if(scenario==0) transport.receive(QushengProtocol::makeReply(1,4));
+            if(scenario==2) transport.disconnectNow();
+            QTRY_VERIFY(!manager.hasPendingRequests()); QVERIFY(manager.deviceBusy());
+            QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),scenario==1 ? RequestState::TimedOut : RequestState::Failed);
+            transport.connected=true;
+            manager.enqueue(motorRequest(3,"MOTOR_FORWARD"));
+            QTRY_COMPARE(states.last().at(0).toULongLong(),quint64(3));
+            QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Failed);
+            QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
         }
-        const RequestState terminal = scenario < 1 || scenario == 2 ? RequestState::Failed : RequestState::TimedOut;
-        QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), terminal);
-        QVERIFY(manager.deviceBusy());
-        const int sent = transport.sent.size(); manager.enqueue(motorRequest(3, "MOTOR_FORWARD"));
-        QTRY_COMPARE(states.last().at(0).toULongLong(), quint64(3));
-        QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Failed);
-        QCOMPARE(transport.sent.size(), sent); // 拒绝/超时/错误后不重发控制，也不放行普通运动。
     }
 }
 
 void FrameworkTest::relativePreflightWaitsForWrite()
 {
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800);
     UnifiedCommand relative = motorRequest(1, "RELATIVE_FORWARD");
     relative.parameters.insert("distanceUm", 500); relative.parameters.insert("minPositionUm", 0); relative.parameters.insert("maxPositionUm", 6000);
     manager.enqueue(relative); QTRY_COMPARE(transport.sent.size(), 1);
@@ -1322,25 +1264,24 @@ void FrameworkTest::relativePreflightWaitsForWrite()
 
 void FrameworkTest::finalControlReplyWaitsForWrite()
 {
-    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
-    QSignalSpy states(&manager, &RequestManager::stateChanged);
-    manager.enqueue(motorRequest(1, "MOTOR_STOP")); QTRY_COMPARE(transport.sent.size(), 1);
-    transport.sendFinished(1, true, QString()); transport.receive(QushengProtocol::makeReply(0, 0));
-    QTRY_COMPARE(transport.sent.size(), 2);
-    manager.enqueue(motorRequest(2, "MOTOR_FORWARD"));
-    transport.receive(motorReply(1, 1, 123));
-    QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)), RequestState::Succeeded);
-    QVERIFY(manager.hasPendingRequests()); QVERIFY(!manager.deviceBusy());
-    QTest::qWait(30); QCOMPARE(transport.sent.size(), 2);
-    transport.sendFinished(1, true, QString()); QTRY_COMPARE(transport.sent.size(), 3);
-    QCOMPARE(quint8(transport.sent.last().at(9)), quint8(0x41));
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport; transport.stall=true;
+    RequestManager manager(&codec,&transport); manager.setTimeouts(1000,800);
+    QSignalSpy results(&manager,&RequestManager::completed);
+    manager.enqueue(motorRequest(1,"MOTOR_STOP")); QTRY_COMPARE(transport.sent.size(),1);
+    transport.receive(QushengProtocol::makeReply(0,0)); QCOMPARE(results.count(),1);
+    UnifiedCommand query; query.requestId=2; query.operation="QUERY_MOTOR"; query.targetDevice="17";
+    manager.enqueue(query); QTest::qWait(250); QCOMPARE(transport.sent.size(),1);
+    QVERIFY(manager.hasPendingRequests()); QVERIFY(manager.deviceBusy());
+    transport.sendFinished(1,true,QString()); QTRY_COMPARE(transport.sent.size(),2);
+    transport.sendFinished(2,true,QString()); transport.receive(motorReply(1,1,123));
+    QTRY_VERIFY(!manager.hasPendingRequests()); QVERIFY(!manager.deviceBusy());
+    QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
 }
 
 void FrameworkTest::cancellingQueuedStopKeepsOriginalActive()
 {
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
-    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800, 3000);
+    RequestManager manager(&codec, &transport); manager.setTimeouts(1000, 800);
     manager.enqueue(motorRequest(1, "MOTOR_FORWARD")); QTRY_COMPARE(transport.sent.size(), 1);
     const auto stop = motorRequest(2, "MOTOR_STOP"); manager.enqueue(stop); manager.cancel(2);
     QVERIFY(manager.hasPendingRequests()); QVERIFY(manager.canInterruptWithStop(stop));

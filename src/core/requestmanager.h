@@ -14,7 +14,7 @@ public:
     void enqueue(const UnifiedCommand &command);
     void cancel(quint64 requestId);
     void setTimeoutMs(int milliseconds) { m_ackTimeoutMs=milliseconds; }
-    void setTimeouts(int sendMs,int ackMs,int motionMs);
+    void setTimeouts(int sendMs,int ackMs);
     bool deviceBusy() const { return m_deviceBusy; }
     // 只允许停止替代同一电机的运动等待；不能把不同目标或普通控制误当作可中断运动。
     bool canInterruptWithStop(const UnifiedCommand &command) const;
@@ -39,18 +39,17 @@ private:
     void failCurrent(RequestState state,const QString &code,const QString &detail);
     void finishCurrent(bool waitForWrite = false);
     void startProbe();
-    void scheduleProbe();
     void setBusy(bool busy);
     bool interruptForStop();
     IInternalProtocol *m_protocol;
     ITransport *m_transport;
     QQueue<UnifiedCommand> m_queue;
     UnifiedCommand m_current,m_probe;
-    // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由后续 0x12 查询独立维护。
+    // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由手动 0x12 查询独立维护。
     bool m_active=false,m_probeActive=false,m_acked=false,m_completionEmitted=false,m_deviceBusy=false;
     // SDK预置可指定不同电机；查询另一路空闲不能解除前一路的未知运动占用。
     QSet<QString> m_busyDevices;
-    // 相对动作的前置查询不能与动作完成轮询合并：前者成功前绝不能发送运动。
+    // 仅旧相对动作会主动做一次前置查询，成功前绝不能发送运动。
     bool m_preflight=false;
     // 设备回告可早于本地bytesWritten；停止必须等前一帧写完才更换请求，防止串口字节交织。
     bool m_writePending=false;
@@ -58,7 +57,7 @@ private:
     bool m_sendAfterProbe=false;
     // 最后一份成功回告先到时也不能提前交出串口；等待写出事件再放行队列。
     bool m_finishAfterWrite=false;
-    int m_sendTimeoutMs=1000,m_ackTimeoutMs=800,m_motionTimeoutMs=30000;
-    QTimer m_sendTimer,m_ackTimer,m_motionTimer,m_pollTimer;
+    int m_sendTimeoutMs=1000,m_ackTimeoutMs=800;
+    QTimer m_sendTimer,m_ackTimer;
 };
 #endif
