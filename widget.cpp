@@ -401,8 +401,7 @@ void Widget::buildUi()
     addMapping->setToolTip(QString::fromUtf8(u8"将下方填写的新映射添加到表格末尾。"));
     removeMapping->setToolTip(QString::fromUtf8(u8"删除当前选中的映射；保存前仍可重新导入配置。"));
     saveMapping->setToolTip(saveFormat->toolTip());
-    mappingButtons->addWidget(removeMapping); mappingButtons->addWidget(saveMapping);
-    editorLayout->addWidget(addMapping);
+    mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping); mappingButtons->addWidget(saveMapping);
     removeMapping->setEnabled(false);
     // 保存入口放在列表旁，常用编辑在同一页完成。
     mappingButtons->addStretch(); mappingLayout->insertLayout(1, mappingButtons);
@@ -652,11 +651,12 @@ void Widget::connectSignals()
             // 新增表单独立于表格；切换目标只改变新表单，不保存或改写已有行。
             const bool supported = QushengCommandCatalog::isExecutable(operation);
             const bool previousMotion = isMotionEditor(m_editorOperation);
-            const bool query = isQuery(operation);
-            if (supported && query != isQuery(m_editorOperation)) {
+            const bool omitParameters = isQuery(operation) || QushengCommandCatalog::isStopOrReset(operation);
+            const bool previouslyOmitted = isQuery(m_editorOperation) || QushengCommandCatalog::isStopOrReset(m_editorOperation);
+            if (supported && omitParameters != previouslyOmitted) {
                 for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
-                    if (check->property("omissionAllowed").toBool() && check->property("fieldRole").toString() == "parameter") check->setChecked(query);
-                if (!query && m_mappingSource->currentData().toString().isEmpty() && m_mappingSource->count() > 2) m_mappingSource->setCurrentIndex(1);
+                    if (check->property("omissionAllowed").toBool() && check->property("fieldRole").toString() == "parameter") check->setChecked(omitParameters);
+                if (!omitParameters && m_mappingSource->currentData().toString().isEmpty() && m_mappingSource->count() > 2) m_mappingSource->setCurrentIndex(1);
             }
             // 不同指令的参数没有隐含等价关系。完整目录与现有运动模板之间切换时不迁移位置到别的参数。
             if (!isMotionEditor(operation)) loadCatalogParameters(QJsonObject());
@@ -1282,7 +1282,15 @@ bool Widget::readNewMapping(QJsonObject *result)
 void Widget::loadUiFromDraft()
 {
     // 统一客户格式的帧尾和立即显示回告后，旧映射不能留下看不见却继续生效的开关。
-    // 仅迁移已移除的两个键；省略字段、扩展元数据和高级参数关系仍按原值保留。
+    // 补齐旧界面未生成的停止/复位省略设置；显式省略列表和其他扩展元数据保持原值。
+    QJsonArray optionalParameters;
+    bool mappedCommand=false,afterCommand=false;
+    for (const QJsonValue &value:m_draftRoot.value("external").toObject().value("fields").toArray()) {
+        const QJsonObject field=value.toObject();
+        if (field.value("role").toString()=="command") {
+            afterCommand=true; mappedCommand=field.value("lengthMode").toString()=="mappedCommand";
+        } else if (afterCommand && field.value("role").toString()=="parameter") optionalParameters.append(field.value("name"));
+    }
     QJsonArray mappings = m_draftRoot.value("mappings").toArray();
     bool migrated = false;
     for (int i = 0; i < mappings.size(); ++i) {
@@ -1291,6 +1299,12 @@ void Widget::loadUiFromDraft()
         if (QushengCommandCatalog::isStopOrReset(mapping.value("operation").toString()) && mapping.value("parameters").isObject()) {
             QJsonObject parameters = mapping.value("parameters").toObject(); parameters.remove("positionUm");
             mapping.insert("parameters", parameters);
+        }
+        const QJsonValue originalInput=mapping.value("input");
+        if (mappedCommand && !optionalParameters.isEmpty()
+                && QushengCommandCatalog::isStopOrReset(mapping.value("operation").toString())
+                && (originalInput.isUndefined() || (originalInput.isObject() && !originalInput.toObject().contains("omitFields")))) {
+            QJsonObject input=originalInput.toObject(); input.insert("omitFields",optionalParameters); mapping.insert("input",input);
         }
         mapping.remove("responsePolicy");
         if (mapping.value("input").isObject()) {
