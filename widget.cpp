@@ -332,13 +332,13 @@ void Widget::buildUi()
     m_mappingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mappingTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_mappingTable->setMinimumHeight(160);
-    m_mappingTable->setToolTip(QString::fromUtf8(u8"选择映射以编辑。"));
+    m_mappingTable->setToolTip(QString::fromUtf8(u8"选择映射后可删除；新增请填写下方表单。"));
     const QStringList mappingTips = {QString::fromUtf8(u8"客户报文中的命令码，支持不同长度"),
         QString::fromUtf8(u8"选择趋盛命令模板"), QString::fromUtf8(u8"来源字段、换算倍数或固定值")};
     for (int c = 0; c < mappingTips.size(); ++c) m_mappingTable->horizontalHeaderItem(c)->setToolTip(mappingTips.at(c));
     mappingLayout->addWidget(m_mappingTable, 1);
 
-    m_mappingEditor = new QGroupBox(QString::fromUtf8(u8"编辑选中映射"), this);
+    m_mappingEditor = new QGroupBox(QString::fromUtf8(u8"添加新映射"), this);
     m_mappingEditor->setObjectName("mappingEditor");
     auto *editorLayout = new QVBoxLayout(m_mappingEditor);
     auto *editorForm = new QFormLayout;
@@ -398,10 +398,12 @@ void Widget::buildUi()
     auto *removeMapping = new QPushButton(QString::fromUtf8(u8"删除选中映射"), this);
     removeMapping->setObjectName("removeMapping");
     auto *saveMapping = new QPushButton(QString::fromUtf8(u8"保存到草稿"), this); saveMapping->setObjectName("saveMappings");
-    addMapping->setToolTip(QString::fromUtf8(u8"增加一条客户命令，在下方填写动作和参数。"));
+    addMapping->setToolTip(QString::fromUtf8(u8"将下方填写的新映射添加到表格末尾。"));
     removeMapping->setToolTip(QString::fromUtf8(u8"删除当前选中的映射；保存前仍可重新导入配置。"));
     saveMapping->setToolTip(saveFormat->toolTip());
-    mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping); mappingButtons->addWidget(saveMapping);
+    mappingButtons->addWidget(removeMapping); mappingButtons->addWidget(saveMapping);
+    editorLayout->addWidget(addMapping);
+    removeMapping->setEnabled(false);
     // 保存入口放在列表旁，常用编辑在同一页完成。
     mappingButtons->addStretch(); mappingLayout->insertLayout(1, mappingButtons);
     tabs->addTab(scrollPage(mappingPage), QString::fromUtf8(u8"命令映射"));
@@ -584,36 +586,27 @@ void Widget::buildUi()
     connect(saveFormat, &QPushButton::clicked, this, &Widget::saveUiToDraft);
     connect(addMapping, &QPushButton::clicked, this, [this]() {
         QJsonObject mapping;
-        const bool edited = m_mappingEditorRow >= 0 && (m_mappingEditorDirty
-            || m_mappingTable->item(m_mappingEditorRow,0)->data(Qt::UserRole).toJsonObject() != m_mappingEditorOriginal);
-        if (edited && !readMappingEditor(&mapping)) return;
-        // 添加不把下方编辑写回旧行。已填写的新指令直接追加；正在填写的空白新行则就地完成。
-        const bool pendingRow = edited && m_mappingEditorOriginal.value("commandCode").toString().isEmpty();
-        int row;
-        {
-            const QSignalBlocker blocker(m_mappingTable);
-            if (pendingRow) {
-                row = m_mappingEditorRow; updateMappingSummary(row,mapping);
-            } else {
-                if (edited) updateMappingSummary(m_mappingEditorRow,m_mappingEditorOriginal);
-                addMappingRow(mapping); row = m_mappingTable->rowCount()-1;
+        if (!readNewMapping(&mapping)) return;
+        for (int row=0;row<m_mappingTable->rowCount();++row) {
+            if (m_mappingTable->item(row,0)->data(Qt::UserRole).toJsonObject().value("commandCode") == mapping.value("commandCode")) {
+                m_validationState->setText(QString::fromUtf8(u8"添加失败：客户命令已存在，请先删除原映射"));
+                return;
             }
-            // 选中与编辑对象必须一起切换，不能依赖selectRow是否触发currentCellChanged。
-            m_mappingTable->setCurrentCell(row,0); m_mappingTable->selectRow(row);
         }
-        loadMappingEditor(row);
-        m_mappingEditorDirty = mapping.isEmpty();
-        m_mappingTable->scrollToItem(m_mappingTable->item(row,0));
-        m_mappingCode->setFocus();
-        markDraftDirty();
+        addMappingRow(mapping);
+        m_mappingTable->setCurrentCell(m_mappingTable->rowCount()-1,0);
+        m_mappingTable->scrollToItem(m_mappingTable->item(m_mappingTable->rowCount()-1,0));
+        resetMappingForm(); markDraftDirty(); m_mappingCode->setFocus();
     });
     connect(removeMapping, &QPushButton::clicked, this, [this]() {
-        const int row = m_mappingTable->currentRow();
-        if (row < 0) return;
-        m_loadingMapping = true; m_mappingTable->removeRow(row); m_loadingMapping = false;
-        m_mappingEditorRow = -1; m_mappingEditorDirty = false;
-        if (m_mappingTable->rowCount()) m_mappingTable->selectRow(qMin(row, m_mappingTable->rowCount() - 1));
-        loadMappingEditor(m_mappingTable->currentRow()); markDraftDirty();
+        const int row=m_mappingTable->currentRow();
+        if (row<0) return;
+        m_mappingTable->removeRow(row);
+        if (m_mappingTable->rowCount()) m_mappingTable->setCurrentCell(qMin(row,m_mappingTable->rowCount()-1),0);
+        updateMappingControls(); markDraftDirty();
+    });
+    connect(m_mappingTable,&QTableWidget::currentCellChanged,this,[removeMapping](int row,int,int,int) {
+        removeMapping->setEnabled(row>=0);
     });
     connect(saveMapping, &QPushButton::clicked, this, &Widget::saveUiToDraft);
     connect(saveDevice, &QPushButton::clicked, this, &Widget::saveUiToDraft);
@@ -650,36 +643,13 @@ void Widget::connectSignals()
     connect(m_fieldTable, &QTableWidget::cellChanged, this, [this](int, int column) {
         if (column == 1) fieldFormatChanged(); else markDraftDirty();
     });
-    connect(m_mappingTable, &QTableWidget::currentCellChanged, this, [this](int row, int, int, int) {
-        if (m_loadingUi || m_loadingMapping) return;
-        if (!saveMappingEditor()) {
-            const QSignalBlocker blocker(m_mappingTable);
-            m_mappingTable->selectRow(m_mappingEditorRow); return;
-        }
-        loadMappingEditor(row);
-    });
-    for (QLineEdit *edit : {m_mappingCode, m_mappingValue})
-        connect(edit, &QLineEdit::textChanged, this, &Widget::mappingEdited);
-    connect(m_mappingMultiplier, &QLineEdit::textChanged, this, [this]() {
-        if (!m_loadingMapping) m_multiplierChanged = true;
-        mappingEdited();
-    });
     connect(m_mappingOperation, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
-        if (!m_loadingMapping && m_mappingEditorRow >= 0) {
+        if (!m_loadingMapping) {
             const QString operation = m_mappingOperation->currentData().toString();
             if (QushengCommandCatalog::isReceiveOnly(operation)) {
                 const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, m_editorOperation); return;
             }
-            // 更换目标与搜索筛选是两种状态。目标切换先保存原表单；失败时返回原目标，不能丢掉未保存参数。
-            { const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, m_editorOperation); }
-            const QJsonObject existing = m_mappingTable->item(m_mappingEditorRow, 0)->data(Qt::UserRole).toJsonObject();
-            // 新增空行尚未定义参数关系，必须允许先选停止/复位或查询，不能要求用户先补一个不会使用的位置。
-            // 已有配置及已选字段/固定值仍按严格保存流程处理，防止切换目标丢失有效关系或掩盖错误。
-            const bool emptyNewRelation = existing.value("commandCode").toString().isEmpty()
-                && existing.value("operation").toString() == "MOTOR_FORWARD"
-                && m_mappingSource->currentData().toString().isEmpty() && m_mappingValue->text().isEmpty();
-            if (!emptyNewRelation && !saveMappingEditor()) return;
-            { const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, operation); }
+            // 新增表单独立于表格；切换目标只改变新表单，不保存或改写已有行。
             const bool supported = QushengCommandCatalog::isExecutable(operation);
             const bool previousMotion = isMotionEditor(m_editorOperation);
             const bool query = isQuery(operation);
@@ -701,9 +671,9 @@ void Widget::connectSignals()
                 selectData(m_mappingOperation, operation);
             }
         }
-        updateMappingControls(); mappingEdited();
+        updateMappingControls();
     });
-    connect(m_mappingSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateMappingControls(); mappingEdited(); });
+    connect(m_mappingSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateMappingControls(); });
     for (QSpinBox *spin : {m_destination, m_source, m_devId, m_action, m_speed, m_minPosition, m_maxPosition})
         connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
             m_deviceConfirmed->setChecked(false);
@@ -979,9 +949,9 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
             label->setData(Qt::UserRole + 2, true); const QString chosen = source->currentData().toString();
             fixed->setEnabled(chosen == "@constant");
             fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
-                : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写")); mappingEdited();
+                : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
         });
-        connect(fixed, &QLineEdit::textChanged, this, [this, label]() { label->setData(Qt::UserRole + 2, true); mappingEdited(); });
+        connect(fixed, &QLineEdit::textChanged, this, [this, label]() { label->setData(Qt::UserRole + 2, true); });
     }
     // 少量参数不铺开大块空白；较多参数保留表内滚动，外层说明仍可继续滚动。
     m_mappingParameters->setFixedHeight(qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));
@@ -1040,48 +1010,15 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
     return true;
 }
 
-void Widget::mappingEdited()
+void Widget::resetMappingForm()
 {
-    if (m_loadingMapping || m_loadingUi || m_mappingEditorRow < 0) return;
-    m_mappingEditorDirty = true; markDraftDirty();
-}
-
-void Widget::loadMappingEditor(int row)
-{
-    m_loadingMapping = true; m_mappingEditorRow = row;
-    m_mappingEditor->setEnabled(row >= 0);
-    const QJsonObject mapping = row >= 0 ? m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject() : QJsonObject();
-    m_mappingEditorOriginal = mapping;
-    m_mappingCode->setText(mapping.value("commandCode").toString());
-    const QString operation = mapping.value("operation").toString("MOTOR_FORWARD");
-    m_editorOperation = operation;
-    // 旧映射的模式和方向是配置的一部分，载入不等于迁移。兼容项只属于当前行，
-    // 离开该行即移除，避免将旧版相对模式重新混入新建映射的四动作指令池。
-    {
-        const QSignalBlocker blocker(m_mappingOperation);
-        for (int i = m_mappingOperation->count() - 1; i >= 0; --i)
-            if (m_mappingOperation->itemData(i, Qt::UserRole + 1).toBool()) m_mappingOperation->removeItem(i);
-        if (m_mappingOperation->findData(operation) < 0) {
-            const QString label = QushengCommandCatalog::isLegacyOperation(operation)
-                ? QString::fromUtf8(u8"0x11 | 旧版%1").arg(operationName(operation)) : operationName(operation);
-            m_mappingOperation->addItem(label, operation);
-            m_mappingOperation->setItemData(m_mappingOperation->count() - 1, true, Qt::UserRole + 1);
-            m_mappingOperation->setItemData(m_mappingOperation->count() - 1,
-                QString::fromUtf8(u8"旧版映射。"), Qt::ToolTipRole);
-        }
-    }
-    selectData(m_mappingOperation, operation);
-    const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
-    m_mappingValue->setText(expression.value("value").toVariant().toString());
-    m_mappingMultiplier->setText(expression.value("kind").toString() == "linear" ? multiplierText(expression) : QStringLiteral("1"));
-    const QJsonObject input = mapping.value("input").toObject();
-    rebuildMappingOmissions(input);
-    updateMappingSources();
-    const QString source = expression.value("kind").toString() == "constant" ? QStringLiteral("@constant") : expression.value("field").toString();
-    if (!source.isEmpty() && m_mappingSource->findData(source) < 0) m_mappingSource->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(source), source);
-    selectData(m_mappingSource, source);
-    loadCatalogParameters(mapping.value("parameters").toObject());
-    updateMappingControls(); m_mappingEditorDirty = false; m_multiplierChanged = false; m_loadingMapping = false;
+    m_loadingMapping=true;
+    m_mappingCode->clear(); m_mappingSearch->clear();
+    selectData(m_mappingOperation,"MOTOR_FORWARD"); m_editorOperation="MOTOR_FORWARD";
+    m_mappingValue->clear(); m_mappingMultiplier->setText("1");
+    rebuildMappingOmissions(QJsonObject()); updateMappingSources(); selectData(m_mappingSource,"");
+    loadCatalogParameters(QJsonObject()); updateMappingControls();
+    m_loadingMapping=false;
 }
 
 void Widget::rebuildMappingOmissions(const QJsonObject &input)
@@ -1109,7 +1046,7 @@ void Widget::rebuildMappingOmissions(const QJsonObject &input)
         // 命令码前的公共字段决定识别位置，不能因某条映射省略它们而改变匹配规则。
         check->setToolTip(available ? QString::fromUtf8(u8"勾选后，这条命令的报文不读取此字段。")
             : QString::fromUtf8(u8"命令码及其前面的公共字段不能省略；失效配置保留供校验提示。")); omitLayout->addWidget(check);
-        connect(check, &QCheckBox::toggled, this, [this]() { updateMappingSources(); mappingEdited(); });
+        connect(check, &QCheckBox::toggled, this, [this]() { updateMappingSources(); });
     }
     m_mappingOmissions->setVisible(!all.isEmpty());
 }
@@ -1147,9 +1084,8 @@ bool Widget::synchronizeFieldNames()
             renames.insert(previous, name); // 已载入的非法重名没有可靠归属，不能猜测其引用对象。
     }
     if (!renames.isEmpty()) {
-        // 先保存正在编辑的参数，不丢倍率、固定值或多参数关系。失败时保留编辑和旧身份，保存时重试。
+        // 字段改名同步现有映射和独立新增表单，不隐式提交新增表单。
         m_syncingFields = true;
-        if (!saveMappingEditor()) { m_syncingFields = false; return false; }
         for (int row = 0; row < m_mappingTable->rowCount(); ++row) {
             QJsonObject mapping = m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject();
             QJsonObject parameters = mapping.value("parameters").toObject();
@@ -1178,7 +1114,23 @@ bool Widget::synchronizeFieldNames()
         const QSignalBlocker fieldBlocker(m_fieldTable);
         for (int row = 0; row < m_fieldTable->rowCount(); ++row)
             m_fieldTable->item(row, 1)->setData(Qt::UserRole, itemText(m_fieldTable, row, 1));
-        loadMappingEditor(m_mappingEditorRow); m_syncingFields = false;
+        // 新增表单的来源也跟随字段改名，但不触碰或提交新表单内容。
+        const bool previousLoading=m_loadingMapping; m_loadingMapping=true;
+        auto renameSource=[&renames](QComboBox *box) {
+            const QString old=box->currentData().toString();
+            if (!renames.contains(old)) return;
+            const QString name=renames.value(old);
+            if (box->findData(name)<0) box->addItem(name,name);
+            selectData(box,name);
+        };
+        renameSource(m_mappingSource);
+        for (int row=0;row<m_mappingParameters->rowCount();++row)
+            if (auto *box=qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row,1))) renameSource(box);
+        for (QCheckBox *check:m_mappingOmissions->findChildren<QCheckBox *>()) {
+            const QString old=check->property("fieldName").toString();
+            if (renames.contains(old)) { check->setProperty("fieldName",renames.value(old)); check->setText(renames.value(old)); }
+        }
+        m_loadingMapping=previousLoading; m_syncingFields=false;
     } else {
         const QSignalBlocker blocker(m_fieldTable);
         for (int row = 0; row < m_fieldTable->rowCount(); ++row)
@@ -1283,85 +1235,48 @@ void Widget::updateMappingControls()
         if (QWidget *label = form->labelForField(m_action)) label->setVisible(legacyAbsolute);
 }
 
-bool Widget::saveMappingEditor()
+bool Widget::readNewMapping(QJsonObject *result)
 {
-    if (m_mappingEditorRow < 0 || !m_mappingEditorDirty) return true;
-    QJsonObject mapping;
-    if (!readMappingEditor(&mapping)) return false;
-    updateMappingSummary(m_mappingEditorRow, mapping);
-    if (!isMotionEditor(mapping.value("operation").toString()))
-        loadCatalogParameters(mapping.value("parameters").toObject());
-    m_mappingEditorDirty = false; m_multiplierChanged = false;
-    return true;
-}
-
-bool Widget::readMappingEditor(QJsonObject *result)
-{
-    auto fail = [this](const QString &reason) { m_validationState->setText(QString::fromUtf8(u8"保存失败：") + reason); appendLog(m_validationState->text()); return false; };
-    QJsonObject mapping = m_mappingTable->item(m_mappingEditorRow, 0)->data(Qt::UserRole).toJsonObject();
-    if (m_mappingCode->text().trimmed().isEmpty()) return fail(QString::fromUtf8(u8"请填写客户命令。"));
-    mapping.insert("commandCode", m_mappingCode->text().trimmed());
-    const QString previousOperation = mapping.value("operation").toString();
-    const QString operation = m_mappingOperation->currentData().toString(); mapping.insert("operation", operation);
-    if (QushengCommandCatalog::isReceiveOnly(operation)) return fail(QString::fromUtf8(u8"此指令仅设备主动上报，不能创建下发映射。"));
-    mapping.remove("responsePolicy");
-    QJsonObject parameters = mapping.value("parameters").toObject();
-    if (!isMotionEditor(operation)) {
-        QString reason;
-        if (!catalogParameters(&parameters, &reason)) return fail(reason);
-    } else {
-        if (!isMotionEditor(previousOperation)) parameters = QJsonObject();
-        const QString parameterKey = mappingParameterKey(operation);
-        const QString previousKey = mappingParameterKey(previousOperation);
-        QJsonObject expression = parameters.value(previousKey).toObject();
-        if (previousKey != parameterKey) parameters.remove(previousKey);
-        const QString source = m_mappingSource->currentData().toString();
-        if (source == "@constant") {
-            bool ok = false; const qlonglong value = m_mappingValue->text().trimmed().toLongLong(&ok);
-            if (!ok || value < 0 || value > 0xfffffe) return fail(QString::fromUtf8(u8"固定数值必须填写零到 16777214 的整数。"));
-            expression.insert("kind", "constant"); expression.insert("value", double(value));
-            expression.remove("field"); for (const QString &key : {"numerator", "denominator", "offset", "round"}) expression.remove(key);
+    auto fail=[this](const QString &reason) {
+        m_validationState->setText(QString::fromUtf8(u8"添加失败：")+reason);
+        appendLog(m_validationState->text()); return false;
+    };
+    const QString code=m_mappingCode->text().trimmed();
+    if (code.isEmpty()) return fail(QString::fromUtf8(u8"请填写客户命令。"));
+    const QString operation=m_mappingOperation->currentData().toString();
+    if (QushengCommandCatalog::isReceiveOnly(operation))
+        return fail(QString::fromUtf8(u8"此指令仅设备主动上报，不能创建下发映射。"));
+    QJsonObject parameters;
+    if (isMotionEditor(operation)) {
+        QJsonObject expression;
+        const QString source=m_mappingSource->currentData().toString();
+        if (source=="@constant") {
+            bool ok=false; const qlonglong value=m_mappingValue->text().trimmed().toLongLong(&ok);
+            if (!ok || value<0 || value>0xfffffe)
+                return fail(QString::fromUtf8(u8"固定数值必须填写零到 16777214 的整数。"));
+            expression=QJsonObject{{"kind","constant"},{"value",double(value)}};
         } else {
             if (source.isEmpty()) return fail(QString::fromUtf8(u8"请选择位置来源字段。"));
-            const bool wasLinear = expression.value("kind").toString() == "linear";
-            expression.insert("field", source); expression.remove("value");
-            // 未修改倍数时保留原分数；改命令名或来源不能让高级关系中的 1/3、偏移、舍入丢失。
-            qlonglong numerator = 1, denominator = 1;
-            if (m_multiplierChanged || !wasLinear) {
-                if (!decimalRatio(m_mappingMultiplier->text(), &numerator, &denominator))
-                    return fail(QString::fromUtf8(u8"换算倍数请填写有效整数或最多九位小数；分数请在高级 JSON 中编辑。"));
-            } else { numerator = expression.value("numerator").toVariant().toLongLong(); denominator = expression.value("denominator").toVariant().toLongLong(); }
-            // 简化界面没有偏移、取整控件；这些已保存的高级语义仍属于配置。
-            // 修改来源或倍率只能覆盖相应部分，不能重置原有偏移、舍入和扩展元数据。
-            // 草稿可能尚未校验；原值即使类型错误也必须保留，不能把 "bad" 或 2.5
-            // 强制转成整数，再让一次普通编辑悄悄修复隐藏的高级关系。
-            const QJsonValue offset = expression.contains("offset") ? expression.value("offset") : QJsonValue(0);
-            const QJsonValue rounding = expression.contains("round") ? expression.value("round") : QJsonValue(QStringLiteral("exact"));
-            const bool defaultAdvanced = offset.isDouble() && offset.toDouble() == 0
-                && rounding.isString() && rounding.toString() == "exact";
-            if (!wasLinear && numerator == denominator && defaultAdvanced) {
-                expression.insert("kind", "field");
-                for (const QString &key : {"numerator", "denominator", "offset", "round"}) expression.remove(key);
-            } else {
-                expression.insert("kind", "linear"); expression.insert("numerator", double(numerator)); expression.insert("denominator", double(denominator));
-                expression.insert("offset", offset); expression.insert("round", rounding);
+            qlonglong numerator=1,denominator=1;
+            if (!decimalRatio(m_mappingMultiplier->text(),&numerator,&denominator))
+                return fail(QString::fromUtf8(u8"换算倍数请填写有效整数或最多九位小数。"));
+            expression=QJsonObject{{"kind","field"},{"field",source}};
+            if (numerator!=denominator) {
+                expression.insert("kind","linear"); expression.insert("numerator",double(numerator));
+                expression.insert("denominator",double(denominator)); expression.insert("offset",0); expression.insert("round","exact");
             }
         }
-        parameters.insert(parameterKey, expression);
+        parameters.insert(mappingParameterKey(operation),expression);
+    } else {
+        QString reason;
+        if (!catalogParameters(&parameters,&reason)) return fail(reason);
     }
-    mapping.insert("parameters", parameters);
-    const QJsonValue originalInput = mapping.value("input");
-    QJsonObject input = originalInput.toObject();
+    QJsonObject mapping{{"commandCode",code},{"operation",operation},{"parameters",parameters}};
     QJsonArray omitted;
-    for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>()) if (check->isChecked()) omitted.append(check->property("fieldName").toString());
-    if (omitted.isEmpty()) input.remove("omitFields"); else input.insert("omitFields", omitted);
-    input.remove("footer");
-    // 非对象的旧 input 也是尚待校验的草稿；普通参数编辑不能把类型错误转换成合法空对象。
-    if (originalInput.isUndefined() || originalInput.isObject()) {
-        if (input.isEmpty()) mapping.remove("input"); else mapping.insert("input", input);
-    }
-    *result = mapping;
-    return true;
+    for (QCheckBox *check:m_mappingOmissions->findChildren<QCheckBox *>())
+        if (check->isChecked()) omitted.append(check->property("fieldName").toString());
+    if (!omitted.isEmpty()) mapping.insert("input",QJsonObject{{"omitFields",omitted}});
+    *result=mapping; return true;
 }
 
 void Widget::loadUiFromDraft()
@@ -1400,7 +1315,6 @@ void Widget::loadUiFromDraft()
     m_byteOrder->setVisible(binary);
     m_fieldTable->setRowCount(0);
     for (const QJsonValue &field : external.value("fields").toArray()) addFieldRow(field.toObject());
-    m_mappingEditorRow = -1; m_mappingEditorDirty = false;
     m_mappingTable->setRowCount(0);
     for (const QJsonValue &mapping : m_draftRoot.value("mappings").toArray()) addMappingRow(mapping.toObject());
     const QJsonObject device = m_draftRoot.value("device").toObject();
@@ -1421,8 +1335,7 @@ void Widget::loadUiFromDraft()
     m_formDirty = false;
     m_jsonDirty = false;
     m_loadingUi = false;
-    if (m_mappingTable->rowCount()) m_mappingTable->selectRow(0);
-    loadMappingEditor(m_mappingTable->currentRow());
+    resetMappingForm();
     updateTableControls();
     refreshMappingSummaries();
     updateLiveState();
@@ -1442,7 +1355,7 @@ bool Widget::saveUiToDraft()
 
 bool Widget::collectUiDraft(QJsonObject *draft)
 {
-    if (!synchronizeFieldNames() || !saveMappingEditor()) return false;
+    if (!synchronizeFieldNames()) return false;
     // 所有数字先严格读取，任何失败都保留旧草稿；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
         bool ok = false;
@@ -1514,8 +1427,6 @@ bool Widget::storeUiDraft(const QJsonObject &root)
 {
     if (!persistDraft(root)) return false;
     m_draftRoot = root;
-    if (m_mappingEditorRow >= 0)
-        m_mappingEditorOriginal = m_mappingTable->item(m_mappingEditorRow,0)->data(Qt::UserRole).toJsonObject();
     const QSignalBlocker jsonBlocker(m_advancedJson);
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
@@ -1802,7 +1713,7 @@ bool Widget::debugConfig(ProtocolConfig *config)
             return false;
         }
         root = json.object();
-    } else if (m_formDirty || m_mappingEditorDirty) {
+    } else if (m_formDirty) {
         if (!collectUiDraft(&root)) {
             m_previewOutput->setPlainText(m_validationState->text());
             return false;
