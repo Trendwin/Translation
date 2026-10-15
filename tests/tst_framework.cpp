@@ -71,7 +71,11 @@ private slots:
     void stopInterruptsMotionAndCancelsQueue();
     void stopWaitsForWrite_data();
     void stopWaitsForWrite();
-    void motorControlErrorsKeepBusy();
+    void motorControlErrorsAllowNextSend();
+    void consecutiveMovesNeedNoStatusQuery();
+    void queuedMovesWaitForReplyAndCompleteWrite();
+    void reportedStatusDoesNotGateSending_data();
+    void reportedStatusDoesNotGateSending();
     void relativePreflightWaitsForWrite();
     void finalControlReplyWaitsForWrite();
     void cancellingQueuedStopKeepsOriginalActive();
@@ -1229,7 +1233,7 @@ void FrameworkTest::stopWaitsForWrite()
     QVERIFY(manager.deviceBusy()); QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
 }
 
-void FrameworkTest::motorControlErrorsKeepBusy()
+void FrameworkTest::motorControlErrorsAllowNextSend()
 {
     for (const QString &operation : {QString("MOTOR_STOP"),QString("MOTOR_RESET")}) {
         for (int scenario=0;scenario<3;++scenario) {
@@ -1243,11 +1247,83 @@ void FrameworkTest::motorControlErrorsKeepBusy()
             QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),scenario==1 ? RequestState::TimedOut : RequestState::Failed);
             transport.connected=true;
             manager.enqueue(motorRequest(3,"MOTOR_FORWARD"));
-            QTRY_COMPARE(states.last().at(0).toULongLong(),quint64(3));
-            QTRY_COMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Failed);
-            QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
+            QTRY_COMPARE(transport.sent.size(),3);
+            QCOMPARE(quint8(transport.sent.last().at(7)),quint8(0x11));
+            transport.receive(QushengProtocol::makeReply(2,0));
+            QTRY_VERIFY(!manager.hasPendingRequests());
+            QCOMPARE(qvariant_cast<RequestState>(states.last().at(1)),RequestState::Acknowledged);
+            QTest::qWait(250); QCOMPARE(transport.sent.size(),3);
         }
     }
+}
+
+void FrameworkTest::consecutiveMovesNeedNoStatusQuery()
+{
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport;
+    RequestManager manager(&codec,&transport);
+    QSignalSpy results(&manager,&RequestManager::completed);
+    // 用户连续发同一条命令，再改发后退，无需插入查询；旧忙状态仍可显示。
+    const QStringList actions{"MOTOR_FORWARD","MOTOR_FORWARD","MOTOR_BACKWARD"};
+    for (int i=0;i<actions.size();++i) {
+        manager.enqueue(motorRequest(i+1,actions.at(i)));
+        QTRY_COMPARE(transport.sent.size(),i+1);
+        QCOMPARE(quint8(transport.sent.last().at(7)),quint8(0x11));
+        QCOMPARE(quint8(transport.sent.last().at(6)),quint8(i));
+        transport.receive(QushengProtocol::makeReply(quint8(i),0));
+        QTRY_VERIFY(!manager.hasPendingRequests());
+        QVERIFY(manager.deviceBusy());
+        QCOMPARE(results.count(),i+1);
+        QVERIFY(qvariant_cast<UnifiedResult>(results.last().at(0)).success);
+    }
+    QTest::qWait(300); QCOMPARE(transport.sent.size(),3);
+}
+
+void FrameworkTest::queuedMovesWaitForReplyAndCompleteWrite()
+{
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport; transport.stall=true;
+    RequestManager manager(&codec,&transport); manager.setTimeouts(1000,800);
+    manager.enqueue(motorRequest(1,"MOTOR_FORWARD"));
+    manager.enqueue(motorRequest(2,"MOTOR_FORWARD"));
+    manager.enqueue(motorRequest(3,"MOTOR_BACKWARD"));
+    QTRY_COMPARE(transport.sent.size(),1);
+    transport.receive(QushengProtocol::makeReply(0,0)); // 应答先到，仍须写完第一帧。
+    QTest::qWait(30); QCOMPARE(transport.sent.size(),1);
+    transport.sendFinished(1,true,QString()); QTRY_COMPARE(transport.sent.size(),2);
+    transport.sendFinished(2,true,QString()); // 第二帧已写完，仍等本次应答。
+    QTest::qWait(30); QCOMPARE(transport.sent.size(),2);
+    transport.receive(QushengProtocol::makeReply(1,0)); QTRY_COMPARE(transport.sent.size(),3);
+    transport.sendFinished(3,true,QString()); transport.receive(QushengProtocol::makeReply(2,0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    for (const QByteArray &frame : transport.sent) QCOMPARE(quint8(frame.at(7)),quint8(0x11));
+    QTest::qWait(250); QCOMPARE(transport.sent.size(),3);
+}
+
+void FrameworkTest::reportedStatusDoesNotGateSending_data()
+{
+    QTest::addColumn<int>("motorState"); QTest::addColumn<int>("position");
+    QTest::newRow("unhomed") << 0 << 0xffffff;
+    QTest::newRow("idle") << 1 << 1000;
+    QTest::newRow("resetting") << 2 << 0xffffff;
+    QTest::newRow("moving") << 3 << 1000;
+    QTest::newRow("motor-error") << 4 << 1000;
+    QTest::newRow("unknown-position") << 1 << 0xffffff;
+}
+
+void FrameworkTest::reportedStatusDoesNotGateSending()
+{
+    QFETCH(int,motorState); QFETCH(int,position);
+    QushengProtocol codec; codec.setAddresses(2,1); FakeTransport transport;
+    RequestManager manager(&codec,&transport);
+    UnifiedCommand query; query.requestId=1; query.operation="QUERY_MOTOR"; query.targetDevice="17";
+    manager.enqueue(query); QTRY_COMPARE(transport.sent.size(),1);
+    transport.receive(motorReply(0,motorState,position));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    manager.enqueue(motorRequest(2,"MOTOR_FORWARD"));
+    QTRY_COMPARE(transport.sent.size(),2);
+    QCOMPARE(quint8(transport.sent.last().at(7)),quint8(0x11));
+    transport.receive(QushengProtocol::makeReply(1,0));
+    QTRY_VERIFY(!manager.hasPendingRequests());
+    QTest::qWait(250); QCOMPARE(transport.sent.size(),2);
 }
 
 void FrameworkTest::relativePreflightWaitsForWrite()

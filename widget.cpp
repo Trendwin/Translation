@@ -168,8 +168,6 @@ bool isMotionEditor(const QString &operation)
         || operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
 }
 
-bool isRecoveryQuery(const QString &operation) { return operation == "QUERY_MOTOR"; }
-
 QString mappingParameterKey(const QString &operation)
 {
     return operation == "RELATIVE_FORWARD" || operation == "RELATIVE_BACKWARD" ? QStringLiteral("distanceUm") : QStringLiteral("positionUm");
@@ -701,8 +699,7 @@ void Widget::connectSignals()
     connect(m_input, &QLineEdit::textChanged, this, &Widget::updateLiveState);
     connect(m_sendButton, &QPushButton::clicked, this, [this]() { preview(true); });
     connect(m_queryButton, &QPushButton::clicked, this, [this]() {
-        if (!m_configEnabled || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()
-                || m_requestActive) return;
+        if (!m_configEnabled || !m_deviceConfirmed->isChecked() || !m_transport->isConnected()) return;
         UnifiedCommand query;
         query.operation = "QUERY_MOTOR";
         query.action = ActionType::Query;
@@ -754,7 +751,7 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::unsolicitedMessage, this,
             [this](const ProtocolMessage &message) {
-        // 主动上报只更新显示；不发 completed，也不能代替当前请求的匹配回告或解除运动互锁。
+        // 主动上报只更新显示；不发 completed，也不能代替当前请求的匹配回告。
         QushengSdkReply report; TranslationError error;
         QStringList lines{QString::fromUtf8(u8"主动或未匹配报文 0x%1").arg(message.messageType, 2, 16, QLatin1Char('0')),
             QString::fromUtf8(u8"原始帧：") + QString::fromLatin1((message.wireData.isEmpty() ? message.payload : message.wireData).toHex(' ').toUpper())};
@@ -1734,16 +1731,12 @@ void Widget::updateLiveState()
     const bool current = m_draftValid && !m_formDirty && !m_jsonDirty
             && m_validatedDraft.version == m_activeConfig.version;
     m_deviceConfirmed->setEnabled(m_configEnabled && current);
-    const bool recoveryQuery = m_requests->deviceBusy() && m_configEnabled && current && inputIsQuery();
-    bool pendingInput = false, motionInput = false, stopInterrupt = false;
+    bool pendingInput = false;
     if (m_configEnabled && current) {
         TranslationError error; const QByteArray bytes = inputBytes(m_activeConfig, &error);
         if (!error.isValid()) {
             ConversionPreview converted;
-            if (ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error)) {
-                motionInput = isMotionEditor(converted.command.operation);
-                stopInterrupt = m_requests->canInterruptWithStop(converted.command);
-            }
+            ConversionEngine(m_activeConfig).convert(bytes, false, &converted, &error);
             pendingInput = error.code == "COMMAND_NOT_IMPLEMENTED";
         }
     }
@@ -1756,32 +1749,18 @@ void Widget::updateLiveState()
         reason = QString::fromUtf8(u8"待确认参数");
     else if (!m_transport->isConnected())
         reason = QString::fromUtf8(u8"串口未连接");
-    else if (m_requestActive && !stopInterrupt)
-        reason = QString::fromUtf8(u8"执行中");
-    else if (m_requests->deviceBusy() && motionInput)
-        reason = QString::fromUtf8(u8"设备运动中或状态未知，请手动查询状态");
-    else if (recoveryQuery)
-        reason = QString::fromUtf8(u8"就绪（查询）");
+    else if (m_requestActive)
+        reason = QString::fromUtf8(u8"可发送（排队）");
     else reason = QString::fromUtf8(u8"就绪");
     const bool ready = m_configEnabled && current && !pendingInput && m_deviceConfirmed->isChecked()
-            && m_transport->isConnected() && (!m_requestActive || stopInterrupt) && (!m_requests->deviceBusy() || !motionInput);
+            && m_transport->isConnected();
     m_sendButton->setEnabled(ready);
     m_sendButton->setToolTip(reason);
     m_liveReason->setText(reason);
     m_liveReason->setStyleSheet(ready ? QStringLiteral("color:#087a32") : QStringLiteral("color:#a04400"));
     m_cancelButton->setEnabled(m_requestActive);
     m_queryButton->setEnabled(m_configEnabled && current && m_deviceConfirmed->isChecked()
-                             && m_transport->isConnected() && !m_requestActive);
-}
-
-bool Widget::inputIsQuery() const
-{
-    // 恢复查询必须由当前已启用配置合法解析，不能凭输入字符串看起来像某种查询便绕过运动互锁。
-    TranslationError error;
-    const QByteArray bytes = inputBytes(m_activeConfig, &error);
-    if (error.isValid()) return false;
-    ConversionPreview result;
-    return ConversionEngine(m_activeConfig).convert(bytes, false, &result, &error) && isRecoveryQuery(result.command.operation);
+                             && m_transport->isConnected());
 }
 
 QByteArray Widget::inputBytes(const ProtocolConfig &config, TranslationError *error) const
@@ -1853,12 +1832,6 @@ void Widget::preview(bool live)
                                       .arg(conversionError.code, conversionError.message));
         appendLog(QStringLiteral("%1: %2").arg(conversionError.code, conversionError.message));
         return;
-    }
-    if (live && m_requests->deviceBusy() && isMotionEditor(converted.command.operation)) {
-        updateLiveState(); appendLog(m_liveReason->text()); return;
-    }
-    if (live && m_requestActive && !m_requests->canInterruptWithStop(converted.command)) {
-        updateLiveState(); appendLog(m_liveReason->text()); return;
     }
     m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"使用当前已启用版本\n")
                                        : QString::fromUtf8(u8"使用当前已保存草稿\n")) + previewText(converted));
