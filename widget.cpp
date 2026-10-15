@@ -8,6 +8,7 @@
 #include "src/transport/serialtransport.h"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -29,6 +30,7 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
 #include <QSerialPortInfo>
 #include <QSpinBox>
@@ -42,6 +44,7 @@
 #include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTextEdit>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <limits>
 
@@ -239,7 +242,7 @@ void Widget::buildUi()
     resize(1100, 740);
     auto *root = new QVBoxLayout(this);
     auto *versions = new QHBoxLayout;
-    m_draftVersion = new QLabel(QString::fromUtf8(u8"草稿：未加载"), this);
+    m_draftVersion = new QLabel(QString::fromUtf8(u8"配置：未加载"), this);
     m_activeVersion = new QLabel(QString::fromUtf8(u8"启用：无"), this);
     m_validationState = new QLabel(QString::fromUtf8(u8"校验：待校验"), this);
     m_draftVersion->setObjectName("draftVersion"); m_activeVersion->setObjectName("activeVersion");
@@ -306,14 +309,11 @@ void Widget::buildUi()
     fieldUp->setObjectName("fieldUp");
     auto *fieldDown = new QPushButton(QString::fromUtf8(u8"下移"), this);
     fieldDown->setObjectName("fieldDown");
-    auto *saveFormat = new QPushButton(QString::fromUtf8(u8"保存到草稿"), this);
-    saveFormat->setObjectName("saveFields");
     addField->setToolTip(QString::fromUtf8(u8"在字段表末尾增加一行。"));
     removeField->setToolTip(QString::fromUtf8(u8"删除当前选中的字段行。"));
     fieldUp->setToolTip(QString::fromUtf8(u8"把选中字段提前一个读取顺序。"));
     fieldDown->setToolTip(QString::fromUtf8(u8"把选中字段推后一个读取顺序。"));
-    saveFormat->setToolTip(QString::fromUtf8(u8"保存编辑，需另行校验和启用。"));
-    for (auto *button : {addField, removeField, fieldUp, fieldDown, saveFormat}) fieldButtons->addWidget(button);
+    for (auto *button : {addField, removeField, fieldUp, fieldDown}) fieldButtons->addWidget(button);
     fieldButtons->addStretch();
     formatLayout->addLayout(fieldButtons);
     tabs->addTab(scrollPage(formatPage), QString::fromUtf8(u8"客户协议格式"));
@@ -397,13 +397,10 @@ void Widget::buildUi()
     addMapping->setObjectName("addMapping");
     auto *removeMapping = new QPushButton(QString::fromUtf8(u8"删除选中映射"), this);
     removeMapping->setObjectName("removeMapping");
-    auto *saveMapping = new QPushButton(QString::fromUtf8(u8"保存到草稿"), this); saveMapping->setObjectName("saveMappings");
     addMapping->setToolTip(QString::fromUtf8(u8"将下方填写的新映射添加到表格末尾。"));
     removeMapping->setToolTip(QString::fromUtf8(u8"删除当前选中的映射；保存前仍可重新导入配置。"));
-    saveMapping->setToolTip(saveFormat->toolTip());
-    mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping); mappingButtons->addWidget(saveMapping);
+    mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping);
     removeMapping->setEnabled(false);
-    // 保存入口放在列表旁，常用编辑在同一页完成。
     mappingButtons->addStretch(); mappingLayout->insertLayout(1, mappingButtons);
     tabs->addTab(scrollPage(mappingPage), QString::fromUtf8(u8"命令映射"));
 
@@ -432,10 +429,6 @@ void Widget::buildUi()
     deviceForm->addRow(QString::fromUtf8(u8"默认运动速度"), m_speed);
     deviceForm->addRow(QString::fromUtf8(u8"最小位置"), m_minPosition);
     deviceForm->addRow(QString::fromUtf8(u8"最大位置"), m_maxPosition);
-    auto *saveDevice = new QPushButton(QString::fromUtf8(u8"保存到草稿"), this);
-    saveDevice->setObjectName("saveDevice");
-    saveDevice->setToolTip(saveFormat->toolTip());
-    deviceForm->addRow(saveDevice);
     deviceLayout->addWidget(deviceGroup);
 
     auto *serialGroup = new QGroupBox(QString::fromUtf8(u8"下游串口连接"), this);
@@ -478,33 +471,45 @@ void Widget::buildUi()
     m_advancedJson->setObjectName("advancedJson");
     m_advancedJson->setFontFamily(QStringLiteral("Consolas"));
     advancedLayout->addWidget(m_advancedJson);
-    auto *applyJson = new QPushButton(QString::fromUtf8(u8"应用到草稿"), this);
+    auto *applyJson = new QPushButton(QString::fromUtf8(u8"应用 JSON"), this);
     applyJson->setObjectName("applyJson");
     applyJson->setToolTip(QString::fromUtf8(u8"解析当前 JSON 并刷新中文表单；不会自动启用。"));
     advancedLayout->addWidget(applyJson);
     tabs->addTab(scrollPage(advancedPage), QString::fromUtf8(u8"高级配置"));
 
     auto *configButtons = new QHBoxLayout;
-    auto *importButton = new QPushButton(QString::fromUtf8(u8"导入配置"), this);
+    auto *saveConfig = new QPushButton(QString::fromUtf8(u8"保存配置"), this);
+    saveConfig->setObjectName("saveConfig");
+    saveConfig->setToolTip(QString::fromUtf8(u8"保存各页配置到本地，下次打开自动恢复。"));
+    auto *configButton = new QToolButton(this);
+    configButton->setObjectName("configMenuButton");
+    configButton->setText(QString::fromUtf8(u8"配置"));
+    configButton->setPopupMode(QToolButton::InstantPopup);
+    auto *configMenu = new QMenu(configButton);
+    configMenu->setObjectName("configMenu");
+    configButton->setMenu(configMenu);
+    auto *importButton = configMenu->addAction(QString::fromUtf8(u8"导入配置…"));
     importButton->setObjectName("importConfig");
-    auto *exportButton = new QPushButton(QString::fromUtf8(u8"导出草稿"), this);
+    auto *exportButton = configMenu->addAction(QString::fromUtf8(u8"导出配置…"));
     exportButton->setObjectName("exportConfig");
-    auto *validateButton = new QPushButton(QString::fromUtf8(u8"校验配置"), this);
+    configMenu->addSeparator();
+    auto *validateButton = configMenu->addAction(QString::fromUtf8(u8"校验配置"));
     validateButton->setObjectName("validateConfig");
-    auto *enableButton = new QPushButton(QString::fromUtf8(u8"启用配置"), this);
+    auto *enableButton = configMenu->addAction(QString::fromUtf8(u8"启用配置"));
     enableButton->setObjectName("enableConfig");
-    importButton->setToolTip(QString::fromUtf8(u8"从 JSON 文件载入草稿，不改变当前已启用配置。"));
-    exportButton->setToolTip(QString::fromUtf8(u8"校验并保存当前草稿 JSON。"));
+    importButton->setToolTip(QString::fromUtf8(u8"从 JSON 文件载入配置，不改变当前已启用配置。"));
+    exportButton->setToolTip(QString::fromUtf8(u8"校验并保存当前配置 JSON。"));
     validateButton->setToolTip(QString::fromUtf8(u8"检查帧边界、字段顺序、命令映射、换算和设备参数。"));
-    enableButton->setToolTip(QString::fromUtf8(u8"把已校验草稿复制为新的运行快照；在途请求不允许切换版本。"));
-    for (auto *button : {importButton, exportButton, validateButton, enableButton}) configButtons->addWidget(button);
+    enableButton->setToolTip(QString::fromUtf8(u8"把已校验配置复制为新的运行快照；在途请求不允许切换版本。"));
+    configButtons->addWidget(saveConfig);
+    configButtons->addWidget(configButton);
     configButtons->addStretch();
     root->addLayout(configButtons);
 
     auto *debugGroup = new QGroupBox(QString::fromUtf8(u8"调试与运行"), this);
     auto *debugLayout = new QVBoxLayout(debugGroup);
     auto *inputLayout = new QHBoxLayout;
-    m_inputEncoding = new QLabel(QString::fromUtf8(u8"草稿编码：未确定"), this);
+    m_inputEncoding = new QLabel(QString::fromUtf8(u8"配置编码：未确定"), this);
     m_input = new QLineEdit(this);
     m_input->setObjectName("customerInput");
     m_input->setPlaceholderText(QString::fromUtf8(u8"客户报文"));
@@ -515,7 +520,7 @@ void Widget::buildUi()
     m_cancelButton = new QPushButton(QString::fromUtf8(u8"取消等待"), this);
     m_cancelButton->setObjectName("cancelButton");
     m_cancelButton->setToolTip(QString::fromUtf8(u8"只取消软件等待，不会向设备发送停止命令。"));
-    m_previewButton->setToolTip(QString::fromUtf8(u8"使用当前草稿解析和组帧，不访问串口。"));
+    m_previewButton->setToolTip(QString::fromUtf8(u8"使用当前配置解析和组帧，不访问串口。"));
     inputLayout->addWidget(m_inputEncoding);
     inputLayout->addWidget(m_input, 1);
     inputLayout->addWidget(m_previewButton);
@@ -582,7 +587,6 @@ void Widget::buildUi()
         QJsonObject external = m_draftRoot.value("external").toObject(); external.insert("fields", fields);
         m_draftRoot.insert("external", external); loadUiFromDraft(); m_fieldTable->selectRow(row + 1); markDraftDirty();
     });
-    connect(saveFormat, &QPushButton::clicked, this, &Widget::saveUiToDraft);
     connect(addMapping, &QPushButton::clicked, this, [this]() {
         QJsonObject mapping;
         if (!readNewMapping(&mapping)) return;
@@ -607,13 +611,12 @@ void Widget::buildUi()
     connect(m_mappingTable,&QTableWidget::currentCellChanged,this,[removeMapping](int row,int,int,int) {
         removeMapping->setEnabled(row>=0);
     });
-    connect(saveMapping, &QPushButton::clicked, this, &Widget::saveUiToDraft);
-    connect(saveDevice, &QPushButton::clicked, this, &Widget::saveUiToDraft);
+    connect(saveConfig, &QPushButton::clicked, this, &Widget::saveConfiguration);
     connect(applyJson, &QPushButton::clicked, this, &Widget::applyAdvancedJson);
-    connect(importButton, &QPushButton::clicked, this, &Widget::importDraft);
-    connect(exportButton, &QPushButton::clicked, this, &Widget::exportDraft);
-    connect(validateButton, &QPushButton::clicked, this, &Widget::validateDraft);
-    connect(enableButton, &QPushButton::clicked, this, &Widget::enableDraft);
+    connect(importButton, &QAction::triggered, this, &Widget::importDraft);
+    connect(exportButton, &QAction::triggered, this, &Widget::exportDraft);
+    connect(validateButton, &QAction::triggered, this, &Widget::validateDraft);
+    connect(enableButton, &QAction::triggered, this, &Widget::enableDraft);
     connect(refreshPort, &QPushButton::clicked, this, &Widget::refreshPorts);
 }
 
@@ -624,7 +627,7 @@ void Widget::connectSignals()
         m_jsonDirty = true;
         m_draftValid = false;
         m_deviceConfirmed->setChecked(false);
-        m_draftVersion->setText(QString::fromUtf8(u8"草稿：JSON 未应用"));
+        m_draftVersion->setText(QString::fromUtf8(u8"配置：JSON 未应用"));
         m_validationState->setText(QString::fromUtf8(u8"校验：待应用"));
         updateLiveState();
     });
@@ -774,7 +777,7 @@ void Widget::loadInitialDraft()
         QJsonObject draft;
         if (m_draftStore.load(&draft, &restoreError)) {
             m_draftRoot = draft; loadUiFromDraft();
-            appendLog(QString::fromUtf8(u8"已恢复本地草稿：") + m_draftStore.filePath());
+            appendLog(QString::fromUtf8(u8"已恢复本地配置：") + m_draftStore.filePath());
             return;
         }
     }
@@ -813,7 +816,7 @@ bool Widget::persistDraft(const QJsonObject &draft)
     // 写盘失败不得显示“已保存”，也不得校验旧内存值来掩盖当前未保存的编辑。
     if (!m_jsonDirty) m_formDirty = true;
     m_draftValid = false; m_deviceConfirmed->setChecked(false);
-    m_draftVersion->setText(QString::fromUtf8(u8"草稿：未保存"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
     m_validationState->setText(QString::fromUtf8(u8"保存失败：") + error.message);
     appendLog(m_validationState->text()); updateLiveState();
     return false;
@@ -1341,7 +1344,7 @@ void Widget::loadUiFromDraft()
     m_maxPosition->setValue(device.value("maxPositionUm").toInt(60000));
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(m_draftRoot).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
-    m_draftVersion->setText(QString::fromUtf8(u8"草稿：已载入"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：已载入"));
     m_validationState->setText(QString::fromUtf8(u8"校验：待校验"));
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
@@ -1353,6 +1356,18 @@ void Widget::loadUiFromDraft()
     updateTableControls();
     refreshMappingSummaries();
     updateLiveState();
+}
+
+bool Widget::saveConfiguration()
+{
+    QWidget *editor = QApplication::focusWidget();
+    if (editor && isAncestorOf(editor)) editor->clearFocus();
+    if (m_formDirty && m_jsonDirty) {
+        m_validationState->setText(QString::fromUtf8(u8"保存失败：表单和 JSON 都有修改，请在高级配置中选择要保留的内容"));
+        appendLog(m_validationState->text());
+        return false;
+    }
+    return m_jsonDirty ? applyAdvancedJson() : saveUiToDraft();
 }
 
 bool Widget::saveUiToDraft()
@@ -1370,7 +1385,7 @@ bool Widget::saveUiToDraft()
 bool Widget::collectUiDraft(QJsonObject *draft)
 {
     if (!synchronizeFieldNames()) return false;
-    // 所有数字先严格读取，任何失败都保留旧草稿；不能把 abc 或小数隐式保存成 0。
+    // 所有数字先严格读取，任何失败都保留旧配置；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
         bool ok = false;
         *value = text.toLongLong(&ok);
@@ -1444,13 +1459,13 @@ bool Widget::storeUiDraft(const QJsonObject &root)
     const QSignalBlocker jsonBlocker(m_advancedJson);
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
-    m_draftVersion->setText(QString::fromUtf8(u8"草稿：已保存"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
     m_validationState->setText(QString::fromUtf8(u8"校验：待校验"));
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
     m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
-    appendLog(QString::fromUtf8(u8"草稿已保存到本地；当前已启用版本未改变。"));
+    appendLog(QString::fromUtf8(u8"配置已保存到本地；当前已启用版本未改变。"));
     refreshMappingSummaries(); updateMappingControls(); updateLiveState();
     return true;
 }
@@ -1463,17 +1478,16 @@ void Widget::markDraftDirty()
     m_deviceConfirmed->setChecked(false);
     updateTableControls();
     refreshMappingSummaries();
-    m_draftVersion->setText(QString::fromUtf8(u8"草稿：未保存"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
     m_validationState->setText(QString::fromUtf8(u8"校验：待保存"));
     updateLiveState();
 }
 
 bool Widget::draftSaved()
 {
-    // “表单”“草稿”“启用快照”是三个不同状态。未保存表单绝不能被旧草稿的校验成功掩盖。
+    // “表单”“配置”“启用快照”是三个不同状态。未保存表单绝不能被旧配置的校验成功掩盖。
     if (!m_formDirty && !m_jsonDirty) return true;
-    const QString reason = m_jsonDirty ? QString::fromUtf8(u8"请先应用高级 JSON 到草稿。")
-                                      : QString::fromUtf8(u8"请先点击“保存到草稿”，再校验、启用、预览或导出。");
+    const QString reason = QString::fromUtf8(u8"请先点击“保存配置”，再校验、启用、预览或导出。");
     m_validationState->setText(QString::fromUtf8(u8"校验：") + reason);
     appendLog(reason);
     return false;
@@ -1533,13 +1547,13 @@ void Widget::validateDraft()
     }
     m_validatedDraft = config;
     m_draftValid = true;
-    m_draftVersion->setText(QString::fromUtf8(u8"草稿：%1").arg(config.version.left(12)));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：%1").arg(config.version.left(12)));
     int pending = 0;
     for (const QJsonValue &value : config.root.value("mappings").toArray())
         if (!QushengCommandCatalog::isExecutable(value.toObject().value("operation").toString())) ++pending;
     m_validationState->setText(pending ? QString::fromUtf8(u8"校验：通过 (%1 条待实现)").arg(pending)
                                       : QString::fromUtf8(u8"校验：通过"));
-    appendLog(QString::fromUtf8(u8"配置校验成功，草稿版本 %1").arg(config.version.left(12)));
+    appendLog(QString::fromUtf8(u8"配置校验成功，配置版本 %1").arg(config.version.left(12)));
     updateLiveState();
 }
 
@@ -1552,7 +1566,7 @@ void Widget::enableDraft()
         return;
     }
     if (!m_draftValid) {
-        m_validationState->setText(QString::fromUtf8(u8"启用失败：请先保存并校验草稿"));
+        m_validationState->setText(QString::fromUtf8(u8"启用失败：请先保存并校验配置"));
         appendLog(m_validationState->text());
         return;
     }
@@ -1569,7 +1583,7 @@ void Widget::enableDraft()
     m_validationState->setText(pending ? QString::fromUtf8(u8"校验：通过 (%1 条待实现)").arg(pending)
                                       : QString::fromUtf8(u8"校验：通过"));
     m_deviceConfirmed->setChecked(false);
-    appendLog(QString::fromUtf8(u8"已启用配置快照；真实发送前还需勾选设备参数确认项。"));
+    appendLog(QString::fromUtf8(u8"已启用配置快照；报文调试发送读取当前编辑。"));
     updateLiveState();
 }
 
@@ -1585,7 +1599,8 @@ bool Widget::applyAdvancedJson()
     if (!persistDraft(document.object())) return false;
     m_draftRoot = document.object();
     loadUiFromDraft();
-    appendLog(QString::fromUtf8(u8"高级 JSON 已应用到草稿；当前已启用版本未改变。"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
+    appendLog(QString::fromUtf8(u8"高级 JSON 已应用到配置；当前已启用版本未改变。"));
     return true;
 }
 
@@ -1606,7 +1621,7 @@ void Widget::closeEvent(QCloseEvent *event)
     auto *layout = new QVBoxLayout(&prompt);
     layout->addWidget(new QLabel(conflict
         ? QString::fromUtf8(u8"表单和高级 JSON 都有修改，请取消关闭并选择要保存的内容。")
-        : QString::fromUtf8(u8"是否保存修改到草稿后关闭？"), &prompt));
+        : QString::fromUtf8(u8"是否保存修改到配置后关闭？"), &prompt));
     auto *buttons = new QDialogButtonBox(&prompt);
     layout->addWidget(buttons);
     auto *save = buttons->addButton(QString::fromUtf8(u8"保存"), QDialogButtonBox::AcceptRole);
@@ -1625,13 +1640,13 @@ void Widget::closeEvent(QCloseEvent *event)
         return;
     }
     if (choice == SaveDraft) {
-        const bool saved = m_jsonDirty ? applyAdvancedJson() : saveUiToDraft();
+        const bool saved = saveConfiguration();
         if (saved) {
             event->accept();
             return;
         }
     }
-    // 取消、关闭提示框或保存失败都保留编辑窗口与原落盘草稿。
+    // 取消、关闭提示框或保存失败都保留编辑窗口与原落盘配置。
     event->ignore();
 }
 
@@ -1654,7 +1669,8 @@ void Widget::importDraft()
     if (!persistDraft(document.object())) return;
     m_draftRoot = document.object();
     loadUiFromDraft();
-    appendLog(QString::fromUtf8(u8"配置已导入为草稿；当前已启用版本未改变。"));
+    m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
+    appendLog(QString::fromUtf8(u8"配置已导入并保存到本地；当前已启用版本未改变。"));
 }
 
 void Widget::exportDraft()
@@ -1785,7 +1801,7 @@ void Widget::preview(bool live)
 {
     m_targetOutput->clear();
     if (!live && !draftSaved()) {
-        m_previewOutput->setPlainText(QString::fromUtf8(u8"预览暂停：请先保存表单到草稿，或应用高级 JSON。"));
+        m_previewOutput->setPlainText(QString::fromUtf8(u8"预览暂停：请先点击“保存配置”。"));
         return;
     }
     ProtocolConfig config;
@@ -1815,7 +1831,7 @@ void Widget::preview(bool live)
         return;
     }
     m_previewOutput->setPlainText((live ? QString::fromUtf8(u8"报文调试：使用当前编辑内容\n")
-                                       : QString::fromUtf8(u8"使用当前已保存草稿\n")) + previewText(converted));
+                                       : QString::fromUtf8(u8"使用当前已保存配置\n")) + previewText(converted));
     m_targetOutput->setPlainText(QString::fromUtf8(u8"预览帧（未发送）：\n")
                                  + converted.targetFrame.toHex(' ').toUpper());
     if (!live) {

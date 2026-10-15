@@ -39,6 +39,7 @@ private:
     void loadInitialDraft();
     bool persistDraft(const QJsonObject &draft);
     void loadUiFromDraft();
+    bool saveConfiguration();
     bool saveUiToDraft();
     bool collectUiDraft(QJsonObject *draft);
     bool storeUiDraft(const QJsonObject &draft);
