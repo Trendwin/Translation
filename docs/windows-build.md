@@ -1,6 +1,6 @@
 # Windows 构建与运行
 
-可使用 `C:\Qt\Qt5.14.2\5.14.2\mingw73_32` 的 Qt 5.14.2 和 `C:\Qt\Qt5.14.2\Tools\mingw730_32` 的 GCC 7.3.0，或 Qt 的 MSVC2017 kit。应用、核心测试、界面测试共用 `build-encoding.pri`：MSVC 显式 `/utf-8`，MinGW 显式设置输入与执行字符集为 UTF-8。
+默认使用MSVC，Qt为 `C:\Qt\Qt5.14.2\5.14.2\msvc2017`（32位）。本机可用MSVC2022 14.44的x86工具链；已有MSVC2017也可使用对应开发命令行。应用和测试共用 `build-encoding.pri`，MSVC显式 `/utf-8`。MinGW仅保留历史兼容记录，不作为每轮默认验证。
 
 ## 命令目录乱码修正
 
@@ -12,33 +12,32 @@
 
 本次修复实际使用本机 MSVC2017 14.16.27023 / Qt5.14.2 32位和 MinGW GCC7.3.0 / Qt5.14.2 32位分别全量构建应用、核心和界面测试，两套环境均为38项核心、14项界面测试通过，无失败或跳过。新增用截图中的指令独立核对文字，并检查全部59项；两套环境均渲染展开的命令下拉并确认中文正常。
 
-## PowerShell 示例
+## MSVC构建示例
 
-在项目目录执行。构建在独立目录中进行，避免复用其他 kit 的目标文件：
+打开Visual Studio的 **x86 Native Tools Command Prompt**，在项目根目录执行。不同套件分别使用独立构建目录，按本轮修改选择需要构建及运行的测试：
 
-```powershell
-$env:PATH = 'C:\Qt\Qt5.14.2\Tools\mingw730_32\bin;C:\Qt\Qt5.14.2\5.14.2\mingw73_32\bin;' + $env:PATH
-New-Item -ItemType Directory -Force build/app,build/core,build/ui,build/sdk-requests,build/sdk-replies | Out-Null
-qmake Translation.pro -o build/app/Makefile
-mingw32-make -C build/app -j4
-qmake tests/tests.pro -o build/core/Makefile
-mingw32-make -C build/core -j4
-& build/core/release/tst_framework.exe
-qmake tests/sdk-requests.pro -o build/sdk-requests/Makefile
-mingw32-make -C build/sdk-requests -j4
-& build/sdk-requests/release/tst_sdk_requests.exe
-qmake tests/sdk-replies.pro -o build/sdk-replies/Makefile
-mingw32-make -C build/sdk-replies -j4
-& build/sdk-replies/release/tst_sdk_replies.exe
-qmake tests/ui-tests.pro -o build/ui/Makefile
-mingw32-make -C build/ui -j4
-$env:QT_QPA_PLATFORM = 'offscreen'
-$env:QT_QPA_FONTDIR = 'C:\Windows\Fonts'
-$env:TRANSLATION_RENDER_DIR = (Join-Path (Get-Location) 'build/screenshots')
-& build/ui/release/tst_widget.exe
-Remove-Item Env:QT_QPA_PLATFORM
-Remove-Item Env:QT_QPA_FONTDIR
+```bat
+set "PATH=C:\Qt\Qt5.14.2\5.14.2\msvc2017\bin;%PATH%"
+mkdir build-msvc\app build-msvc\core build-msvc\ui
+cd build-msvc\app
+qmake ..\..\Translation.pro
+nmake /nologo
+cd ..\core
+qmake ..\..\tests\tests.pro
+nmake /nologo
+release\tst_framework.exe
+cd ..\ui
+qmake ..\..\tests\ui-tests.pro
+nmake /nologo
+set "QT_QPA_PLATFORM=offscreen"
+set "QT_QPA_FONTDIR=C:\Windows\Fonts"
+release\tst_widget.exe
+set "QT_QPA_PLATFORM="
+set "QT_QPA_FONTDIR="
+cd ..\..
 ```
+
+SDK请求/回告有独立工程 `tests/sdk-requests.pro`、`tests/sdk-replies.pro`，变更SDK时在各自独立目录按相同qmake、nmake流程验证。已有构建目录无需重复mkdir。原生窗口检查时使用Windows平台，不设置offscreen。
 
 应用输出为 `bin/release/Translation.exe`。实际桌面运行前清除测试用的 offscreen 环境变量；确保 PATH 中的 Qt DLL 和编译器 kit 一致，不能混用 MinGW/MSVC 的 DLL。
 
@@ -63,3 +62,5 @@ Remove-Item Env:QT_QPA_FONTDIR
 0x11提供前进、停止、后退、复位四个可发送选项。前进/后退仅编辑距离来源，停止/复位无距离控件、固定零距离。固定模式、默认速度等说明保留在文档，不再常驻界面。旧相对配置加载时出现临时兼容项，行摘要标“旧版”。字段表、映射表和保存按钮应直接可见；调试页保留预览、发送、原始回告、解析与日志。详见expert-ui.md。
 
 停止/复位开放验证：两套kit均成功构建应用，59项核心、23项界面通过。导入motor-actions.json预览!S\r、!H\r，分别应含11420003E8000000、11440003E8000000载荷。真实操作须启用并确认设备参数。停止同一电机运动时可直接发送映射好的停止报文；停止仅替代本地运动等待，设备停稳仍由回告及查询确认。
+
+2026-10-15请求流程调整：移除运动应答后的自动查询及动作完成计时，手动查询保留。新动作发送后只应看到一条0x11；应答后显示完成未确认。旧相对运动仍有一次前置0x12，随后一次0x11，不继续查询。未知占用须由手动查询同一电机确认空闲及有效位置后解除。

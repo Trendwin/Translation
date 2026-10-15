@@ -715,7 +715,7 @@ void Widget::connectSignals()
     });
     connect(m_service, &TranslationService::outgoingFrame, this,
             [this](quint64, const QByteArray &frame) {
-        // 相对运动先查位置、再下运动、最后监测完成；必须保留每次真实下发，不能覆盖成只剩最后一帧。
+        // 相对运动先查位置、再下运动；应答后不再主动查询；必须保留每次真实下发，不能覆盖成只剩最后一帧。
         m_targetOutput->append(QString::fromUtf8(u8"实际下发：\n") + frame.toHex(' ').toUpper());
     });
     connect(m_service, &TranslationService::rawDataReceived, this,
@@ -1759,7 +1759,7 @@ void Widget::updateLiveState()
     else if (m_requestActive && !stopInterrupt)
         reason = QString::fromUtf8(u8"执行中");
     else if (m_requests->deviceBusy() && motionInput)
-        reason = QString::fromUtf8(u8"设备运动中或状态未知");
+        reason = QString::fromUtf8(u8"设备运动中或状态未知，请手动查询状态");
     else if (recoveryQuery)
         reason = QString::fromUtf8(u8"就绪（查询）");
     else reason = QString::fromUtf8(u8"就绪");
