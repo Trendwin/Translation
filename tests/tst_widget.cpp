@@ -41,6 +41,10 @@ class WidgetTest : public QObject
 private slots:
     void initTestCase();
     void debugSendNeedsNoWorkflowOrSavedDraft();
+    void addEditedMappingAppendsWithoutOverwriting();
+    void addBlankMappingBindsLastRow();
+    void addCompletesPendingRowWithoutExtraBlank();
+    void addMappingToEmptyTable();
     void draftLifecycleAndVisibleFailures();
     void advancedJsonAndDynamicControls();
     void simpleMappingEditorAndInvalidNumbers();
@@ -408,6 +412,89 @@ static void applyRoot(Widget &widget, const QJsonObject &root)
 {
     widget.findChild<QTextEdit *>("advancedJson")->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson()));
     button(widget, "applyJson")->click();
+}
+
+static QJsonArray mappingRows(Widget &widget)
+{
+    auto *table=widget.findChild<QTableWidget *>("mappingTable"); QJsonArray rows;
+    for (int row=0;row<table->rowCount();++row)
+        rows.append(table->item(row,0)->data(Qt::UserRole).toJsonObject());
+    return rows;
+}
+
+static void editResetMapping(Widget &widget)
+{
+    widget.findChild<QLineEdit *>("mappingCode")->setText("Z");
+    auto *operation=widget.findChild<QComboBox *>("mappingOperation");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+}
+
+void WidgetTest::addEditedMappingAppendsWithoutOverwriting()
+{
+    const QString path=freshDraftPath(); Widget widget(nullptr,path);
+    auto *table=widget.findChild<QTableWidget *>("mappingTable");
+    const QJsonArray original=mappingRows(widget);
+    table->setCurrentCell(0,1);
+    editResetMapping(widget); button(widget,"addMapping")->click();
+    QCOMPARE(table->rowCount(),original.size()+1);
+    const QJsonArray rows=mappingRows(widget);
+    for (int i=0;i<original.size();++i) QCOMPARE(rows.at(i),original.at(i));
+    QCOMPARE(table->currentRow(),original.size());
+    QCOMPARE(rows.last().toObject().value("commandCode").toString(),QStringLiteral("Z"));
+    QCOMPARE(rows.last().toObject().value("operation").toString(),QStringLiteral("MOTOR_RESET"));
+    QCOMPARE(widget.findChild<QLineEdit *>("mappingCode")->text(),QStringLiteral("Z"));
+    const QString renderDir=qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!renderDir.isEmpty()) {
+        widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+        widget.show(); QCoreApplication::processEvents(); QDir().mkpath(renderDir);
+        QVERIFY(widget.grab().save(QDir(renderDir).filePath("append-reset-mapping.png")));
+    }
+    button(widget,"saveMappings")->click();
+    Widget restored(nullptr,path); QCOMPARE(mappingRows(restored),rows);
+}
+
+void WidgetTest::addBlankMappingBindsLastRow()
+{
+    Widget widget(nullptr,freshDraftPath());
+    auto *table=widget.findChild<QTableWidget *>("mappingTable");
+    const QJsonArray original=mappingRows(widget);
+    table->setCurrentCell(0,2); button(widget,"addMapping")->click();
+    QCOMPARE(table->currentRow(),original.size());
+    QVERIFY(widget.findChild<QLineEdit *>("mappingCode")->text().isEmpty());
+    editResetMapping(widget); button(widget,"saveMappings")->click();
+    const QJsonArray rows=mappingRows(widget); QCOMPARE(rows.size(),original.size()+1);
+    for (int i=0;i<original.size();++i) QCOMPARE(rows.at(i),original.at(i));
+    QCOMPARE(rows.last().toObject().value("commandCode").toString(),QStringLiteral("Z"));
+    // 明确保存的编辑是新的原行，之后再次添加不能撤销该次保存。
+    widget.findChild<QLineEdit *>("mappingCode")->setText("H"); button(widget,"saveMappings")->click();
+    const QJsonArray saved=mappingRows(widget);
+    button(widget,"addMapping")->click();
+    QCOMPARE(table->rowCount(),saved.size()+1);
+    for (int i=0;i<saved.size();++i) QCOMPARE(mappingRows(widget).at(i),saved.at(i));
+}
+
+void WidgetTest::addCompletesPendingRowWithoutExtraBlank()
+{
+    Widget widget(nullptr,freshDraftPath());
+    const QJsonArray original=mappingRows(widget);
+    button(widget,"addMapping")->click();
+    button(widget,"addMapping")->click(); // 空白新行未填完时也不能积累更多空行。
+    QCOMPARE(mappingRows(widget).size(),original.size()+1);
+    editResetMapping(widget); button(widget,"addMapping")->click();
+    const QJsonArray rows=mappingRows(widget); QCOMPARE(rows.size(),original.size()+1);
+    for (int i=0;i<original.size();++i) QCOMPARE(rows.at(i),original.at(i));
+    QCOMPARE(rows.last().toObject().value("commandCode").toString(),QStringLiteral("Z"));
+}
+
+void WidgetTest::addMappingToEmptyTable()
+{
+    Widget widget(nullptr,freshDraftPath()); QJsonObject root=draftRoot(widget);
+    root.insert("mappings",QJsonArray()); applyRoot(widget,root);
+    button(widget,"addMapping")->click();
+    auto *table=widget.findChild<QTableWidget *>("mappingTable");
+    QCOMPARE(table->rowCount(),1); QCOMPARE(table->currentRow(),0);
+    editResetMapping(widget); button(widget,"saveMappings")->click();
+    QCOMPARE(mappingRows(widget).first().toObject().value("commandCode").toString(),QStringLiteral("Z"));
 }
 
 static int parameterRow(QTableWidget *table, const QString &key)
