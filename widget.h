@@ -62,6 +62,7 @@ private:
     void addMappingRow(const QJsonObject &mapping = QJsonObject());
     void loadMappingEditor(int row);
     bool saveMappingEditor();
+    bool readMappingEditor(QJsonObject *mapping);
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
     void rebuildMappingOmissions(const QJsonObject &input);
@@ -115,6 +116,8 @@ private:
     QLineEdit *m_mappingMultiplier = nullptr;
     QGroupBox *m_mappingOmissions = nullptr;
     int m_mappingEditorRow = -1;
+    // 选中或明确保存时的原行；切换目标的中间保存不能成为“添加”覆盖旧行的依据。
+    QJsonObject m_mappingEditorOriginal;
     bool m_loadingMapping = false;
     bool m_syncingFields = false;
     bool m_mappingEditorDirty = false;

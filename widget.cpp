@@ -583,8 +583,29 @@ void Widget::buildUi()
     });
     connect(saveFormat, &QPushButton::clicked, this, &Widget::saveUiToDraft);
     connect(addMapping, &QPushButton::clicked, this, [this]() {
-        if (!saveMappingEditor()) return;
-        addMappingRow(); m_mappingTable->selectRow(m_mappingTable->rowCount() - 1); m_mappingEditorDirty = true; markDraftDirty();
+        QJsonObject mapping;
+        const bool edited = m_mappingEditorRow >= 0 && (m_mappingEditorDirty
+            || m_mappingTable->item(m_mappingEditorRow,0)->data(Qt::UserRole).toJsonObject() != m_mappingEditorOriginal);
+        if (edited && !readMappingEditor(&mapping)) return;
+        // 添加不把下方编辑写回旧行。已填写的新指令直接追加；正在填写的空白新行则就地完成。
+        const bool pendingRow = edited && m_mappingEditorOriginal.value("commandCode").toString().isEmpty();
+        int row;
+        {
+            const QSignalBlocker blocker(m_mappingTable);
+            if (pendingRow) {
+                row = m_mappingEditorRow; updateMappingSummary(row,mapping);
+            } else {
+                if (edited) updateMappingSummary(m_mappingEditorRow,m_mappingEditorOriginal);
+                addMappingRow(mapping); row = m_mappingTable->rowCount()-1;
+            }
+            // 选中与编辑对象必须一起切换，不能依赖selectRow是否触发currentCellChanged。
+            m_mappingTable->setCurrentCell(row,0); m_mappingTable->selectRow(row);
+        }
+        loadMappingEditor(row);
+        m_mappingEditorDirty = mapping.isEmpty();
+        m_mappingTable->scrollToItem(m_mappingTable->item(row,0));
+        m_mappingCode->setFocus();
+        markDraftDirty();
     });
     connect(removeMapping, &QPushButton::clicked, this, [this]() {
         const int row = m_mappingTable->currentRow();
@@ -1030,6 +1051,7 @@ void Widget::loadMappingEditor(int row)
     m_loadingMapping = true; m_mappingEditorRow = row;
     m_mappingEditor->setEnabled(row >= 0);
     const QJsonObject mapping = row >= 0 ? m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject() : QJsonObject();
+    m_mappingEditorOriginal = mapping;
     m_mappingCode->setText(mapping.value("commandCode").toString());
     const QString operation = mapping.value("operation").toString("MOTOR_FORWARD");
     m_editorOperation = operation;
@@ -1264,6 +1286,17 @@ void Widget::updateMappingControls()
 bool Widget::saveMappingEditor()
 {
     if (m_mappingEditorRow < 0 || !m_mappingEditorDirty) return true;
+    QJsonObject mapping;
+    if (!readMappingEditor(&mapping)) return false;
+    updateMappingSummary(m_mappingEditorRow, mapping);
+    if (!isMotionEditor(mapping.value("operation").toString()))
+        loadCatalogParameters(mapping.value("parameters").toObject());
+    m_mappingEditorDirty = false; m_multiplierChanged = false;
+    return true;
+}
+
+bool Widget::readMappingEditor(QJsonObject *result)
+{
     auto fail = [this](const QString &reason) { m_validationState->setText(QString::fromUtf8(u8"保存失败：") + reason); appendLog(m_validationState->text()); return false; };
     QJsonObject mapping = m_mappingTable->item(m_mappingEditorRow, 0)->data(Qt::UserRole).toJsonObject();
     if (m_mappingCode->text().trimmed().isEmpty()) return fail(QString::fromUtf8(u8"请填写客户命令。"));
@@ -1327,9 +1360,7 @@ bool Widget::saveMappingEditor()
     if (originalInput.isUndefined() || originalInput.isObject()) {
         if (input.isEmpty()) mapping.remove("input"); else mapping.insert("input", input);
     }
-    updateMappingSummary(m_mappingEditorRow, mapping);
-    if (!isMotionEditor(operation)) loadCatalogParameters(parameters);
-    m_mappingEditorDirty = false; m_multiplierChanged = false;
+    *result = mapping;
     return true;
 }
 
@@ -1483,6 +1514,8 @@ bool Widget::storeUiDraft(const QJsonObject &root)
 {
     if (!persistDraft(root)) return false;
     m_draftRoot = root;
+    if (m_mappingEditorRow >= 0)
+        m_mappingEditorOriginal = m_mappingTable->item(m_mappingEditorRow,0)->data(Qt::UserRole).toJsonObject();
     const QSignalBlocker jsonBlocker(m_advancedJson);
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
