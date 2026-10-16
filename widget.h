@@ -47,8 +47,7 @@ private:
     bool draftSaved();
     void updateTableControls();
     void markDraftDirty();
-    void validateDraft();
-    void enableDraft();
+    void activateSavedConfiguration();
     void importDraft();
     void exportDraft();
     bool applyAdvancedJson();
@@ -85,7 +84,6 @@ private:
     DraftStore m_draftStore;
 
     QJsonObject m_draftRoot;
-    ProtocolConfig m_validatedDraft;
     ProtocolConfig m_activeConfig;
     bool m_draftValid = false;
     bool m_formDirty = false;
