@@ -12,6 +12,7 @@ private slots:
     void shortErrors();
     void deviceInfo();
     void motorAndValve();
+    void motorReservedBytes();
     void hardwareAndSignedRuntime();
     void scalarQueries();
     void interfaceVariants();
@@ -52,6 +53,7 @@ void SdkRepliesTest::replyLayouts_data()
     for (const auto &layout : layouts)
         QTest::newRow(qPrintable(QString::number(layout.code, 16))) << layout.code << QByteArray(layout.length, '\0');
     QTest::newRow("04-optional-board") << 0x04 << QByteArray(29, '\0');
+    QTest::newRow("12-reserved-extension") << 0x12 << QByteArray(14, '\0');
     QTest::newRow("84-raw-extension") << 0x84 << QByteArray::fromHex("00010203010203040506");
 }
 
@@ -117,6 +119,33 @@ void SdkRepliesTest::motorAndValve()
     QCOMPARE(reply.values.value("valveMask").toUInt(), quint32(0x20000001));
     QVERIFY(QushengSdk::decodeReply(0x21, QByteArray::fromHex("0000aabb"), &reply, &error));
     QCOMPARE(reply.basicStatus, QByteArray::fromHex("aabb"));
+}
+
+void SdkRepliesTest::motorReservedBytes()
+{
+    const QByteArray fields=QByteArray::fromHex("00010203300004d2ffffff");
+    QushengSdkReply base,reply;TranslationError error;
+    QVERIFY(QushengSdk::decodeReply(0x12,fields,&base,&error));
+    for(const QByteArray &reserved:{QByteArray(3,'\0'),QByteArray::fromHex("a1b2c3")}) {
+        const QByteArray payload=fields+reserved;
+        QVERIFY(QushengSdk::decodeReply(0x12,payload,&reply,&error));
+        QVERIFY(reply.success);QVERIFY(!error.isValid());QCOMPARE(reply.values,base.values);
+        QCOMPARE(reply.basicStatus,base.basicStatus);QCOMPARE(reply.rawPayload,payload);
+    }
+    // 用户实机截图：状态1、位置3000、负反馈0，末尾三个字节为保留位。
+    const QByteArray captured=QByteArray::fromHex("0000000010000bb8000000000000");
+    QVERIFY(QushengSdk::decodeReply(0x12,captured,&reply,&error));
+    QCOMPARE(reply.values.value("motorState").toInt(),1);QCOMPARE(reply.values.value("positionUm").toUInt(),3000u);
+    QCOMPARE(reply.values.value("feedbackPositionUm").toUInt(),0u);QCOMPARE(reply.values.size(),3);
+    for(int length:{10,12,13,15}) {
+        QVERIFY(!QushengSdk::decodeReply(0x12,QByteArray(length,'\0'),&reply,&error));
+        QCOMPARE(error.code,QStringLiteral("SDK_REPLY_LENGTH"));QVERIFY(reply.values.isEmpty());
+    }
+    QByteArray invalid=captured;invalid[4]=char(0x50);
+    QVERIFY(!QushengSdk::decodeReply(0x12,invalid,&reply,&error));QCOMPARE(error.code,QStringLiteral("SDK_MOTOR_STATE"));
+    QByteArray rejected=captured;rejected[0]=char(7);
+    QVERIFY(QushengSdk::decodeReply(0x12,rejected,&reply,&error));QVERIFY(!reply.success);
+    QCOMPARE(reply.errorCode,quint32(7));QVERIFY(reply.values.isEmpty());
 }
 
 void SdkRepliesTest::hardwareAndSignedRuntime()
