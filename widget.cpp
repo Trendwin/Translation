@@ -8,9 +8,7 @@
 #include "src/transport/serialtransport.h"
 
 #include <QAbstractItemView>
-#include <QAction>
 #include <QApplication>
-#include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -30,7 +28,6 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
-#include <QMenu>
 #include <QPushButton>
 #include <QSerialPortInfo>
 #include <QSpinBox>
@@ -44,7 +41,6 @@
 #include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTextEdit>
-#include <QToolButton>
 #include <QVBoxLayout>
 #include <limits>
 
@@ -238,19 +234,16 @@ Widget::Widget(QWidget *parent, const QString &draftFilePath)
 
 void Widget::buildUi()
 {
-    setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换（报文调试版）"));
+    setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换"));
     resize(1100, 740);
     auto *root = new QVBoxLayout(this);
-    auto *versions = new QHBoxLayout;
     m_draftVersion = new QLabel(QString::fromUtf8(u8"配置：未加载"), this);
     m_activeVersion = new QLabel(QString::fromUtf8(u8"启用：无"), this);
     m_validationState = new QLabel(this);
     m_draftVersion->setObjectName("draftVersion"); m_activeVersion->setObjectName("activeVersion");
     m_validationState->setObjectName("validationState"); m_validationState->setWordWrap(true);
-    versions->addWidget(m_draftVersion);
-    versions->addWidget(m_activeVersion);
-    versions->addWidget(m_validationState, 1);
-    root->addLayout(versions);
+    // 版本诊断仍保留在隐藏的高级页；主界面只在底部显示需要处理的错误。
+    m_draftVersion->hide(); m_activeVersion->hide();
 
     auto *tabs = new QTabWidget(this); tabs->setObjectName("mainTabs");
     root->addWidget(tabs, 1);
@@ -374,7 +367,7 @@ void Widget::buildUi()
     m_mappingParameters->horizontalHeaderItem(2)->setToolTip(QString::fromUtf8(u8"仅固定值需要填写整数；不会自动填零。"));
     connect(m_mappingSearch, &QLineEdit::textChanged, this, &Widget::filterMappingCommands);
     m_mappingSource = new QComboBox(this); m_mappingSource->setObjectName("mappingSource");
-    m_mappingSource->setToolTip(QString::fromUtf8(u8"选择客户报文中的数字参数，或使用固定值。"));
+    m_mappingSource->setToolTip(QString::fromUtf8(u8"选择客户字段、固定值，或无参数报文。"));
     m_mappingValue = new QLineEdit(this); m_mappingValue->setObjectName("mappingValue");
     m_mappingValue->setToolTip(QString::fromUtf8(u8"固定整数。"));
     m_mappingMultiplier = new QLineEdit(this); m_mappingMultiplier->setObjectName("mappingMultiplier");
@@ -382,15 +375,11 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"客户命令"), m_mappingCode);
     editorForm->addRow(QString::fromUtf8(u8"查找"), searchLine);
     editorForm->addRow(QString::fromUtf8(u8"趋盛指令"), m_mappingOperation);
-    editorForm->addRow(QString::fromUtf8(u8"位置来源"), m_mappingSource);
+    editorForm->addRow(QString::fromUtf8(u8"取值来源"), m_mappingSource);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
     editorLayout->addLayout(editorForm);
     editorLayout->addWidget(m_mappingParameters);
-    m_mappingOmissions = new QGroupBox(QString::fromUtf8(u8"省略字段"), this);
-    m_mappingOmissions->setObjectName("mappingOmissions");
-    auto *omissionLayout = new QHBoxLayout(m_mappingOmissions); omissionLayout->setContentsMargins(8, 2, 8, 2);
-    editorLayout->addWidget(m_mappingOmissions);
     mappingLayout->addWidget(m_mappingEditor);
     auto *mappingButtons = new QHBoxLayout;
     auto *addMapping = new QPushButton(QString::fromUtf8(u8"添加命令映射"), this);
@@ -454,16 +443,13 @@ void Widget::buildUi()
     serialLayout->addWidget(m_connectButton);
     serialLayout->addWidget(m_connectionState);
     deviceLayout->addWidget(serialGroup);
-    m_deviceConfirmed = new QCheckBox(QString::fromUtf8(u8"参数已确认"), this);
-    m_deviceConfirmed->setObjectName("deviceConfirmed");
-    m_deviceConfirmed->setToolTip(QString::fromUtf8(
-        u8"该确认只对当前运行会话有效；配置或设备参数变化后必须重新确认。"));
-    deviceLayout->addWidget(m_deviceConfirmed);
     deviceLayout->addStretch();
     tabs->addTab(scrollPage(devicePage), QString::fromUtf8(u8"设备与连接"));
 
     auto *advancedPage = new QWidget(this);
+    advancedPage->setObjectName("advancedPage");
     auto *advancedLayout = new QVBoxLayout(advancedPage);
+    advancedLayout->addWidget(m_draftVersion); advancedLayout->addWidget(m_activeVersion);
     auto *advancedForm = new QFormLayout;
     advancedForm->addRow(m_byteOrderLabel, m_byteOrder);
     advancedLayout->addLayout(advancedForm);
@@ -475,28 +461,23 @@ void Widget::buildUi()
     applyJson->setObjectName("applyJson");
     applyJson->setToolTip(QString::fromUtf8(u8"保存当前 JSON 并刷新中文表单；有效配置自动启用。"));
     advancedLayout->addWidget(applyJson);
-    tabs->addTab(scrollPage(advancedPage), QString::fromUtf8(u8"高级配置"));
+    advancedPage->hide();
 
     auto *configButtons = new QHBoxLayout;
     auto *saveConfig = new QPushButton(QString::fromUtf8(u8"保存配置"), this);
     saveConfig->setObjectName("saveConfig");
     saveConfig->setToolTip(QString::fromUtf8(u8"保存各页配置到本地，下次打开自动恢复。"));
-    auto *configButton = new QToolButton(this);
-    configButton->setObjectName("configMenuButton");
-    configButton->setText(QString::fromUtf8(u8"配置"));
-    configButton->setPopupMode(QToolButton::InstantPopup);
-    auto *configMenu = new QMenu(configButton);
-    configMenu->setObjectName("configMenu");
-    configButton->setMenu(configMenu);
-    auto *importButton = configMenu->addAction(QString::fromUtf8(u8"导入配置…"));
+    auto *importButton = new QPushButton(QString::fromUtf8(u8"导入配置"), this);
     importButton->setObjectName("importConfig");
-    auto *exportButton = configMenu->addAction(QString::fromUtf8(u8"导出配置…"));
+    auto *exportButton = new QPushButton(QString::fromUtf8(u8"导出配置"), this);
     exportButton->setObjectName("exportConfig");
     importButton->setToolTip(QString::fromUtf8(u8"从 JSON 文件导入并保存，有效配置自动启用。"));
     exportButton->setToolTip(QString::fromUtf8(u8"将已保存配置导出为 JSON 文件。"));
-    configButtons->addWidget(saveConfig);
-    configButtons->addWidget(configButton);
-    configButtons->addStretch();
+    const int configWidth = qMax(saveConfig->sizeHint().width(), qMax(importButton->sizeHint().width(), exportButton->sizeHint().width()));
+    for (auto *button : {saveConfig, importButton, exportButton}) {
+        button->setFixedWidth(configWidth); configButtons->addWidget(button);
+    }
+    configButtons->addWidget(m_validationState, 1);
     root->addLayout(configButtons);
 
     auto *debugGroup = new QGroupBox(QString::fromUtf8(u8"调试与运行"), this);
@@ -606,8 +587,8 @@ void Widget::buildUi()
     });
     connect(saveConfig, &QPushButton::clicked, this, &Widget::saveConfiguration);
     connect(applyJson, &QPushButton::clicked, this, &Widget::applyAdvancedJson);
-    connect(importButton, &QAction::triggered, this, &Widget::importDraft);
-    connect(exportButton, &QAction::triggered, this, &Widget::exportDraft);
+    connect(importButton, &QPushButton::clicked, this, &Widget::importDraft);
+    connect(exportButton, &QPushButton::clicked, this, &Widget::exportDraft);
     connect(refreshPort, &QPushButton::clicked, this, &Widget::refreshPorts);
 }
 
@@ -616,8 +597,6 @@ void Widget::connectSignals()
     connect(m_advancedJson, &QTextEdit::textChanged, this, [this]() {
         if (m_loadingUi) return;
         m_jsonDirty = true;
-        m_draftValid = false;
-        m_deviceConfirmed->setChecked(false);
         m_draftVersion->setText(QString::fromUtf8(u8"配置：JSON 未应用"));
         m_validationState->clear();
         updateLiveState();
@@ -643,18 +622,13 @@ void Widget::connectSignals()
                 const QSignalBlocker blocker(m_mappingOperation); selectData(m_mappingOperation, m_editorOperation); return;
             }
             // 新增表单独立于表格；切换目标只改变新表单，不保存或改写已有行。
-            const bool supported = QushengCommandCatalog::isExecutable(operation);
             const bool previousMotion = isMotionEditor(m_editorOperation);
-            const bool omitParameters = isQuery(operation) || QushengCommandCatalog::isStopOrReset(operation);
-            const bool previouslyOmitted = isQuery(m_editorOperation) || QushengCommandCatalog::isStopOrReset(m_editorOperation);
-            if (supported && omitParameters != previouslyOmitted) {
-                for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
-                    if (check->property("omissionAllowed").toBool() && check->property("fieldRole").toString() == "parameter") check->setChecked(omitParameters);
-                if (!omitParameters && m_mappingSource->currentData().toString().isEmpty() && m_mappingSource->count() > 2) m_mappingSource->setCurrentIndex(1);
-            }
-            // 不同指令的参数没有隐含等价关系。完整目录与现有运动模板之间切换时不迁移位置到别的参数。
-            if (!isMotionEditor(operation)) loadCatalogParameters(QJsonObject());
-            else if (!previousMotion) {
+            // 新动作重新选择取值方式；已有表格内容不受影响。
+            updateMappingSources();
+            if (!isMotionEditor(operation)) {
+                selectData(m_mappingSource, isQuery(operation) || QushengCommandCatalog::isStopOrReset(operation) ? "@none" : "@fields");
+                loadCatalogParameters(QJsonObject());
+            } else if (!previousMotion) {
                 selectData(m_mappingSource, ""); m_mappingValue->clear(); m_mappingMultiplier->setText("1");
             }
             m_editorOperation = operation;
@@ -667,13 +641,11 @@ void Widget::connectSignals()
         }
         updateMappingControls();
     });
-    connect(m_mappingSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateMappingControls(); });
+    connect(m_mappingSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateMappingSources(); updateMappingControls(); });
     for (QSpinBox *spin : {m_destination, m_source, m_devId, m_action, m_speed, m_minPosition, m_maxPosition})
         connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
-            m_deviceConfirmed->setChecked(false);
             markDraftDirty();
         });
-    connect(m_deviceConfirmed, &QCheckBox::toggled, this, &Widget::updateLiveState);
     connect(m_connectButton, &QPushButton::clicked, this, [this]() {
         if (m_transport->isConnected()) m_transport->close();
         else if (!m_port->currentData().toString().isEmpty())
@@ -807,7 +779,6 @@ bool Widget::persistDraft(const QJsonObject &draft)
     if (m_draftStore.save(draft, &error)) return true;
     // 写盘失败不得显示“已保存”，也不得校验旧内存值来掩盖当前未保存的编辑。
     if (!m_jsonDirty) m_formDirty = true;
-    m_draftValid = false; m_deviceConfirmed->setChecked(false);
     m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
     m_validationState->setText(QString::fromUtf8(u8"保存失败：") + error.message);
     appendLog(m_validationState->text()); updateLiveState();
@@ -931,7 +902,13 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         label->setToolTip(parameterTip); label->setData(Qt::UserRole, parameter); label->setData(Qt::UserRole + 1, expression); label->setData(Qt::UserRole + 2, false);
         m_mappingParameters->setItem(row, 0, label);
         auto *source = new QComboBox(m_mappingParameters); source->addItem(parameterDefaultText(parameter, operation), "");
-        for (int i = 1; i < m_mappingSource->count(); ++i) source->addItem(m_mappingSource->itemText(i), m_mappingSource->itemData(i));
+        const QJsonArray omitted = mappingOmittedFields();
+        for (int field = 0; field < m_fieldTable->rowCount(); ++field) {
+            const QString name = itemText(m_fieldTable, field, 1);
+            if (comboData(m_fieldTable, field, 2) == "parameter" && comboData(m_fieldTable, field, 3) != "ascii" && !omitted.contains(name))
+                source->addItem(name, name);
+        }
+        source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
         const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
         if (!selected.isEmpty() && source->findData(selected) < 0) source->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(selected), selected);
         selectData(source, selected); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
@@ -1011,39 +988,22 @@ void Widget::resetMappingForm()
     m_mappingCode->clear(); m_mappingSearch->clear();
     selectData(m_mappingOperation,"MOTOR_FORWARD"); m_editorOperation="MOTOR_FORWARD";
     m_mappingValue->clear(); m_mappingMultiplier->setText("1");
-    rebuildMappingOmissions(QJsonObject()); updateMappingSources(); selectData(m_mappingSource,"");
+    updateMappingSources(); selectData(m_mappingSource,"");
     loadCatalogParameters(QJsonObject()); updateMappingControls();
     m_loadingMapping=false;
 }
 
-void Widget::rebuildMappingOmissions(const QJsonObject &input)
+QJsonArray Widget::mappingOmittedFields() const
 {
-    auto *omitLayout = m_mappingOmissions->layout();
-    while (QLayoutItem *item = omitLayout->takeAt(0)) { delete item->widget(); delete item; }
-    QStringList omitted;
-    for (const QJsonValue &field : input.value("omitFields").toArray()) omitted << field.toString();
-    QStringList availableNames;
+    QJsonArray omitted;
+    if (m_mappingSource->currentData().toString() != "@none") return omitted;
     bool commandSeen = false;
-    for (int r = 0; r < m_fieldTable->rowCount(); ++r) {
-        if (comboData(m_fieldTable, r, 2) == "command") commandSeen = true;
-        else if (commandSeen) availableNames << itemText(m_fieldTable, r, 1);
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+        const QString role = comboData(m_fieldTable, row, 2);
+        if (role == "command") commandSeen = true;
+        else if (commandSeen && role == "parameter") omitted.append(itemText(m_fieldTable, row, 1));
     }
-    QStringList all = availableNames;
-    for (const QString &name : omitted) if (!all.contains(name)) all << name;
-    for (const QString &name : all) {
-        const bool available = availableNames.contains(name);
-        auto *check = new QCheckBox(available ? name : QString::fromUtf8(u8"不可省略或未找到：%1").arg(name), m_mappingOmissions);
-        check->setProperty("fieldName", name); check->setChecked(omitted.contains(name));
-        check->setProperty("omissionAllowed", available);
-        for (int r = 0; r < m_fieldTable->rowCount(); ++r)
-            if (itemText(m_fieldTable, r, 1) == name) check->setProperty("fieldRole", comboData(m_fieldTable, r, 2));
-        check->setEnabled(available);
-        // 命令码前的公共字段决定识别位置，不能因某条映射省略它们而改变匹配规则。
-        check->setToolTip(available ? QString::fromUtf8(u8"勾选后，这条命令的报文不读取此字段。")
-            : QString::fromUtf8(u8"命令码及其前面的公共字段不能省略；失效配置保留供校验提示。")); omitLayout->addWidget(check);
-        connect(check, &QCheckBox::toggled, this, [this]() { updateMappingSources(); });
-    }
-    m_mappingOmissions->setVisible(!all.isEmpty());
+    return omitted;
 }
 
 void Widget::fieldFormatChanged()
@@ -1051,13 +1011,8 @@ void Widget::fieldFormatChanged()
     if (m_loadingUi || m_syncingFields) return;
     markDraftDirty();
     if (!synchronizeFieldNames()) { refreshMappingSummaries(); return; }
-    QJsonArray omitted;
-    for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
-        if (check->isChecked()) omitted.append(check->property("fieldName").toString());
-    rebuildMappingOmissions(QJsonObject{{"omitFields", omitted}});
     updateMappingSources(); refreshMappingSummaries();
 }
-
 bool Widget::synchronizeFieldNames()
 {
     if (m_loadingUi || m_syncingFields) return true;
@@ -1121,10 +1076,6 @@ bool Widget::synchronizeFieldNames()
         renameSource(m_mappingSource);
         for (int row=0;row<m_mappingParameters->rowCount();++row)
             if (auto *box=qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row,1))) renameSource(box);
-        for (QCheckBox *check:m_mappingOmissions->findChildren<QCheckBox *>()) {
-            const QString old=check->property("fieldName").toString();
-            if (renames.contains(old)) { check->setProperty("fieldName",renames.value(old)); check->setText(renames.value(old)); }
-        }
         m_loadingMapping=previousLoading; m_syncingFields=false;
     } else {
         const QSignalBlocker blocker(m_fieldTable);
@@ -1167,39 +1118,45 @@ void Widget::refreshMappingSummaries()
 void Widget::updateMappingSources()
 {
     const QSignalBlocker blocker(m_mappingSource);
-    const QString selected = m_mappingSource->currentData().toString();
-    QStringList omitted;
-    for (QCheckBox *check : m_mappingOmissions->findChildren<QCheckBox *>())
-        if (check->isChecked()) omitted << check->property("fieldName").toString();
-    m_mappingSource->clear(); m_mappingSource->addItem(QString::fromUtf8(u8"请选择字段"), "");
-    for (int r = 0; r < m_fieldTable->rowCount(); ++r) {
-        const QString name = itemText(m_fieldTable, r, 1);
-        if (comboData(m_fieldTable, r, 2) == "parameter" && comboData(m_fieldTable, r, 3) != "ascii" && !name.isEmpty() && !omitted.contains(name))
-            m_mappingSource->addItem(name, name);
+    const bool motion = isMotionEditor(m_mappingOperation->currentData().toString());
+    QString selected = m_mappingSource->currentData().toString();
+    if (!motion && selected != "@none") selected = "@fields";
+    else if (motion && selected == "@fields") selected.clear();
+    m_mappingSource->clear();
+    m_mappingSource->addItem(motion ? QString::fromUtf8(u8"请选择字段") : QString::fromUtf8(u8"客户参数"), motion ? "" : "@fields");
+    QStringList numeric;
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+        const QString name = itemText(m_fieldTable, row, 1);
+        if (comboData(m_fieldTable, row, 2) == "parameter" && comboData(m_fieldTable, row, 3) != "ascii" && !name.isEmpty()) {
+            numeric << name;
+            if (motion) m_mappingSource->addItem(name, name);
+        }
     }
-    m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
-    // 删除、改为文本或省略字段后保留失效引用，让校验指出问题，不能自动换成另一个参数。
+    if (motion) m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
+    m_mappingSource->addItem(QString::fromUtf8(u8"无参数"), "@none");
+    // 删除或改为文本后保留失效来源，不自动选择另一个字段。
     if (!selected.isEmpty() && m_mappingSource->findData(selected) < 0)
         m_mappingSource->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(selected), selected);
     selectData(m_mappingSource, selected);
-    // 参数目录的多个下拉共用当前字段池。保留失效引用及未保存固定值，只更新候选，不能重新载入整张参数表。
+    const QJsonArray omitted = mappingOmittedFields();
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)); if (!source) continue;
         const QSignalBlocker sourceBlocker(source); const QString chosen = source->currentData().toString();
         source->clear(); source->addItem(parameterDefaultText(m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject(),
             m_mappingOperation->currentData().toString()), "");
-        for (int i = 1; i < m_mappingSource->count(); ++i) source->addItem(m_mappingSource->itemText(i), m_mappingSource->itemData(i));
+        for (const QString &name : numeric) if (!omitted.contains(name)) source->addItem(name, name);
+        source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
         if (!chosen.isEmpty() && source->findData(chosen) < 0) source->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(chosen), chosen);
         selectData(source, chosen);
     }
 }
-
 void Widget::updateMappingControls()
 {
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     m_mappingParameters->setVisible(!motion && m_mappingParameters->rowCount() > 0);
     const bool constant = m_mappingSource->currentData().toString() == "@constant";
+    const bool noParameters = m_mappingSource->currentData().toString() == "@none";
     auto visibility = [](QWidget *control, bool show) {
         control->setVisible(show);
         if (auto *form = qobject_cast<QFormLayout *>(control->parentWidget()->layout()))
@@ -1208,17 +1165,16 @@ void Widget::updateMappingControls()
     // QFormLayout 放在 group 的纵向布局里；标签按其实际所属表单定位，避免隐藏控件后留下空英文/技术标签。
     for (auto *control : {static_cast<QWidget *>(m_mappingSource), static_cast<QWidget *>(m_mappingValue),
                          static_cast<QWidget *>(m_mappingMultiplier)}) {
-        bool show = motion;
-        if (control == m_mappingValue) show &= constant;
-        if (control == m_mappingMultiplier) show &= !constant;
+        bool show = control == m_mappingSource || motion;
+        if (control == m_mappingValue) show &= constant || noParameters;
+        if (control == m_mappingMultiplier) show &= !constant && !noParameters;
         visibility(control, show);
         auto *layout = m_mappingEditor->layout();
         for (int i = 0; i < layout->count(); ++i) if (auto *form = qobject_cast<QFormLayout *>(layout->itemAt(i)->layout()))
             if (QWidget *label = form->labelForField(control)) {
                 label->setVisible(show);
                 if (control == m_mappingSource) if (auto *text = qobject_cast<QLabel *>(label))
-                    text->setText(QushengCommandCatalog::fixedAction(operation) || mappingParameterKey(m_mappingOperation->currentData().toString()) == "distanceUm"
-                        ? QString::fromUtf8(u8"距离来源") : QString::fromUtf8(u8"位置来源"));
+                    text->setText(QString::fromUtf8(u8"取值来源"));
             }
     }
     // 方向已固化在新动作中；只有真实存在旧版 ABS 映射时显示其兼容方向，不能让用户在两个地方修改同一动作。
@@ -1245,7 +1201,7 @@ bool Widget::readNewMapping(QJsonObject *result)
     if (isMotionEditor(operation)) {
         QJsonObject expression;
         const QString source=m_mappingSource->currentData().toString();
-        if (source=="@constant") {
+        if (source=="@constant" || source=="@none") {
             bool ok=false; const qlonglong value=m_mappingValue->text().trimmed().toLongLong(&ok);
             if (!ok || value<0 || value>0xfffffe)
                 return fail(QString::fromUtf8(u8"固定数值必须填写零到 16777214 的整数。"));
@@ -1267,10 +1223,15 @@ bool Widget::readNewMapping(QJsonObject *result)
         if (!catalogParameters(&parameters,&reason)) return fail(reason);
     }
     QJsonObject mapping{{"commandCode",code},{"operation",operation},{"parameters",parameters}};
-    QJsonArray omitted;
-    for (QCheckBox *check:m_mappingOmissions->findChildren<QCheckBox *>())
-        if (check->isChecked()) omitted.append(check->property("fieldName").toString());
-    if (!omitted.isEmpty()) mapping.insert("input",QJsonObject{{"omitFields",omitted}});
+    const QJsonArray omitted = mappingOmittedFields();
+    for (const QJsonValue &value : parameters) {
+        const QJsonObject expression = value.toObject();
+        if (omitted.contains(expression.value("field")))
+            return fail(QString::fromUtf8(u8"无参数报文不能引用被省略的字段，请选择默认值或固定值。"));
+    }
+    // 停止/复位显式选择客户参数时也保存空列表，避免重启时被旧配置兼容逻辑改成无参数。
+    if (!omitted.isEmpty() || QushengCommandCatalog::isStopOrReset(operation))
+        mapping.insert("input",QJsonObject{{"omitFields",omitted}});
     *result=mapping; return true;
 }
 
@@ -1335,12 +1296,10 @@ void Widget::loadUiFromDraft()
     m_minPosition->setValue(device.value("minPositionUm").toInt(0));
     m_maxPosition->setValue(device.value("maxPositionUm").toInt(60000));
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(m_draftRoot).toJson(QJsonDocument::Indented)));
-    m_draftValid = false;
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已载入"));
     m_validationState->clear();
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
-    m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
     m_jsonDirty = false;
     m_loadingUi = false;
@@ -1450,12 +1409,10 @@ bool Widget::storeUiDraft(const QJsonObject &root)
     m_draftRoot = root;
     const QSignalBlocker jsonBlocker(m_advancedJson);
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
-    m_draftValid = false;
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
     m_validationState->clear();
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
-    m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
     appendLog(QString::fromUtf8(u8"配置已保存到本地。"));
     refreshMappingSummaries(); updateMappingControls(); activateSavedConfiguration();
@@ -1466,8 +1423,6 @@ void Widget::markDraftDirty()
 {
     if (m_loadingUi || m_draftRoot.isEmpty()) return;
     m_formDirty = true;
-    m_draftValid = false;
-    m_deviceConfirmed->setChecked(false);
     updateTableControls();
     refreshMappingSummaries();
     m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
@@ -1529,10 +1484,7 @@ void Widget::activateSavedConfiguration()
 {
     ProtocolConfig config;
     TranslationError error;
-    m_deviceConfirmed->setChecked(false);
     if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &error)) {
-        m_draftValid = false;
-        m_configEnabled = false;
         m_activeConfig = ProtocolConfig();
         m_activeVersion->setText(QString::fromUtf8(u8"启用：无"));
         m_validationState->setText(QString::fromUtf8(u8"配置有误：%1").arg(error.message));
@@ -1541,8 +1493,6 @@ void Widget::activateSavedConfiguration()
         return;
     }
     m_activeConfig = config;
-    m_draftValid = true;
-    m_configEnabled = true;
     const QJsonObject device = config.root.value("device").toObject();
     // 只更新默认地址；已有请求保存自己的地址和序号，保存不能重置会话或打断回告。
     m_protocol->setAddresses(quint8(device.value("destination").toInt()),
@@ -1683,14 +1633,11 @@ void Widget::updateConnectionUi(bool connected, const QString &reason)
     if (!connected && reason.contains(QString::fromUtf8(u8"；系统详情：")))
         m_validationState->setText(reason.section(QString::fromUtf8(u8"；系统详情："), 0, 0));
     if (connected) m_protocol->resetSession();
-    m_deviceConfirmed->setChecked(false);
     updateLiveState();
 }
 
 void Widget::updateLiveState()
 {
-    const bool current = m_draftValid && !m_formDirty && !m_jsonDirty;
-    m_deviceConfirmed->setEnabled(m_configEnabled && current);
     const QString reason = !m_transport->isConnected() ? QString::fromUtf8(u8"报文调试：串口未连接")
         : m_requestActive ? QString::fromUtf8(u8"报文调试：可继续发送（排队）")
                           : QString::fromUtf8(u8"报文调试：可直接发送");

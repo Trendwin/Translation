@@ -2,6 +2,7 @@
 #define WIDGET_H
 
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QWidget>
 #include <memory>
 
@@ -9,7 +10,6 @@
 #include "src/config/draftstore.h"
 #include "src/core/conversionengine.h"
 
-class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -64,7 +64,7 @@ private:
     bool readNewMapping(QJsonObject *mapping);
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
-    void rebuildMappingOmissions(const QJsonObject &input);
+    QJsonArray mappingOmittedFields() const;
     void fieldFormatChanged();
     bool synchronizeFieldNames();
     QString mappingFieldIssue(const QJsonObject &mapping) const;
@@ -85,11 +85,9 @@ private:
 
     QJsonObject m_draftRoot;
     ProtocolConfig m_activeConfig;
-    bool m_draftValid = false;
     bool m_formDirty = false;
     bool m_jsonDirty = false;
     bool m_loadingUi = false;
-    bool m_configEnabled = false;
     bool m_requestActive = false;
     quint64 m_lastRequestId = 0;
 
@@ -111,7 +109,6 @@ private:
     QComboBox *m_mappingSource = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
-    QGroupBox *m_mappingOmissions = nullptr;
     bool m_loadingMapping = false;
     bool m_syncingFields = false;
     QString m_editorOperation;
@@ -124,7 +121,6 @@ private:
     QSpinBox *m_speed = nullptr;
     QSpinBox *m_minPosition = nullptr;
     QSpinBox *m_maxPosition = nullptr;
-    QCheckBox *m_deviceConfirmed = nullptr;
 
     QComboBox *m_port = nullptr;
     QComboBox *m_baud = nullptr;
