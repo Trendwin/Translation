@@ -244,7 +244,7 @@ void Widget::buildUi()
     auto *versions = new QHBoxLayout;
     m_draftVersion = new QLabel(QString::fromUtf8(u8"配置：未加载"), this);
     m_activeVersion = new QLabel(QString::fromUtf8(u8"启用：无"), this);
-    m_validationState = new QLabel(QString::fromUtf8(u8"校验：待校验"), this);
+    m_validationState = new QLabel(this);
     m_draftVersion->setObjectName("draftVersion"); m_activeVersion->setObjectName("activeVersion");
     m_validationState->setObjectName("validationState"); m_validationState->setWordWrap(true);
     versions->addWidget(m_draftVersion);
@@ -473,7 +473,7 @@ void Widget::buildUi()
     advancedLayout->addWidget(m_advancedJson);
     auto *applyJson = new QPushButton(QString::fromUtf8(u8"应用 JSON"), this);
     applyJson->setObjectName("applyJson");
-    applyJson->setToolTip(QString::fromUtf8(u8"解析当前 JSON 并刷新中文表单；不会自动启用。"));
+    applyJson->setToolTip(QString::fromUtf8(u8"保存当前 JSON 并刷新中文表单；有效配置自动启用。"));
     advancedLayout->addWidget(applyJson);
     tabs->addTab(scrollPage(advancedPage), QString::fromUtf8(u8"高级配置"));
 
@@ -492,15 +492,8 @@ void Widget::buildUi()
     importButton->setObjectName("importConfig");
     auto *exportButton = configMenu->addAction(QString::fromUtf8(u8"导出配置…"));
     exportButton->setObjectName("exportConfig");
-    configMenu->addSeparator();
-    auto *validateButton = configMenu->addAction(QString::fromUtf8(u8"校验配置"));
-    validateButton->setObjectName("validateConfig");
-    auto *enableButton = configMenu->addAction(QString::fromUtf8(u8"启用配置"));
-    enableButton->setObjectName("enableConfig");
-    importButton->setToolTip(QString::fromUtf8(u8"从 JSON 文件载入配置，不改变当前已启用配置。"));
-    exportButton->setToolTip(QString::fromUtf8(u8"校验并保存当前配置 JSON。"));
-    validateButton->setToolTip(QString::fromUtf8(u8"检查帧边界、字段顺序、命令映射、换算和设备参数。"));
-    enableButton->setToolTip(QString::fromUtf8(u8"把已校验配置复制为新的运行快照；在途请求不允许切换版本。"));
+    importButton->setToolTip(QString::fromUtf8(u8"从 JSON 文件导入并保存，有效配置自动启用。"));
+    exportButton->setToolTip(QString::fromUtf8(u8"将已保存配置导出为 JSON 文件。"));
     configButtons->addWidget(saveConfig);
     configButtons->addWidget(configButton);
     configButtons->addStretch();
@@ -615,8 +608,6 @@ void Widget::buildUi()
     connect(applyJson, &QPushButton::clicked, this, &Widget::applyAdvancedJson);
     connect(importButton, &QAction::triggered, this, &Widget::importDraft);
     connect(exportButton, &QAction::triggered, this, &Widget::exportDraft);
-    connect(validateButton, &QAction::triggered, this, &Widget::validateDraft);
-    connect(enableButton, &QAction::triggered, this, &Widget::enableDraft);
     connect(refreshPort, &QPushButton::clicked, this, &Widget::refreshPorts);
 }
 
@@ -628,7 +619,7 @@ void Widget::connectSignals()
         m_draftValid = false;
         m_deviceConfirmed->setChecked(false);
         m_draftVersion->setText(QString::fromUtf8(u8"配置：JSON 未应用"));
-        m_validationState->setText(QString::fromUtf8(u8"校验：待应用"));
+        m_validationState->clear();
         updateLiveState();
     });
     connect(m_encoding, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
@@ -776,7 +767,7 @@ void Widget::loadInitialDraft()
     if (m_draftStore.exists()) {
         QJsonObject draft;
         if (m_draftStore.load(&draft, &restoreError)) {
-            m_draftRoot = draft; loadUiFromDraft();
+            m_draftRoot = draft; loadUiFromDraft(); activateSavedConfiguration();
             appendLog(QString::fromUtf8(u8"已恢复本地配置：") + m_draftStore.filePath());
             return;
         }
@@ -793,6 +784,7 @@ void Widget::loadInitialDraft()
         if (document.isObject()) {
             m_draftRoot = document.object();
             loadUiFromDraft();
+            if (!restoreError.isValid()) activateSavedConfiguration();
             m_input->setText(QStringLiteral("/1A2000R\\r"));
             appendLog(QString::fromUtf8(u8"已载入 DT 风格单条命令验证配置，默认按数值直接转换；DT 不是程序内置协议。"));
             if (restoreError.isValid()) {
@@ -1345,7 +1337,7 @@ void Widget::loadUiFromDraft()
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(m_draftRoot).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已载入"));
-    m_validationState->setText(QString::fromUtf8(u8"校验：待校验"));
+    m_validationState->clear();
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
     m_deviceConfirmed->setChecked(false);
@@ -1460,13 +1452,13 @@ bool Widget::storeUiDraft(const QJsonObject &root)
     m_advancedJson->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Indented)));
     m_draftValid = false;
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
-    m_validationState->setText(QString::fromUtf8(u8"校验：待校验"));
+    m_validationState->clear();
     m_inputEncoding->setText(QString::fromUtf8(u8"输入编码：")
         + (m_encoding->currentData().toString() == "hex" ? QStringLiteral("HEX") : QStringLiteral("ASCII")));
     m_deviceConfirmed->setChecked(false);
     m_formDirty = false;
-    appendLog(QString::fromUtf8(u8"配置已保存到本地；当前已启用版本未改变。"));
-    refreshMappingSummaries(); updateMappingControls(); updateLiveState();
+    appendLog(QString::fromUtf8(u8"配置已保存到本地。"));
+    refreshMappingSummaries(); updateMappingControls(); activateSavedConfiguration();
     return true;
 }
 
@@ -1479,7 +1471,7 @@ void Widget::markDraftDirty()
     updateTableControls();
     refreshMappingSummaries();
     m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
-    m_validationState->setText(QString::fromUtf8(u8"校验：待保存"));
+    m_validationState->clear();
     updateLiveState();
 }
 
@@ -1487,8 +1479,8 @@ bool Widget::draftSaved()
 {
     // “表单”“配置”“启用快照”是三个不同状态。未保存表单绝不能被旧配置的校验成功掩盖。
     if (!m_formDirty && !m_jsonDirty) return true;
-    const QString reason = QString::fromUtf8(u8"请先点击“保存配置”，再校验、启用、预览或导出。");
-    m_validationState->setText(QString::fromUtf8(u8"校验：") + reason);
+    const QString reason = QString::fromUtf8(u8"请先点击“保存配置”，再预览或导出。");
+    m_validationState->setText(reason);
     appendLog(reason);
     return false;
 }
@@ -1533,57 +1525,34 @@ void Widget::updateTableControls()
 
 }
 
-void Widget::validateDraft()
+void Widget::activateSavedConfiguration()
 {
-    if (!draftSaved()) return;
     ProtocolConfig config;
     TranslationError error;
+    m_deviceConfirmed->setChecked(false);
     if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &error)) {
         m_draftValid = false;
-        m_validationState->setText(QString::fromUtf8(u8"校验：校验失败（%1）").arg(error.message));
+        m_configEnabled = false;
+        m_activeConfig = ProtocolConfig();
+        m_activeVersion->setText(QString::fromUtf8(u8"启用：无"));
+        m_validationState->setText(QString::fromUtf8(u8"配置有误：%1").arg(error.message));
         appendLog(QStringLiteral("%1: %2").arg(error.code, error.message));
         updateLiveState();
         return;
     }
-    m_validatedDraft = config;
+    m_activeConfig = config;
     m_draftValid = true;
-    m_draftVersion->setText(QString::fromUtf8(u8"配置：%1").arg(config.version.left(12)));
+    m_configEnabled = true;
+    const QJsonObject device = config.root.value("device").toObject();
+    // 只更新默认地址；已有请求保存自己的地址和序号，保存不能重置会话或打断回告。
+    m_protocol->setAddresses(quint8(device.value("destination").toInt()),
+                             quint8(device.value("source").toInt()));
+    m_activeVersion->setText(QString::fromUtf8(u8"启用：%1").arg(config.version.left(12)));
     int pending = 0;
     for (const QJsonValue &value : config.root.value("mappings").toArray())
         if (!QushengCommandCatalog::isExecutable(value.toObject().value("operation").toString())) ++pending;
-    m_validationState->setText(pending ? QString::fromUtf8(u8"校验：通过 (%1 条待实现)").arg(pending)
-                                      : QString::fromUtf8(u8"校验：通过"));
-    appendLog(QString::fromUtf8(u8"配置校验成功，配置版本 %1").arg(config.version.left(12)));
-    updateLiveState();
-}
-
-void Widget::enableDraft()
-{
-    if (!draftSaved()) return;
-    if (m_requestActive) {
-        m_validationState->setText(QString::fromUtf8(u8"启用失败：当前请求尚未结束"));
-        appendLog(m_validationState->text());
-        return;
-    }
-    if (!m_draftValid) {
-        m_validationState->setText(QString::fromUtf8(u8"启用失败：请先保存并校验配置"));
-        appendLog(m_validationState->text());
-        return;
-    }
-    m_activeConfig = m_validatedDraft;
-    m_configEnabled = true;
-    const QJsonObject device = m_activeConfig.root.value("device").toObject();
-    m_protocol->setAddresses(quint8(device.value("destination").toInt()),
-                             quint8(device.value("source").toInt()));
-    // 同一物理连接里保留序号，切换配置不能重用旧序号而误匹配迟到的设备应答。
-    m_activeVersion->setText(QString::fromUtf8(u8"启用：%1").arg(m_activeConfig.version.left(12)));
-    int pending = 0;
-    for (const QJsonValue &value : m_activeConfig.root.value("mappings").toArray())
-        if (!QushengCommandCatalog::isExecutable(value.toObject().value("operation").toString())) ++pending;
-    m_validationState->setText(pending ? QString::fromUtf8(u8"校验：通过 (%1 条待实现)").arg(pending)
-                                      : QString::fromUtf8(u8"校验：通过"));
-    m_deviceConfirmed->setChecked(false);
-    appendLog(QString::fromUtf8(u8"已启用配置快照；报文调试发送读取当前编辑。"));
+    m_validationState->setText(pending ? QString::fromUtf8(u8"%1 条指令待实现").arg(pending) : QString());
+    appendLog(QString::fromUtf8(u8"已自动启用配置 %1").arg(config.version.left(12)));
     updateLiveState();
 }
 
@@ -1600,7 +1569,8 @@ bool Widget::applyAdvancedJson()
     m_draftRoot = document.object();
     loadUiFromDraft();
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
-    appendLog(QString::fromUtf8(u8"高级 JSON 已应用到配置；当前已启用版本未改变。"));
+    activateSavedConfiguration();
+    appendLog(QString::fromUtf8(u8"高级 JSON 已应用并保存。"));
     return true;
 }
 
@@ -1670,7 +1640,8 @@ void Widget::importDraft()
     m_draftRoot = document.object();
     loadUiFromDraft();
     m_draftVersion->setText(QString::fromUtf8(u8"配置：已保存"));
-    appendLog(QString::fromUtf8(u8"配置已导入并保存到本地；当前已启用版本未改变。"));
+    activateSavedConfiguration();
+    appendLog(QString::fromUtf8(u8"配置已导入并保存到本地。"));
 }
 
 void Widget::exportDraft()
@@ -1718,8 +1689,7 @@ void Widget::updateConnectionUi(bool connected, const QString &reason)
 
 void Widget::updateLiveState()
 {
-    const bool current = m_draftValid && !m_formDirty && !m_jsonDirty
-            && m_validatedDraft.version == m_activeConfig.version;
+    const bool current = m_draftValid && !m_formDirty && !m_jsonDirty;
     m_deviceConfirmed->setEnabled(m_configEnabled && current);
     const QString reason = !m_transport->isConnected() ? QString::fromUtf8(u8"报文调试：串口未连接")
         : m_requestActive ? QString::fromUtf8(u8"报文调试：可继续发送（排队）")

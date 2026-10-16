@@ -31,6 +31,8 @@
 #include "widget.h"
 #include "transport/serialtransport.h"
 #include "core/translationservice.h"
+#include "core/requestmanager.h"
+#include "qusheng/qushengprotocol.h"
 
 // 所有旧界面测试也使用独立草稿文件，避免测试覆盖用户数据或在用例间留下配置。
 static QTemporaryDir &testDraftDirectory()
@@ -72,6 +74,8 @@ private slots:
     void sharedSaveKeepsAllPages();
     void sharedSaveHandlesJsonAndConflict();
     void configMenuImportsAndExports();
+    void savedConfigActivatesAndInvalidConfigDoesNot();
+    void saveKeepsPendingReplyAndSequence();
     void savedDraftSurvivesRestart();
     void incompleteDraftSurvivesRestart();
     void draftWriteFailureIsVisibleAndRetryable();
@@ -355,20 +359,18 @@ void WidgetTest::draftLifecycleAndVisibleFailures()
     auto *reason = widget.findChild<QLabel *>("liveReason");
     QVERIFY(input && fields && preview && target && reason);
     auto *previewButton = button(widget, "previewButton");
-    auto *validateButton = configAction(widget, "validateConfig");
-    auto *enableButton = configAction(widget, "enableConfig");
     auto *saveButton = button(widget, "saveConfig");
     auto *sendButton = button(widget, "sendButton");
-    QVERIFY(previewButton && validateButton && enableButton && saveButton && sendButton);
+    QVERIFY(previewButton && saveButton && sendButton);
     previewButton->click();
     QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"2000")));
     QVERIFY(target->toPlainText().contains("AA AA 02 01 08 F7 00 11"));
     fields->item(2, 8)->setText("1000");
-    validateButton->trigger(); enableButton->trigger();
+
     QVERIFY(reason->text().contains(QString::fromUtf8(u8"串口未连接")));
     previewButton->click(); QVERIFY(target->toPlainText().isEmpty());
     QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"保存")));
-    saveButton->click(); validateButton->trigger(); enableButton->trigger();
+    saveButton->click();
     auto *confirm = widget.findChild<QCheckBox *>("deviceConfirmed");
     QVERIFY(confirm->isEnabled()); confirm->setChecked(true);
     QVERIFY(reason->text().contains(QString::fromUtf8(u8"串口未连接")));
@@ -382,7 +384,7 @@ void WidgetTest::draftLifecycleAndVisibleFailures()
     QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"第 3 行最大值不是数字")));
     QCOMPARE(QJsonDocument::fromJson(widget.findChild<QTextEdit *>("advancedJson")->toPlainText().toUtf8()).object(), beforeInvalidRange);
     // 保存失败仍为未保存表单，后续不能继续校验旧值并冒充新的成功版本。
-    validateButton->trigger(); previewButton->click();
+    previewButton->click();
     QVERIFY(target->toPlainText().isEmpty()); QVERIFY(!confirm->isChecked());
     QVERIFY(!confirm->isEnabled());
     fields->item(2, 8)->setText("1000"); fields->item(2, 7)->setText("invalid"); saveButton->click();
@@ -418,7 +420,6 @@ void WidgetTest::advancedJsonAndDynamicControls()
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
     json->setPlainText(saved);
     button(widget, "applyJson")->click();
-    configAction(widget, "validateConfig")->trigger();
     button(widget, "previewButton")->click();
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("AA AA"));
 }
@@ -744,8 +745,7 @@ void WidgetTest::unifiedFormatAndVisibleErrors()
     QCOMPARE(draftRoot(invalid).value("mappings").toArray().at(0).toObject().value("input"), QJsonValue(invalidInput));
     invalid.findChild<QLineEdit *>("mappingCode")->setText("B"); button(invalid, "saveConfig")->click();
     QCOMPARE(draftRoot(invalid).value("mappings").toArray().at(0).toObject().value("input"), QJsonValue(invalidInput));
-    configAction(invalid, "validateConfig")->trigger();
-    QVERIFY(invalid.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"校验失败")));
+    QVERIFY(invalid.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"配置有误")));
 }
 
 void WidgetTest::genericScalarRanges()
@@ -878,8 +878,9 @@ void WidgetTest::configMenuImportsAndExports()
     auto *menuButton=widget.findChild<QToolButton *>("configMenuButton");QVERIFY(menuButton && menuButton->menu());
     QCOMPARE(menuButton->text(),QString::fromUtf8(u8"配置"));
     int count=0;for(QAction *action:menuButton->menu()->actions()) if(!action->isSeparator()) ++count;
-    QCOMPARE(count,4);
-    for(const char *name:{"importConfig","exportConfig","validateConfig","enableConfig"})
+    QCOMPARE(count,2);
+    for(const char *name:{"validateConfig","enableConfig"}) QVERIFY(!configAction(widget,name));
+    for(const char *name:{"importConfig","exportConfig"})
         QVERIFY(menuButton->menu()->actions().contains(configAction(widget,name)));
     auto fileAction=[&widget](const char *name,const QString &filePath) {
         bool seen=false;
@@ -891,20 +892,73 @@ void WidgetTest::configMenuImportsAndExports()
     };
     addNewMapping(widget,"Z","MOTOR_RESET");button(widget,"saveConfig")->click();
     const QJsonObject exported=draftRoot(widget);
+    const QString savedActive=widget.findChild<QLabel *>("activeVersion")->text();
     QVERIFY(fileAction("exportConfig",exportPath));QCOMPARE(QJsonDocument::fromJson(draftBytes(exportPath)).object(),exported);
     widget.findChild<QLineEdit *>("formatHeader")->setText("!");button(widget,"saveConfig")->click();
+    QVERIFY(widget.findChild<QLabel *>("activeVersion")->text()!=savedActive);
     QVERIFY(fileAction("importConfig",exportPath));QCOMPARE(draftRoot(widget),exported);
     Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),exported);
-    configAction(widget,"validateConfig")->trigger();
-    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"通过")));
-    configAction(widget,"enableConfig")->trigger();
-    QVERIFY(!widget.findChild<QLabel *>("activeVersion")->text().contains(QString::fromUtf8(u8"无")));
+    QCOMPARE(widget.findChild<QLabel *>("activeVersion")->text(),savedActive);
+    QCOMPARE(restored.findChild<QLabel *>("activeVersion")->text(),savedActive);
     const QString renderDir=qEnvironmentVariable("TRANSLATION_RENDER_DIR");
     if(!renderDir.isEmpty()) {
         QDir().mkpath(renderDir);widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
         menuButton->menu()->popup(menuButton->mapToGlobal(QPoint(0,menuButton->height())));QCoreApplication::processEvents();
         QVERIFY(menuButton->menu()->grab().save(QDir(renderDir).filePath("config-menu.png")));menuButton->menu()->hide();
     }
+}
+
+void WidgetTest::savedConfigActivatesAndInvalidConfigDoesNot()
+{
+    const QString path=freshDraftPath();Widget widget(nullptr,path);
+    QSignalSpy frames(widget.findChild<RequestManager *>(),&RequestManager::frameReady);
+    auto *active=widget.findChild<QLabel *>("activeVersion");
+    button(widget,"saveConfig")->click();
+    QVERIFY(!active->text().contains(QString::fromUtf8(u8"无")));
+    const QString before=active->text();
+    widget.findChild<QSpinBox *>("defaultMotorSpeed")->setValue(2500);
+    QCOMPARE(active->text(),before);button(widget,"saveConfig")->click();
+    QVERIFY(active->text()!=before);
+    QJsonObject valid=draftRoot(widget),invalid=valid;QJsonObject device=invalid.value("device").toObject();
+    device.insert("destination",device.value("source"));invalid.insert("device",device);
+    auto *json=widget.findChild<QTextEdit *>("advancedJson");
+    json->setPlainText(QString::fromUtf8(QJsonDocument(invalid).toJson()));button(widget,"saveConfig")->click();
+    QCOMPARE(QJsonDocument::fromJson(draftBytes(path)).object(),invalid);
+    QCOMPARE(active->text(),QString::fromUtf8(u8"启用：无"));
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"配置有误")));
+    Widget restored(nullptr,path);QCOMPARE(restored.findChild<QLabel *>("activeVersion")->text(),active->text());
+    QVERIFY(restored.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"配置有误")));
+    // 修复后只需保存，无需手动执行任何校验或启用操作。
+    json->setPlainText(QString::fromUtf8(QJsonDocument(valid).toJson()));button(widget,"saveConfig")->click();
+    ProtocolConfig expected;TranslationError error;
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(valid).toJson(),&expected,&error));
+    QCOMPARE(active->text(),QString::fromUtf8(u8"启用：%1").arg(expected.version.left(12)));
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().isEmpty());
+    QVERIFY(!widget.findChild<SerialTransport *>()->isConnected());QCOMPARE(frames.count(),0);
+}
+
+void WidgetTest::saveKeepsPendingReplyAndSequence()
+{
+    const QString path=freshDraftPath();Widget widget(nullptr,path);
+    auto *protocol=widget.findChild<QushengProtocol *>();QVERIFY(protocol);
+    UnifiedCommand command;command.operation="MOTOR_FORWARD";command.requestId=42;command.targetDevice="17";
+    command.parameters={{"speedUmPerS",1000},{"positionUm",100}};
+    QByteArray first;TranslationError error;QVERIFY(protocol->encodeCommand(command,&first,&error));
+    QCOMPARE(quint8(first.at(2)),quint8(2));QCOMPARE(quint8(first.at(3)),quint8(1));
+    const QByteArray reply=QushengProtocol::makeReply(quint8(first.at(6)),0);
+    QList<TranslationError> errors;QVERIFY(protocol->feedReceivedData(reply.left(5),&errors).isEmpty());
+    QJsonObject root=draftRoot(widget),device=root.value("device").toObject();
+    device.insert("destination",9);device.insert("source",8);root.insert("device",device);
+    widget.findChild<QTextEdit *>("advancedJson")->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson()));
+    button(widget,"saveConfig")->click();
+    const QList<ProtocolMessage> messages=protocol->feedReceivedData(reply.mid(5),&errors);
+    QVERIFY(errors.isEmpty());QCOMPARE(messages.size(),1);QVERIFY(protocol->matchesReply(command,messages.first()));
+    QByteArray next;command.requestId=43;QVERIFY(protocol->encodeCommand(command,&next,&error));
+    QCOMPARE(quint8(next.at(2)),quint8(9));QCOMPARE(quint8(next.at(3)),quint8(8));
+    QCOMPARE(quint8(next.at(6)),quint8(quint8(first.at(6))+1));
+    Widget restored(nullptr,path);QByteArray afterRestart;
+    QVERIFY(restored.findChild<QushengProtocol *>()->encodeCommand(command,&afterRestart,&error));
+    QCOMPARE(quint8(afterRestart.at(2)),quint8(9));QCOMPARE(quint8(afterRestart.at(3)),quint8(8));
 }
 
 void WidgetTest::stopResetMappingsHaveNoDistanceControls()
@@ -983,7 +1037,6 @@ void WidgetTest::fieldNamesFollowAllMappings()
     auto *maps = widget.findChild<QTableWidget *>("mappingTable");
     auto *target = widget.findChild<QTextEdit *>("targetOutput");
     button(widget, "previewButton")->click(); const QString originalFrame = target->toPlainText();
-    configAction(widget, "validateConfig")->trigger(); configAction(widget, "enableConfig")->trigger();
     const QString active = widget.findChild<QLabel *>("activeVersion")->text();
     auto *confirm = widget.findChild<QCheckBox *>("deviceConfirmed"); confirm->setChecked(true);
     const QJsonObject oldDraft = draftRoot(widget);
@@ -1008,7 +1061,7 @@ void WidgetTest::fieldNamesFollowAllMappings()
         if (mapping.value("input").toObject().value("omitFields").toArray().contains(QString::fromUtf8(u8"数据参数"))) ++queryOmissions;
     }
     QCOMPARE(motionRefs, 6); QCOMPARE(queryOmissions, 5);
-    configAction(widget, "validateConfig")->trigger(); QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"通过")));
+    QVERIFY(!widget.findChild<QLabel *>("activeVersion")->text().contains(QString::fromUtf8(u8"无")));
     widget.findChild<QLineEdit *>("customerInput")->setText("/1A2000R\\r"); button(widget, "previewButton")->click();
     QCOMPARE(target->toPlainText(), originalFrame);
     widget.findChild<QLineEdit *>("customerInput")->setText("/1?0R\\r"); button(widget, "previewButton")->click();
@@ -1056,7 +1109,7 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
 {
     Widget widget(nullptr,freshDraftPath());auto *fields=widget.findChild<QTableWidget *>("fieldTable");
     fields->setCurrentCell(2,0);button(widget,"removeField")->click();button(widget,"saveConfig")->click();
-    configAction(widget, "validateConfig")->trigger();QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"校验失败")));
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"配置有误")));
     QCOMPARE(mappingRows(widget).first().toObject().value("parameters").toObject().value("positionUm").toObject().value("field").toString(),QString::fromUtf8(u8"位置"));
 }
 
@@ -1122,7 +1175,6 @@ void WidgetTest::savedDraftSurvivesRestart()
         ProtocolConfig config; QVERIFY(ProtocolConfig::fromJson(QJsonDocument(saved).toJson(), &config, &error));
         ConversionPreview converted; QVERIFY(ConversionEngine(config).convert("!1Z2000~", false, &converted, &error));
         previewFrame = converted.targetFrame;
-        configAction(first, "validateConfig")->trigger(); configAction(first, "enableConfig")->trigger();
     }
     // 即使启动目录改变，也须优先读取同一用户草稿，而非重新加载示例。
     const QString originalDirectory = QDir::currentPath(); QVERIFY(QDir::setCurrent(testDraftDirectory().path()));
@@ -1134,7 +1186,9 @@ void WidgetTest::savedDraftSurvivesRestart()
     QCOMPARE(second.findChild<QSpinBox *>("defaultMotorSpeed")->value(), 2500);
     second.findChild<QLineEdit *>("customerInput")->setText("!1Z2000~"); button(second, "previewButton")->click();
     QVERIFY(second.findChild<QTextEdit *>("targetOutput")->toPlainText().contains(previewFrame.toHex(' ').toUpper()));
-    QCOMPARE(second.findChild<QLabel *>("activeVersion")->text(), QString::fromUtf8(u8"启用：无"));
+    ProtocolConfig restoredConfig;TranslationError restoredError;
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(saved).toJson(),&restoredConfig,&restoredError));
+    QCOMPARE(second.findChild<QLabel *>("activeVersion")->text(),QString::fromUtf8(u8"启用：%1").arg(restoredConfig.version.left(12)));
     QVERIFY(!second.findChild<QCheckBox *>("deviceConfirmed")->isChecked());
     QVERIFY(button(second, "sendButton")->isEnabled());
 }
@@ -1148,11 +1202,9 @@ void WidgetTest::incompleteDraftSurvivesRestart()
         mapping.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "unfinished-field"}}}});
         mappings[0] = mapping; incomplete.insert("mappings", mappings);
         // 应用高级JSON和导入均通过同一落盘入口，不要求先成为可发送的有效配置。
-        applyRoot(first, incomplete); configAction(first, "validateConfig")->trigger();
-        QVERIFY(first.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"校验失败")));
+        applyRoot(first, incomplete); QVERIFY(first.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"配置有误")));
     }
     Widget second(nullptr, path); QCOMPARE(draftRoot(second), incomplete);
-    configAction(second, "validateConfig")->trigger();
     QVERIFY(second.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"unfinished-field")));
     QVERIFY(button(second, "sendButton")->isEnabled());
 }
@@ -1164,15 +1216,18 @@ void WidgetTest::draftWriteFailureIsVisibleAndRetryable()
     QFile blocker(blockerPath); QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.write("keep"); blocker.close();
     const QString path = blockerPath + "/draft.json";
     Widget widget(nullptr, path); const QJsonObject original = draftRoot(widget);
+    const QString activeBefore=widget.findChild<QLabel *>("activeVersion")->text();
     widget.findChild<QTableWidget *>("fieldTable")->item(2, 1)->setText(QString::fromUtf8(u8"数据位"));
     button(widget, "saveConfig")->click();
     QCOMPARE(draftRoot(widget), original);
     QVERIFY(widget.findChild<QLabel *>("draftVersion")->text().contains(QString::fromUtf8(u8"未保存")));
     QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"保存失败")));
+    QCOMPARE(widget.findChild<QLabel *>("activeVersion")->text(),activeBefore);
     QVERIFY(blocker.open(QIODevice::ReadOnly)); QCOMPARE(blocker.readAll(), QByteArray("keep")); blocker.close();
     QVERIFY(QFile::remove(blockerPath)); button(widget, "saveConfig")->click();
     DraftStore store(path); QJsonObject disk; TranslationError error;
     QVERIFY(store.load(&disk, &error)); QCOMPARE(disk, draftRoot(widget));
+    QVERIFY(widget.findChild<QLabel *>("activeVersion")->text()!=activeBefore);
     QCOMPARE(disk.value("external").toObject().value("fields").toArray().at(2).toObject().value("name").toString(), QString::fromUtf8(u8"数据位"));
 }
 
@@ -1183,6 +1238,7 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
     {
         Widget widget(nullptr, path);
         QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"恢复失败")));
+        QCOMPARE(widget.findChild<QLabel *>("activeVersion")->text(),QString::fromUtf8(u8"启用：无"));
         QVERIFY(button(widget, "sendButton")->isEnabled());
     }
     QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
