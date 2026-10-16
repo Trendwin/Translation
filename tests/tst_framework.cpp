@@ -50,6 +50,7 @@ private slots:
     void cancelThenQueryRecoversBusyState();
     void demoFramingRegression();
     void codecReplyAndCrc();
+    void capturedMotorReplyEndsWaiting();
     void sequenceExhaustionIsFailClosed();
     void managerAckIsNotCompletion();
     void managerStalledWriteAndRejection();
@@ -438,6 +439,31 @@ void FrameworkTest::codecReplyAndCrc()
     corrupted[corrupted.size() - 1] = char(quint8(corrupted.at(corrupted.size() - 1)) ^ 1);
     QCOMPARE(codec.feedReceivedData(corrupted, &errors).size(), 0);
     QCOMPARE(errors.last().code, QStringLiteral("QUSHENG_CRC"));
+}
+
+void FrameworkTest::capturedMotorReplyEndsWaiting()
+{
+    QushengProtocol codec;codec.setAddresses(2,1);
+    UnifiedCommand query;query.requestId=7;query.operation="QUERY_MOTOR";query.targetDevice="17";
+    TranslationError error;QByteArray request;
+    // 截图序号为3；先推进编码器，避免改写实机记录的序号和CRC。
+    for(int i=0;i<3;++i) QVERIFY(codec.encodeCommand(query,&request,&error));
+    FakeTransport transport;RequestManager manager(&codec,&transport);manager.setTimeouts(1000,1000);
+    QSignalSpy completed(&manager,&RequestManager::completed);
+    QString lastProtocolError;
+    connect(&manager,&RequestManager::protocolError,&manager,[&lastProtocolError](const TranslationError &error) {lastProtocolError=error.code;});
+    manager.enqueue(query);QTRY_COMPARE(transport.sent.size(),1);QCOMPARE(quint8(transport.sent.first().at(6)),quint8(3));
+    const QByteArray captured=QByteArray::fromHex("aaaa01020ef103120000000010000bb80000000000009f47");
+    QCOMPARE(captured.size(),24);QCOMPARE(QushengProtocol::crc16(captured.left(22)),quint16(0x9f47));
+    QByteArray badCrc=captured;badCrc[23]=char(0x46);transport.receive(badCrc);
+    QCOMPARE(lastProtocolError,QStringLiteral("QUSHENG_CRC"));QCOMPARE(completed.count(),0);QVERIFY(manager.hasPendingRequests());
+    transport.receive(captured.left(13));QCOMPARE(completed.count(),0);
+    transport.receive(captured.mid(13));QTRY_COMPARE(completed.count(),1);
+    const UnifiedResult result=qvariant_cast<UnifiedResult>(completed.first().at(0));QVERIFY(result.success);
+    QCOMPARE(result.data.value("motorState").toInt(),1);QCOMPARE(result.data.value("positionUm").toUInt(),3000u);
+    QCOMPARE(result.data.value("feedbackPositionUm").toUInt(),0u);
+    QTRY_VERIFY(!manager.hasPendingRequests()); // 回告先到时，也须等待模拟完整写出信号释放请求。
+    QCOMPARE(transport.sent.size(),1); // 不继续查询，也不等待超时释放本次请求。
 }
 
 void FrameworkTest::sequenceExhaustionIsFailClosed()

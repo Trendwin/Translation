@@ -66,7 +66,8 @@ int successLength(quint8 command, const QByteArray &payload)
     case 0x0c:
         if (payload.size() < 5) return -1;
         switch (quint8(payload.at(4))) { case 0: case 1: return 10; case 2: return 6; case 3: return 27; default: return -1; }
-    case 0x12: return 11;
+    // 实机0x12在文档D0～D10之后附带3字节保留位；仅兼容这两种完整长度。
+    case 0x12: return payload.size() == 11 || payload.size() == 14 ? payload.size() : -1;
     case 0x14: return 36;
     case 0x16: return 60;
     case 0x23: return 8;
@@ -186,6 +187,7 @@ bool QushengSdk::decodeReply(quint8 command, const QByteArray &payload,
     case 0x0c: interfaceConfiguration(&values, payload); break;
     case 0x12: {
         // 应答D4高4位是状态，D5～D7当前位置，D8～D10负反馈位置，两种位置分别保留。
+        // 14字节实机回告的D11～D13按保留位跳过，取值不限；rawPayload仍保留完整数据。
         // SDK负责解码；“空闲且到达本次目标”由请求层判断，不在这里宣告动作完成。
         const int state = (quint8(payload.at(4)) >> 4) & 0x0f;
         values.insert("motorState", state); values.insert("positionUm", be(payload, 5, 3));
