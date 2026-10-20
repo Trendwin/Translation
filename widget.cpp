@@ -1,4 +1,6 @@
 #include "widget.h"
+#include "src/ui/textformateditor.h"
+#include "src/config/textformat.h"
 
 #include "src/core/requestmanager.h"
 #include "src/core/translationservice.h"
@@ -263,6 +265,9 @@ void Widget::buildUi()
     m_byteOrder = combo(this, {{QString::fromUtf8(u8"大端（高字节在前）"), QStringLiteral("big")},
                                {QString::fromUtf8(u8"小端（低字节在前）"), QStringLiteral("little")}});
     m_byteOrder->setToolTip(QString::fromUtf8(u8"仅 HEX 输入中的多字节整数使用；ASCII 数字不受影响。"));
+    m_formatMode = combo(this, {{QString::fromUtf8(u8"顺序字段（原有格式）"), "sequential"}, {QString::fromUtf8(u8"文本模板与独立命令参数"), "textTemplate"}});
+    m_formatMode->setObjectName("formatMode");
+    boundaryForm->addRow(QString::fromUtf8(u8"格式方式"), m_formatMode);
     boundaryForm->addRow(QString::fromUtf8(u8"编码方式"), m_encoding);
     boundaryForm->addRow(QString::fromUtf8(u8"帧头"), m_header);
     boundaryForm->addRow(QString::fromUtf8(u8"帧尾"), m_footer);
@@ -309,6 +314,11 @@ void Widget::buildUi()
     for (auto *button : {addField, removeField, fieldUp, fieldDown}) fieldButtons->addWidget(button);
     fieldButtons->addStretch();
     formatLayout->addLayout(fieldButtons);
+    for (auto *button : {addField, removeField, fieldUp, fieldDown}) button->setProperty("legacyFormat", true);
+    m_textFormat = new TextFormatEditor(this); formatLayout->addWidget(m_textFormat);
+    connect(m_textFormat, &TextFormatEditor::changed, this, [this]() { if (!m_loadingUi) { updateMappingSources(); markDraftDirty(); } });
+    connect(m_formatMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateFormatMode(); updateMappingSources(); markDraftDirty(); });
+    m_textFormat->hide();
     tabs->addTab(scrollPage(formatPage), QString::fromUtf8(u8"客户协议格式"));
 
     auto *mappingPage = new QWidget(this);
@@ -497,6 +507,10 @@ void Widget::buildUi()
     m_previewButton->setToolTip(QString::fromUtf8(u8"使用当前配置解析和组帧，不访问串口。"));
     inputLayout->addWidget(m_inputEncoding);
     inputLayout->addWidget(m_input, 1);
+    auto *parseButton = new QPushButton(QString::fromUtf8(u8"解析格式"), this); parseButton->setObjectName("parseFormatButton");
+    parseButton->setToolTip(QString::fromUtf8(u8"仅解析当前格式，不要求发送映射或设备参数，不生成目标帧。"));
+    inputLayout->addWidget(parseButton);
+    connect(parseButton, &QPushButton::clicked, this, &Widget::parseFormatPreview);
     inputLayout->addWidget(m_previewButton);
     inputLayout->addWidget(m_sendButton);
     inputLayout->addWidget(m_cancelButton);
@@ -652,6 +666,7 @@ void Widget::connectSignals()
             m_transport->open(m_port->currentData().toString(), m_baud->currentData().toInt());
     });
     connect(m_transport, &SerialTransport::connectionChanged, this, &Widget::updateConnectionUi);
+    connect(m_mappingCode, &QLineEdit::textChanged, this, [this]() { if (!m_loadingMapping) updateMappingSources(); });
     connect(m_previewButton, &QPushButton::clicked, this, [this]() { preview(false); });
     connect(m_input, &QLineEdit::textChanged, this, &Widget::updateLiveState);
     connect(m_sendButton, &QPushButton::clicked, this, [this]() { preview(true); });
@@ -797,7 +812,7 @@ void Widget::addFieldRow(const QJsonObject &field)
     auto *name = new QTableWidgetItem(field.value("name").toString());
     // UI 的 item 跟随这一字段；上次已同步名称不是行号，也不写入 JSON。
     // 载入整份 JSON 会新建 item，因此没有依据的整体替换不会猜测重命名。
-    name->setData(Qt::UserRole, field.value("name").toString()); m_fieldTable->setItem(row, 1, name);
+    name->setData(Qt::UserRole, field.value("name").toString()); name->setData(Qt::UserRole + 1, field); m_fieldTable->setItem(row, 1, name);
     auto *role = combo(this, {{QString::fromUtf8(u8"命令码"), QStringLiteral("command")},
                               {QString::fromUtf8(u8"参数"), QStringLiteral("parameter")},
                               {QString::fromUtf8(u8"固定字段"), QStringLiteral("fixed")}});
@@ -903,11 +918,8 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         m_mappingParameters->setItem(row, 0, label);
         auto *source = new QComboBox(m_mappingParameters); source->addItem(parameterDefaultText(parameter, operation), "");
         const QJsonArray omitted = mappingOmittedFields();
-        for (int field = 0; field < m_fieldTable->rowCount(); ++field) {
-            const QString name = itemText(m_fieldTable, field, 1);
-            if (comboData(m_fieldTable, field, 2) == "parameter" && comboData(m_fieldTable, field, 3) != "ascii" && !omitted.contains(name))
-                source->addItem(name, name);
-        }
+        for (const QString &name : numericSourceFields(m_mappingCode->text()))
+            if (!omitted.contains(name)) source->addItem(name, name);
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
         const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
         if (!selected.isEmpty() && source->findData(selected) < 0) source->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(selected), selected);
@@ -996,7 +1008,7 @@ void Widget::resetMappingForm()
 QJsonArray Widget::mappingOmittedFields() const
 {
     QJsonArray omitted;
-    if (m_mappingSource->currentData().toString() != "@none") return omitted;
+    if (m_formatMode->currentData().toString() == "textTemplate" || m_mappingSource->currentData().toString() != "@none") return omitted;
     bool commandSeen = false;
     for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
         const QString role = comboData(m_fieldTable, row, 2);
@@ -1088,7 +1100,11 @@ bool Widget::synchronizeFieldNames()
 QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
 {
     QSet<QString> numeric, omittable, seen; bool commandSeen = false;
-    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+    if (m_formatMode->currentData().toString() == "textTemplate") {
+        const auto list = numericSourceFields(mapping.value("commandCode").toString());
+        numeric = QSet<QString>(list.begin(), list.end());
+    }
+    for (int row = 0; m_formatMode->currentData().toString() != "textTemplate" && row < m_fieldTable->rowCount(); ++row) {
         const QString name = itemText(m_fieldTable, row, 1);
         if (name.isEmpty() || seen.contains(name)) return QString::fromUtf8(u8"字段名称为空或重复");
         seen.insert(name);
@@ -1124,14 +1140,8 @@ void Widget::updateMappingSources()
     else if (motion && selected == "@fields") selected.clear();
     m_mappingSource->clear();
     m_mappingSource->addItem(motion ? QString::fromUtf8(u8"请选择字段") : QString::fromUtf8(u8"客户参数"), motion ? "" : "@fields");
-    QStringList numeric;
-    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
-        const QString name = itemText(m_fieldTable, row, 1);
-        if (comboData(m_fieldTable, row, 2) == "parameter" && comboData(m_fieldTable, row, 3) != "ascii" && !name.isEmpty()) {
-            numeric << name;
-            if (motion) m_mappingSource->addItem(name, name);
-        }
-    }
+    const QStringList numeric = numericSourceFields(m_mappingCode->text());
+    if (motion) for (const QString &name : numeric) m_mappingSource->addItem(name, name);
     if (motion) m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
     m_mappingSource->addItem(QString::fromUtf8(u8"无参数"), "@none");
     // 删除或改为文本后保留失效来源，不自动选择另一个字段。
@@ -1241,7 +1251,7 @@ void Widget::loadUiFromDraft()
     // 补齐旧界面未生成的停止/复位省略设置；显式省略列表和其他扩展元数据保持原值。
     QJsonArray optionalParameters;
     bool mappedCommand=false,afterCommand=false;
-    for (const QJsonValue &value:m_draftRoot.value("external").toObject().value("fields").toArray()) {
+    for (const QJsonValue &value:(TextFormat::enabled(m_draftRoot.value("external").toObject()) ? QJsonArray() : m_draftRoot.value("external").toObject().value("fields").toArray())) {
         const QJsonObject field=value.toObject();
         if (field.value("role").toString()=="command") {
             afterCommand=true; mappedCommand=field.value("lengthMode").toString()=="mappedCommand";
@@ -1276,6 +1286,8 @@ void Widget::loadUiFromDraft()
     m_loadingUi = true;
     const QSignalBlocker jsonBlocker(m_advancedJson);
     const QJsonObject external = m_draftRoot.value("external").toObject();
+    selectData(m_formatMode, external.value("mode").toString("sequential"));
+    m_textFormat->setFormat(external.value("textFormat").toObject());
     selectData(m_encoding, external.value("encoding").toString("ascii"));
     m_header->setText(external.value("header").toString());
     m_footer->setText(external.value("footer").toString());
@@ -1304,6 +1316,7 @@ void Widget::loadUiFromDraft()
     m_jsonDirty = false;
     m_loadingUi = false;
     resetMappingForm();
+    updateFormatMode();
     updateTableControls();
     refreshMappingSummaries();
     updateLiveState();
@@ -1335,7 +1348,7 @@ bool Widget::saveUiToDraft()
 
 bool Widget::collectUiDraft(QJsonObject *draft)
 {
-    if (!synchronizeFieldNames()) return false;
+    if (m_formatMode->currentData().toString() != "textTemplate" && !synchronizeFieldNames()) return false;
     // 所有数字先严格读取，任何失败都保留旧配置；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
         bool ok = false;
@@ -1349,14 +1362,17 @@ bool Widget::collectUiDraft(QJsonObject *draft)
     QJsonObject root = m_draftRoot;
     if (!root.contains("schemaVersion")) root.insert("schemaVersion", 1);
     if (!root.contains("name")) root.insert("name", QString::fromUtf8(u8"用户协议配置"));
-    QJsonObject external;
+    QJsonObject external = root.value("external").toObject();
+    if (m_formatMode->currentData().toString() == "textTemplate" || external.contains("mode")) external.insert("mode", m_formatMode->currentData().toString());
+    if (m_formatMode->currentData().toString() == "textTemplate" || external.contains("textFormat")) external.insert("textFormat", m_textFormat->format());
     external.insert("encoding", m_encoding->currentData().toString());
     external.insert("header", m_header->text());
     external.insert("footer", m_footer->text());
     external.insert("byteOrder", m_byteOrder->currentData().toString());
     QJsonArray fields;
-    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
-        QJsonObject field;
+    for (int row = 0; m_formatMode->currentData().toString() != "textTemplate" && row < m_fieldTable->rowCount(); ++row) {
+        QJsonObject field = m_fieldTable->item(row, 1)->data(Qt::UserRole + 1).toJsonObject();
+        for (const QString &key : {QStringLiteral("length"), QStringLiteral("fixedValue"), QStringLiteral("min"), QStringLiteral("max")}) field.remove(key);
         field.insert("name", itemText(m_fieldTable, row, 1));
         field.insert("role", comboData(m_fieldTable, row, 2));
         field.insert("type", comboData(m_fieldTable, row, 3));
@@ -1387,18 +1403,21 @@ bool Widget::collectUiDraft(QJsonObject *draft)
         }
         fields.append(field);
     }
-    external.insert("fields", fields);
+    if (m_formatMode->currentData().toString() != "textTemplate") external.insert("fields", fields);
     root.insert("external", external);
 
     QJsonArray mappings;
     for (int row = 0; row < m_mappingTable->rowCount(); ++row)
         mappings.append(m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject());
     root.insert("mappings", mappings);
-    root.insert("device", QJsonObject{
+    QJsonObject device = root.value("device").toObject();
+    const QJsonObject deviceValues{
         {"destination", m_destination->value()}, {"source", m_source->value()},
         {"devId", m_devId->value()}, {"absoluteAction", m_action->value()},
         {"speedUmPerS", m_speed->value()}, {"minPositionUm", m_minPosition->value()},
-        {"maxPositionUm", m_maxPosition->value()}});
+        {"maxPositionUm", m_maxPosition->value()}};
+    for (auto it = deviceValues.begin(); it != deviceValues.end(); ++it) device.insert(it.key(), it.value());
+    root.insert("device", device);
     *draft = root;
     return true;
 }
@@ -1493,6 +1512,10 @@ void Widget::activateSavedConfiguration()
         return;
     }
     m_activeConfig = config;
+    if (TextFormat::enabled(config.root.value("external").toObject()) && config.root.value("mappings").toArray().isEmpty()) {
+        m_validationState->setText(QString::fromUtf8(u8"格式已保存，尚无发送映射；可使用“解析格式”。"));
+        updateLiveState(); return;
+    }
     const QJsonObject device = config.root.value("device").toObject();
     // 只更新默认地址；已有请求保存自己的地址和序号，保存不能重置会话或打断回告。
     m_protocol->setAddresses(quint8(device.value("destination").toInt()),
@@ -1700,6 +1723,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
     for (const QString &name : preview.fieldOrder)
         lines << QStringLiteral("  %1 = %2").arg(name, preview.fields.value(name).toString());
     lines << QString::fromUtf8(u8"命中的客户命令码：%1").arg(preview.matchedCommandCode);
+    lines += preview.notices;
     lines << QString::fromUtf8(u8"参数换算：");
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
         lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
@@ -1712,6 +1736,45 @@ QString Widget::previewText(const ConversionPreview &preview) const
         // 模型继续携带协议单位供后续标定使用；本轮界面按用户确认只展示直接传递的数值。
         lines << QStringLiteral("  %1 = %2").arg(displayName(it.key()), it.value().toString());
     return lines.join('\n');
+}
+
+void Widget::updateFormatMode()
+{
+    const bool text = m_formatMode->currentData().toString() == "textTemplate";
+    m_textFormat->setVisible(text); m_fieldTable->setVisible(!text);
+    for (auto *button : findChildren<QPushButton *>()) if (button->property("legacyFormat").toBool()) button->setVisible(!text);
+    if (text) { selectData(m_encoding, "ascii"); }
+    m_encoding->setEnabled(!text);
+}
+
+QStringList Widget::numericSourceFields(const QString &code) const
+{
+    QStringList result;
+    if (m_formatMode->currentData().toString() == "textTemplate") {
+        const QJsonObject external{{"textFormat", m_textFormat->format()}};
+        for (const auto &v : TextFormat::fields(external, code)) {
+            const auto f = v.toObject();
+            if (f.value("role").toString("parameter") == "parameter" && f.value("type").toString() != "ascii") result << f.value("name").toString();
+        }
+    } else for (int r=0;r<m_fieldTable->rowCount();++r)
+        if (comboData(m_fieldTable,r,2)=="parameter" && comboData(m_fieldTable,r,3)!="ascii") result << itemText(m_fieldTable,r,1);
+    return result;
+}
+
+void Widget::parseFormatPreview()
+{
+    m_previewOutput->clear(); m_targetOutput->clear();
+    QJsonObject draft;
+    if (!collectUiDraft(&draft)) { m_previewOutput->setPlainText(m_validationState->text()); return; }
+    ProtocolConfig config; config.root = draft;
+    TranslationError error; QByteArray input = inputBytes(config, &error);
+    ConversionPreview result;
+    if (error.isValid() || !ConversionEngine(config).parsePreview(input, &result, &error)) {
+        m_previewOutput->setPlainText(QString::fromUtf8(u8"格式解析失败：%1\n%2").arg(error.code,error.message)); return;
+    }
+    QStringList lines{QString::fromUtf8(u8"格式解析成功（当前编辑内容；未生成或发送目标帧）")};
+    for (const auto &name : result.fieldOrder) lines << QStringLiteral("%1 = %2").arg(name,result.fields.value(name).toString());
+    lines += result.notices; m_previewOutput->setPlainText(lines.join('\n'));
 }
 
 void Widget::preview(bool live)

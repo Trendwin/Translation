@@ -1,4 +1,5 @@
 #include "protocolconfig.h"
+#include "textformat.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
 
@@ -125,7 +126,7 @@ bool ProtocolConfig::save(const QString &path, TranslationError *error) const
     return true;
 }
 
-bool ProtocolConfig::validate(TranslationError *error) const
+bool ProtocolConfig::validateFormat(TranslationError *error) const
 {
     if (!integer(root.value("schemaVersion"), 1, 1))
         return fail(error, "CONFIG_SCHEMA", QString::fromUtf8(u8"schemaVersion 必须为 1"));
@@ -150,6 +151,10 @@ bool ProtocolConfig::validate(TranslationError *error) const
         return fail(error, "CONFIG_BOUNDARY", QString::fromUtf8(u8"帧头与帧尾超过 4096 字节上限"));
     if (!QStringList({"big", "little"}).contains(external.value("byteOrder").toString("big")))
         return fail(error, "CONFIG_ENDIAN", QString::fromUtf8(u8"高级字节序只能是大端或小端"));
+
+    if (TextFormat::enabled(external)) return TextFormat::validate(external, error);
+    if (external.contains("mode") && external.value("mode").toString() != "sequential")
+        return fail(error, "CONFIG_MODE", QString::fromUtf8(u8"未知的格式模式"));
 
     const QJsonArray fields = external.value("fields").toArray();
     if (fields.isEmpty()) return fail(error, "CONFIG_FIELD", QString::fromUtf8(u8"至少需要一个字段"));
@@ -226,7 +231,25 @@ bool ProtocolConfig::validate(TranslationError *error) const
     if (commandFields != 1)
         return fail(error, "CONFIG_COMMAND_FIELD", QString::fromUtf8(u8"字段表必须且只能有一个“命令码”字段"));
 
+    return true;
+}
+
+bool ProtocolConfig::validate(TranslationError *error) const
+{
+    if (!validateFormat(error)) return false;
+    const QJsonObject external = root.value("external").toObject();
+    const bool textMode = TextFormat::enabled(external);
+    const QString encoding = external.value("encoding").toString();
+    QByteArray headerBytes, footerBytes;
+    decodeBytes(external.value("header").toString(), encoding, &headerBytes, nullptr);
+    decodeBytes(external.value("footer").toString(), encoding, &footerBytes, nullptr);
+    const QJsonArray fields = external.value("fields").toArray();
+    QSet<QString> names;
+    for (const auto &v : fields) names.insert(v.toObject().value("name").toString());
+    if (root.contains("mappings") && !root.value("mappings").isArray())
+        return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令映射必须为列表"));
     const QJsonArray mappings = root.value("mappings").toArray();
+    if (textMode && mappings.isEmpty()) return true;
     if (mappings.isEmpty()) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"至少需要一条命令映射"));
     QSet<QString> commandCodes;
     // SDK预置按操作保存。校验的是被声明的默认参数，不要求提前填写其它业务必填项。
@@ -291,7 +314,17 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
         const QJsonObject input = mapping.value("input").toObject();
-        QSet<QString> available = names, omitted;
+        QJsonArray mappingFields = textMode ? TextFormat::fields(external, code) : fields;
+        if (textMode) {
+            bool declared = false;
+            for (const auto &v : external.value("textFormat").toObject().value("commands").toArray())
+                declared |= v.toObject().value("code").toString() == code;
+            if (!declared) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令映射“%1”没有对应的命令格式").arg(code));
+            if (!input.isEmpty()) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"文本模板按独立命令格式读取参数，不使用省略字段"));
+        }
+        QSet<QString> mappingNames;
+        for (const auto &v : mappingFields) mappingNames.insert(v.toObject().value("name").toString());
+        QSet<QString> available = mappingNames, omitted;
         if (input.contains("omitFields") && !input.value("omitFields").isArray())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段必须是字段名称列表"));
         for (const QJsonValue &omittedValue : input.value("omitFields").toArray()) {
@@ -328,7 +361,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"帧尾请在客户协议格式中设置；命令映射不再支持独立帧尾"));
         const QJsonObject effective = inputFormat(mapping);
         int minimumLength = headerBytes.size() + footerBytes.size();
-        for (const QJsonValue &f : effective.value("fields").toArray()) {
+        for (const QJsonValue &f : (textMode ? QJsonArray() : effective.value("fields").toArray())) {
             const QJsonObject effectiveField = f.toObject();
             const QString mode = effectiveField.value("lengthMode").toString();
             minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : 1;
@@ -336,10 +369,10 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (minimumLength > 4096)
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));
         QSet<QString> numericParameters;
-        for (const QJsonValue &fieldValue : fields) {
+        for (const QJsonValue &fieldValue : mappingFields) {
             const QJsonObject field = fieldValue.toObject();
             if (available.contains(field.value("name").toString())
-                    && field.value("role").toString() == "parameter"
+                    && field.value("role").toString("parameter") == "parameter"
                     && field.value("type").toString() != "ascii")
                 numericParameters.insert(field.value("name").toString());
         }
@@ -376,7 +409,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
                 const QString source = expression.value("field").toString();
                 // 界面可追踪同一行字段的改名，但删除、类型变化或整体JSON替换不能猜替代字段。
                 // 在配置层统一核对引用与当前字段定义，防止不可见失效引用进入真实组帧。
-                if (!names.contains(source))
+                if (!mappingNames.contains(source))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”找不到客户字段“%3”；请重新选择来源").arg(code, parameterName, source));
                 if (!available.contains(source))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source));

@@ -10,6 +10,7 @@ struct ConversionPreview
     QByteArray input;
     QMap<QString,QVariant> fields;
     QStringList fieldOrder;
+    QStringList notices;
     QString matchedCommandCode;
     QMap<QString,QString> parameterTrace;
     UnifiedCommand command;
@@ -21,11 +22,13 @@ class ConversionEngine
 {
 public:
     explicit ConversionEngine(const ProtocolConfig &config);
+    bool parsePreview(const QByteArray &input, ConversionPreview *out, TranslationError *error) const;
     bool convert(const QByteArray &input, bool live, ConversionPreview *out, TranslationError *error) const;
     QList<QByteArray> feed(const QByteArray &chunk, QList<TranslationError> *errors);
     void clear() { m_buffer.clear(); }
 private:
-    bool parse(const QByteArray &input, QMap<QString,QVariant> *fields, TranslationError *error) const;
+    bool parse(const QByteArray &input, QMap<QString,QVariant> *fields, TranslationError *error,
+               QStringList *order = nullptr, QStringList *notices = nullptr) const;
     bool map(const QMap<QString,QVariant> &fields, UnifiedCommand *command,
              ConversionPreview *preview, TranslationError *error) const;
     ProtocolConfig m_config;

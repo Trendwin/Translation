@@ -25,3 +25,6 @@ HEADERS += ../src/model/translationtypes.h \
     ../src/transport/itransport.h
 
 include($$PWD/../src/qusheng/sdk/qusheng-sdk.pri)
+
+SOURCES += ../src/config/textformat.cpp
+HEADERS += ../src/config/textformat.h

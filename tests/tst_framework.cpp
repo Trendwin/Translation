@@ -33,6 +33,9 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void textTemplatesAndIndependentParsing();
+    void textTemplateValidationAndFailures();
+    void textTemplateMappingAndStreaming();
     void configuredDtStyleAndRoundTrip();
     void debugSequenceWraps();
     void debugRelativeSendsWithoutPreflight();
@@ -92,6 +95,84 @@ static QString example(const QString &name)
     // qmake 在独立构建目录中把 __FILE__ 设为相对路径，必须相对构建目录解析，不能依赖启动目录。
     const QString source = QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__));
     return QFileInfo(source).dir().filePath("../examples/" + name);
+}
+
+
+void FrameworkTest::textTemplatesAndIndependentParsing()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview p;
+    QVERIFY2(ProtocolConfig::load(example("text-template.json"), &config, &error), qPrintable(error.message));
+    // The user's customer identifiers are test fixtures, never parser branches.
+    auto external = config.root.value("external").toObject();
+    auto format = external.value("textFormat").toObject();
+    auto commands = format.value("commands").toArray();
+    for (int i=0;i<3;++i) {
+        auto c=commands.at(i).toObject(); c.insert("code",QStringList{"MFCV","XYZ_PX","DI_PDDA"}.at(i)); commands.replace(i,c);
+    }
+    format.insert("commands",commands); external.insert("textFormat",format);
+    // Inactive legacy fields must not select command names or shift streaming boundaries.
+    external.insert("fields",QJsonArray{QJsonObject{{"name","oldCommand"},{"role","command"},{"length",4000},{"lengthMode","fixed"}}});
+    config.root.insert("external",external);
+    config.root.insert("device",QJsonObject{{"destination","invalid business value"}});
+    for (const int sequence : {1,12,255}) {
+        const QByteArray input="@&5A&01&SCT&"+QByteArray::number(sequence)+"&0;MFCV=255;10\nEND&?&\r\n";
+        QVERIFY2(ConversionEngine(config).parsePreview(input,&p,&error),qPrintable(error.message));
+        QCOMPARE(p.fields.value("source").toString(),QString("5A"));
+        QCOMPARE(p.fields.value("sequence").toInt(),sequence);
+        QCOMPARE(p.fields.value("value").toInt(),255);
+        QCOMPARE(p.fields.value("delay").toInt(),10);
+        QCOMPARE(p.fields.value("checksum").toString(),QString("?"));
+        QCOMPARE(p.notices.size(),3); QVERIFY(p.targetFrame.isEmpty());
+    }
+    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;XYZ_PX=234;10\nEND&?&\r\n",&p,&error));
+    QCOMPARE(p.fields.value("position").toInt(),234);
+    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;DI_PDDA=20,-200,30000;10\nEND&?&\r\n",&p,&error));
+    QCOMPARE(p.fields.value("x").toInt(),20); QCOMPARE(p.fields.value("y").toInt(),-200); QCOMPARE(p.fields.value("z").toInt(),30000);
+    QVERIFY(p.fieldOrder.indexOf("x")<p.fieldOrder.indexOf("y"));
+    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;PING=;10\nEND&?&\r\n",&p,&error));
+    QTemporaryDir dir; QVERIFY(config.save(dir.filePath("format.json"),&error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(dir.filePath("format.json"),&restored,&error)); QCOMPARE(restored.root,config.root);
+}
+
+void FrameworkTest::textTemplateValidationAndFailures()
+{
+    ProtocolConfig config; TranslationError e; ConversionPreview p;
+    QVERIFY(ProtocolConfig::load(example("text-template.json"),&config,&e));
+    const QByteArray prefix="@&5A&01&SCT&1&0;", suffix=";10\nEND&?&\r\n";
+    for (const QByteArray bad : {QByteArray("VECTOR=1,2"),QByteArray("VECTOR=1,2,3,4"),QByteArray("VECTOR=1,2,abc"),QByteArray("VECTOR=1,2,3\n"),QByteArray("UNKNOWN=2"),QByteArray("SET=9223372036854775808"),QByteArray("SET=3\nSET=4")}) {
+        QVERIFY(ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix,&p,&e));
+        QVERIFY2(!ConversionEngine(config).parsePreview(prefix+bad+suffix,&p,&e),bad.constData());
+        QVERIFY(p.fields.isEmpty()); QVERIFY(p.targetFrame.isEmpty()); QVERIFY(e.isValid());
+    }
+    QVERIFY(!ConversionEngine(config).parsePreview("@&5A&01&UNKNOWN&1&0;SET=10"+suffix,&p,&e)); QCOMPARE(e.code,QString("FIELD_CONSTANT"));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10;10\nWRONG&?&\r\n",&p,&e));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix+"extra",&p,&e));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix+prefix+"SET=20"+suffix,&p,&e));QCOMPARE(e.code,QString("FRAME_MULTIPLE"));
+    const auto original=config.root.value("external").toObject();
+    for (const QString bad : {QString("{command}{arguments}"),QString("{command}={command}"),QString("{command}={arguments};{undeclared}"),QString("{command}={arguments}\\q"),QString("{command}={arguments" )}) {
+        auto ext=original; auto f=ext.value("textFormat").toObject();f.insert("template",bad);ext.insert("textFormat",f);config.root.insert("external",ext);QVERIFY2(!config.validateFormat(&e),qPrintable(bad));
+    }
+    auto ext=original;auto f=ext.value("textFormat").toObject();auto cmds=f.value("commands").toArray();auto c=cmds.at(0).toObject();c.insert("template",QString::fromUtf8(u8"{数值}"));c.insert("fields",QJsonArray{QJsonObject{{"name",QString::fromUtf8(u8"数值")},{"type","uint"},{"role","parameter"}}});cmds.replace(0,c);f.insert("commands",cmds);ext.insert("textFormat",f);config.root.insert("external",ext);
+    QVERIFY2(ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix,&p,&e),qPrintable(e.message));QCOMPARE(p.fields.value(QString::fromUtf8(u8"数值")).toInt(),10);
+}
+
+void FrameworkTest::textTemplateMappingAndStreaming()
+{
+    ProtocolConfig config;TranslationError e;ConversionPreview p;
+    QVERIFY(ProtocolConfig::load(example("text-template-mapping.json"),&config,&e));
+    auto ext=config.root.value("external").toObject();ext.insert("fields",QJsonArray{QJsonObject{{"name","oldCommand"},{"role","command"},{"length",4090},{"lengthMode","fixed"}}});config.root.insert("external",ext);
+    QVERIFY2(ConversionEngine(config).convert("[12|MOVE:234]\r",false,&p,&e),qPrintable(e.message));
+    QCOMPARE(p.command.parameters.value("positionUm").toInt(),234); QVERIFY(!p.targetFrame.isEmpty());
+    ConversionEngine stream(config);QList<TranslationError> errors;
+    QVERIFY(stream.feed("noise[12|MO",&errors).isEmpty());
+    const auto frames=stream.feed("VE:234]\r[255|TRIPLE:20/30/40]\r",&errors);QCOMPARE(frames.size(),2);QVERIFY(errors.isEmpty());
+    QVERIFY(stream.parsePreview(frames.last(),&p,&e));QCOMPARE(p.fields.value("z").toInt(),40);
+    QVERIFY(!stream.convert(frames.last(),false,&p,&e));QVERIFY(p.targetFrame.isEmpty());
+    auto format=ext.value("textFormat").toObject();auto fields=format.value("fields").toArray();auto field=fields.at(0).toObject();field.insert("role","execution");fields.replace(0,field);format.insert("fields",fields);ext.insert("textFormat",format);config.root.insert("external",ext);
+    QVERIFY(ConversionEngine(config).parsePreview("[12|MOVE:234]\r",&p,&e));
+    QVERIFY(!ConversionEngine(config).convert("[12|MOVE:234]\r",false,&p,&e));QCOMPARE(e.code,QString("EXECUTION_SEMANTICS"));QVERIFY(p.targetFrame.isEmpty());
+    auto mappings=config.root.value("mappings").toArray();auto mapping=mappings.at(0).toObject();mapping.insert("parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","x"}}}});mappings.replace(0,mapping);config.root.insert("mappings",mappings);
+    QVERIFY(!config.validate(&e));QCOMPARE(e.code,QString("CONFIG_EXPRESSION"));
 }
 
 void FrameworkTest::completeCommandCatalogMatchesProtocol()

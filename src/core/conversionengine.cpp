@@ -1,4 +1,5 @@
 #include "conversionengine.h"
+#include "config/textformat.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
@@ -128,7 +129,7 @@ bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fiel
 ConversionEngine::ConversionEngine(const ProtocolConfig &config) : m_config(config) {}
 
 bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *fields,
-                             TranslationError *error) const
+                             TranslationError *error, QStringList *order, QStringList *notices) const
 {
     fields->clear();
     if (input.size() > 4096)
@@ -148,6 +149,11 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
 
     // 字段只在去掉帧头、帧尾后的有效载荷中按表格顺序推进，不允许 offset 穿透到普通配置。
     const QByteArray payload = input.mid(header.size(), input.size() - header.size() - footer.size());
+    if (TextFormat::enabled(external)) {
+        if (payload.contains(footer))
+            return fail(error, "FRAME_MULTIPLE", QString::fromUtf8(u8"正文含完整帧尾或多条报文；每次解析只接受一条完整报文"));
+        return TextFormat::parse(external, payload, fields, order, notices, error);
+    }
     int cursor = 0;
     const bool asciiEncoding = external.value("encoding").toString() == "ascii";
     const bool littleEndian = external.value("byteOrder").toString("big") == "little";
@@ -224,8 +230,8 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
 bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand *command,
                            ConversionPreview *preview, TranslationError *error) const
 {
-    QString commandField;
-    for (const QJsonValue &value : m_config.root.value("external").toObject().value("fields").toArray()) {
+    QString commandField = TextFormat::enabled(m_config.root.value("external").toObject()) ? QStringLiteral("command") : QString();
+    for (const QJsonValue &value : (TextFormat::enabled(m_config.root.value("external").toObject()) ? QJsonArray() : m_config.root.value("external").toObject().value("fields").toArray())) {
         const QJsonObject field = value.toObject();
         if (field.value("role").toString() == "command") {
             commandField = field.value("name").toString();
@@ -353,6 +359,27 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     return true;
 }
 
+bool ConversionEngine::parsePreview(const QByteArray &input, ConversionPreview *out, TranslationError *error) const
+{
+    if (out) *out = ConversionPreview();
+    if (error) *error = TranslationError();
+    if (!m_config.validateFormat(error)) return false;
+    ConversionPreview result; result.input = input;
+    if (!parse(input, &result.fields, error, &result.fieldOrder, &result.notices)) return false;
+    const auto external = m_config.root.value("external").toObject();
+    if (TextFormat::enabled(external)) {
+        result.matchedCommandCode = result.fields.value("command").toString();
+    } else {
+        for (const auto &v : external.value("fields").toArray()) {
+            const auto f = v.toObject(); const auto name = f.value("name").toString();
+            if (result.fields.contains(name)) result.fieldOrder << name;
+            if (f.value("role").toString() == "command") result.matchedCommandCode = result.fields.value(name).toString();
+        }
+    }
+    if (out) *out = result;
+    return true;
+}
+
 bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPreview *out,
                                TranslationError *error) const
 {
@@ -363,13 +390,14 @@ bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPre
     if (!m_config.validate(error)) return false;
     ConversionPreview result;
     result.input = input;
-    if (!parse(input, &result.fields, error)
-            || !map(result.fields, &result.command, &result, error))
-        return false;
-    for (const QJsonValue &field : m_config.root.value("external").toObject().value("fields").toArray()) {
-        const QString name = field.toObject().value("name").toString();
-        if (result.fields.contains(name)) result.fieldOrder << name;
+    if (!parsePreview(input, &result, error)) return false;
+    const auto external = m_config.root.value("external").toObject();
+    if (TextFormat::enabled(external)) {
+        for (const auto &v : TextFormat::fields(external, result.matchedCommandCode))
+            if (v.toObject().value("role").toString() == "execution")
+                return fail(error, "EXECUTION_SEMANTICS", QString::fromUtf8(u8"字段“%1”要求执行语义，本版本仅支持格式解析；不能忽略后转换发送").arg(v.toObject().value("name").toString()));
     }
+    if (!map(result.fields, &result.command, &result, error)) return false;
 
     const QJsonObject device = m_config.root.value("device").toObject();
     QushengProtocol codec;
@@ -386,7 +414,7 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
 {
     QList<QByteArray> frames;
     TranslationError configError;
-    if (!m_config.validate(&configError)) {
+    if (!m_config.validateFormat(&configError)) {
         m_buffer.clear();
         if (errors) errors->append(configError);
         return frames;
@@ -412,8 +440,8 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
         const QJsonObject format = m_config.inputFormat(selected);
         const QByteArray footer = configuredBytes(format, "footer");
         int fixedPayloadLength = 0;
-        bool hasTailField = false;
-        for (const QJsonValue &value : format.value("fields").toArray()) {
+        bool hasTailField = TextFormat::enabled(external);
+        for (const QJsonValue &value : (TextFormat::enabled(external) ? QJsonArray() : format.value("fields").toArray())) {
             const QJsonObject field = value.toObject();
             const QString mode = field.value("lengthMode").toString();
             if (mode == "toFooter") hasTailField = true;
