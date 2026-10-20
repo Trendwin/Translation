@@ -28,3 +28,6 @@ include($$PWD/../src/qusheng/sdk/qusheng-sdk.pri)
 
 SOURCES += ../src/config/textformat.cpp
 HEADERS += ../src/config/textformat.h
+
+SOURCES += ../src/config/sampleformat.cpp
+HEADERS += ../src/config/sampleformat.h

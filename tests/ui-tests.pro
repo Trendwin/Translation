@@ -24,3 +24,6 @@ HEADERS += ../src/config/textformat.h
 
 SOURCES += ../src/ui/textformateditor.cpp
 HEADERS += ../src/ui/textformateditor.h
+
+SOURCES += ../src/config/sampleformat.cpp
+HEADERS += ../src/config/sampleformat.h

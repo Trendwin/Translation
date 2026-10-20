@@ -265,7 +265,7 @@ void Widget::buildUi()
     m_byteOrder = combo(this, {{QString::fromUtf8(u8"大端（高字节在前）"), QStringLiteral("big")},
                                {QString::fromUtf8(u8"小端（低字节在前）"), QStringLiteral("little")}});
     m_byteOrder->setToolTip(QString::fromUtf8(u8"仅 HEX 输入中的多字节整数使用；ASCII 数字不受影响。"));
-    m_formatMode = combo(this, {{QString::fromUtf8(u8"顺序字段（原有格式）"), "sequential"}, {QString::fromUtf8(u8"文本模板与独立命令参数"), "textTemplate"}});
+    m_formatMode = combo(this, {{QString::fromUtf8(u8"顺序字段（原有格式）"), "sequential"}, {QString::fromUtf8(u8"按样例拆分（文本）"), "textTemplate"}});
     m_formatMode->setObjectName("formatMode");
     boundaryForm->addRow(QString::fromUtf8(u8"格式方式"), m_formatMode);
     boundaryForm->addRow(QString::fromUtf8(u8"编码方式"), m_encoding);
@@ -319,6 +319,10 @@ void Widget::buildUi()
     connect(m_textFormat, &TextFormatEditor::changed, this, [this]() { if (!m_loadingUi) { updateMappingSources(); markDraftDirty(); } });
     connect(m_formatMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateFormatMode(); updateMappingSources(); markDraftDirty(); });
     m_textFormat->hide();
+    for (auto *boundary : {m_header, m_footer})
+        connect(boundary, &QLineEdit::textChanged, this, [this]() {
+            m_textFormat->setFrameBoundaries(m_header->text(), m_footer->text());
+        });
     tabs->addTab(scrollPage(formatPage), QString::fromUtf8(u8"客户协议格式"));
 
     auto *mappingPage = new QWidget(this);
@@ -1322,8 +1326,17 @@ void Widget::loadUiFromDraft()
     updateLiveState();
 }
 
+bool Widget::sampleEditsResolved()
+{
+    if (!m_textFormat->hasPendingSampleEdits()) return true;
+    m_validationState->setText(QString::fromUtf8(u8"还有未应用的样例字段设置，请先在格式页点击“应用”或“放弃本次拆分”，再保存、导入或发送。"));
+    appendLog(m_validationState->text());
+    return false;
+}
+
 bool Widget::saveConfiguration()
 {
+    if (!sampleEditsResolved()) return false;
     QWidget *editor = QApplication::focusWidget();
     if (editor && isAncestorOf(editor)) editor->clearFocus();
     if (m_formDirty && m_jsonDirty) {
@@ -1348,6 +1361,7 @@ bool Widget::saveUiToDraft()
 
 bool Widget::collectUiDraft(QJsonObject *draft)
 {
+    if (!sampleEditsResolved()) return false;
     if (m_formatMode->currentData().toString() != "textTemplate" && !synchronizeFieldNames()) return false;
     // 所有数字先严格读取，任何失败都保留旧配置；不能把 abc 或小数隐式保存成 0。
     auto readInteger = [this](const QString &text, qlonglong *value, const QString &label) {
@@ -1451,6 +1465,7 @@ void Widget::markDraftDirty()
 
 bool Widget::draftSaved()
 {
+    if (!sampleEditsResolved()) return false;
     // “表单”“配置”“启用快照”是三个不同状态。未保存表单绝不能被旧配置的校验成功掩盖。
     if (!m_formDirty && !m_jsonDirty) return true;
     const QString reason = QString::fromUtf8(u8"请先点击“保存配置”，再预览或导出。");
@@ -1531,6 +1546,7 @@ void Widget::activateSavedConfiguration()
 
 bool Widget::applyAdvancedJson()
 {
+    if (!sampleEditsResolved()) return false;
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(m_advancedJson->toPlainText().toUtf8(), &parseError);
     if (!document.isObject()) {
@@ -1552,7 +1568,7 @@ void Widget::closeEvent(QCloseEvent *event)
     // 提交仍在编辑的表格单元格和设备数字，再判断是否有未保存修改。
     QWidget *editor = QApplication::focusWidget();
     if (editor && isAncestorOf(editor)) editor->clearFocus();
-    if (!m_formDirty && !m_jsonDirty) {
+    if (!m_formDirty && !m_jsonDirty && !m_textFormat->hasPendingSampleEdits()) {
         event->accept();
         return;
     }
@@ -1595,6 +1611,7 @@ void Widget::closeEvent(QCloseEvent *event)
 
 void Widget::importDraft()
 {
+    if (!sampleEditsResolved()) return;
     const QString path = QFileDialog::getOpenFileName(this, QString::fromUtf8(u8"导入协议配置"),
                                                        QString(), QStringLiteral("JSON (*.json)"));
     if (path.isEmpty()) return;
@@ -1675,6 +1692,7 @@ void Widget::updateLiveState()
 
 bool Widget::debugConfig(ProtocolConfig *config)
 {
+    if (!sampleEditsResolved()) return false;
     QJsonObject root = m_draftRoot;
     if (m_jsonDirty) {
         const QJsonDocument json = QJsonDocument::fromJson(m_advancedJson->toPlainText().toUtf8());

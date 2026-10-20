@@ -28,6 +28,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include "widget.h"
+#include "ui/textformateditor.h"
+#include <QToolButton>
 #include "transport/serialtransport.h"
 #include "core/translationservice.h"
 #include "core/requestmanager.h"
@@ -44,6 +46,8 @@ class WidgetTest : public QObject
     Q_OBJECT
 private slots:
     void initTestCase();
+    void sampleEditorWorkflowAndRestart();
+    void sampleEditorPendingChangesAndFailures();
     void textFormatEditorLifecycle();
     void textFormatSourcesAndFailedPreview();
     void textFormatRanges();
@@ -1160,6 +1164,64 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
 }
 
 
+
+
+static int sampleRow(Widget &widget,const QString &value)
+{
+    auto *table=widget.findChild<QTableWidget *>("samplePieces");
+    for(int row=0;row<table->rowCount();++row)if(table->item(row,0)->text()==value)return row;
+    return -1;
+}
+static void setupSampleEditor(Widget &widget)
+{
+    auto *mode=widget.findChild<QComboBox *>("formatMode");mode->setCurrentIndex(mode->findData("textTemplate"));
+    widget.findChild<QLineEdit *>("formatHeader")->setText("@&");widget.findChild<QLineEdit *>("formatFooter")->setText("\\r\\n");
+    widget.findChild<QTableWidget *>("mappingTable")->setRowCount(0);
+    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&1&0;DI_PDDA=20,200,3000;10\\nEND&?&\\r\\n");
+    button(widget,"suggestSampleSeparators")->click();button(widget,"splitSampleButton")->click();
+}
+void WidgetTest::sampleEditorWorkflowAndRestart()
+{
+    const QString path=freshDraftPath();Widget widget(nullptr,path);widget.show();setupSampleEditor(widget);
+    QVERIFY(widget.findChild<QWidget *>("textAdvancedSettings")->isHidden());
+    auto *editor=widget.findChild<TextFormatEditor *>("textFormatEditor");auto *pieces=widget.findChild<QTableWidget *>("samplePieces");
+    QCOMPARE(pieces->item(0,0)->text(),QString("DI_PDDA"));QCOMPARE(pieces->item(1,0)->text(),QString("20"));QCOMPARE(pieces->item(3,0)->text(),QString("3000"));
+    QVERIFY(editor->format().value("commands").toArray().isEmpty());
+    pieces->setCurrentCell(sampleRow(widget,"20"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("x");widget.findChild<QLineEdit *>("samplePieceMax")->setText("255");
+    pieces->setCurrentCell(sampleRow(widget,"200"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("y");
+    pieces->setCurrentCell(sampleRow(widget,"3000"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("z");
+    pieces->setCurrentCell(sampleRow(widget,"0"),0);auto *role=widget.findChild<QComboBox *>("samplePieceRole");role->setCurrentIndex(role->findData("execution"));
+    pieces->setCurrentCell(sampleRow(widget,"?"),0);role->setCurrentIndex(role->findData("checksum"));
+    button(widget,"applySampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());QCOMPARE(editor->format().value("commands").toArray().size(),1);
+    button(widget,"parseCurrentSampleButton")->click();auto *parsed=widget.findChild<QTextEdit *>("sampleParseResult");QVERIFY2(parsed->toPlainText().contains("z = 3000"),qPrintable(parsed->toPlainText()));
+    const auto outer=editor->format().value("fields");const auto original=editor->format().value("commands").toArray().at(0);
+    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&12&0;MFCV=255;10\\nEND&?&\\r\\n");button(widget,"splitSampleButton")->click();button(widget,"applySampleButton")->click();
+    QCOMPARE(editor->format().value("fields"),outer);QCOMPARE(editor->format().value("commands").toArray().at(0),original);
+    QCOMPARE(widget.findChild<QComboBox *>("sampleKnownCommands")->count(),2);
+    button(widget,"saveConfig")->click();const auto saved=draftRoot(widget);Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),saved);
+    auto *summary=restored.findChild<QComboBox *>("sampleKnownCommands");QCOMPARE(summary->count(),2);QVERIFY(summary->itemText(0).contains("3"));QVERIFY(!restored.findChild<QLineEdit *>("formatSampleInput")->text().isEmpty());
+    const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");if(!render.isEmpty()) {
+        auto *tabs=widget.findChild<QTabWidget *>("mainTabs");tabs->setCurrentIndex(0);QCoreApplication::processEvents();QDir().mkpath(render);QVERIFY(widget.grab().save(QDir(render).filePath("sample-editor-main.png")));
+        widget.findChild<QComboBox *>("sampleKnownCommands")->setCurrentIndex(0);button(widget,"splitSampleButton")->click();pieces->setCurrentCell(sampleRow(widget,"20"),0);QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("sample-editor-three-parameters.png")));
+    }
+}
+void WidgetTest::sampleEditorPendingChangesAndFailures()
+{
+    const QString path=freshDraftPath();Widget widget(nullptr,path);setupSampleEditor(widget);
+    auto *editor=widget.findChild<TextFormatEditor *>("textFormatEditor");QVERIFY(editor->hasPendingSampleEdits());button(widget,"saveConfig")->click();QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"未应用")));
+    button(widget,"applySampleButton")->click();button(widget,"saveConfig")->click();const auto saved=draftBytes(path);const auto format=editor->format();
+    // Browsing an existing command does not create uncommitted edits.
+    button(widget,"splitSampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());
+    auto *pieces=widget.findChild<QTableWidget *>("samplePieces");pieces->setCurrentCell(sampleRow(widget,"20"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("changed");QVERIFY(editor->hasPendingSampleEdits());
+    button(widget,"saveConfig")->click();QCOMPARE(draftBytes(path),saved);
+    bool prompt=false;QVERIFY(!closeWithChoice(widget,QString::fromUtf8(u8"保存"),&prompt));QVERIFY(prompt);QVERIFY(widget.isVisible());QCOMPARE(draftBytes(path),saved);
+    button(widget,"discardSampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());QCOMPARE(editor->format(),format);
+    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&1&0;DI_PDDA=20,200;10\\nEND&?&\\r\\n");button(widget,"splitSampleButton")->click();button(widget,"applySampleButton")->click();QCOMPARE(editor->format(),format);
+    widget.findChild<QLineEdit *>("formatHeader")->setText("WRONG");button(widget,"splitSampleButton")->click();QVERIFY(widget.findChild<QLabel *>("sampleFormatStatus")->text().contains(QString::fromUtf8(u8"帧头")));QCOMPARE(editor->format(),format);
+    // Advanced edits update the summary without changing a sample the user is typing.
+    const QString typed=widget.findChild<QLineEdit *>("formatSampleInput")->text();widget.findChild<QTableWidget *>("textCommands")->item(0,0)->setText("RENAMED");QVERIFY(widget.findChild<QComboBox *>("sampleKnownCommands")->itemText(0).contains("RENAMED"));QCOMPARE(widget.findChild<QLineEdit *>("formatSampleInput")->text(),typed);
+}
 
 void WidgetTest::textFormatEditorLifecycle()
 {
