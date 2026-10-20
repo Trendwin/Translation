@@ -5,7 +5,6 @@
 #include <QTemporaryDir>
 
 #include "config/protocolconfig.h"
-#include "config/sampleformat.h"
 #include "core/conversionengine.h"
 #include "core/requestmanager.h"
 #include "demo/demointernalprotocol.h"
@@ -34,11 +33,9 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
-    void sampleFormatGenerationAndAppend();
-    void sampleFormatFailuresPreserveConfiguration();
-    void textTemplatesAndIndependentParsing();
-    void textTemplateValidationAndFailures();
-    void textTemplateMappingAndStreaming();
+    void sequentialDelimitedFieldsAndMapping();
+    void sequentialDelimitedFailureAndStream();
+    void retiredFormatsAreRejected();
     void configuredDtStyleAndRoundTrip();
     void debugSequenceWraps();
     void debugRelativeSendsWithoutPreflight();
@@ -101,126 +98,61 @@ static QString example(const QString &name)
 }
 
 
-
-void FrameworkTest::sampleFormatGenerationAndAppend()
+static ProtocolConfig delimitedConfig()
 {
-    QJsonObject external{{"mode","textTemplate"},{"encoding","ascii"},{"header","@&"},{"footer","\\r\\n"}};
-    const QJsonObject separators{{"region",";"},{"field","&"},{"assignment","="},{"parameter",","}};
-    const QString sample="@&5A&01&SCT&1&0;DI_PDDA=20,200,3000;10\\nEND&?&\\r\\n";
-    SampleFormatDraft draft;TranslationError error;QJsonObject result;
-    QVERIFY2(SampleFormat::prepare(external,sample,separators,&draft,&error),qPrintable(error.message));
-    int localCount=0;
-    for(auto &piece:draft.pieces) {
-        if(piece.scope=="local"&&!piece.literal){++localCount;piece.field.insert("name",QStringList{"x","y","z"}.at(localCount-1));piece.field.insert("type","int");}
-        if(piece.scope=="outer"&&!piece.literal&&piece.bytes=="0"){piece.field.insert("role","execution");piece.field.insert("note","preserve");}
-        if(piece.scope=="outer"&&!piece.literal&&piece.bytes=="?")piece.field.insert("role","checksum");
-    }
-    QCOMPARE(localCount,3);QVERIFY(external.value("textFormat").isUndefined());
-    QVERIFY2(SampleFormat::apply(external,draft,separators,&result,&error),qPrintable(error.message));
-    external.insert("textFormat",result);const auto envelope=result.value("fields");
-    ProtocolConfig config;config.root={{"schemaVersion",1},{"external",external}};ConversionPreview preview;
-    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&255&0;DI_PDDA=-20,2000,30000;10\nEND&?&\r\n",&preview,&error));
-    QCOMPARE(preview.fields.value("z").toInt(),30000);QCOMPARE(preview.notices.size(),2);
-    QVERIFY(SampleFormat::prepare(external,"@&5A&01&SCT&12&0;MFCV=255;10\\nEND&?&\\r\\n",separators,&draft,&error));
-    QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));QCOMPARE(result.value("commands").toArray().size(),2);QCOMPARE(result.value("fields"),envelope);
-    const auto first=result.value("commands").toArray().at(0);external.insert("textFormat",result);
-    QVERIFY(SampleFormat::prepare(external,sample,separators,&draft,&error));QVERIFY(draft.existingCommand);
-    QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));QCOMPARE(result.value("commands").toArray().at(0),first);
-    const QJsonObject alternative{{"mode","textTemplate"},{"encoding","ascii"},{"header","<"},{"footer",">"}};
-    const QJsonObject other{{"region",""},{"field","|"},{"assignment",":"},{"parameter","/"}};
-    QVERIFY(SampleFormat::prepare(alternative,"<12|MOVE:-1/20/300>",other,&draft,&error));QVERIFY(SampleFormat::apply(alternative,draft,other,&result,&error));
-    QVERIFY(SampleFormat::prepare(alternative,"<12|PING:>",other,&draft,&error));QVERIFY(SampleFormat::apply(alternative,draft,other,&result,&error));QVERIFY(result.value("commands").toArray().at(0).toObject().value("fields").toArray().isEmpty());
+    auto f=[](const QString &name,const QString &type,const QString &role,const QString &delimiter){return QJsonObject{{"name",name},{"type",type},{"role",role},{"lengthMode","delimited"},{"delimiter",delimiter}};};
+    auto source=f("source","ascii","fixed","&");source.insert("fixedValue","5A");
+    auto target=f("destination","ascii","fixed","&");target.insert("fixedValue","01");
+    auto type=f("type","ascii","fixed","&");type.insert("fixedValue","SCT");
+    auto value=f("value","uint","parameter",";");value.insert("min",0);value.insert("max",6000);
+    ProtocolConfig config;config.root={{"schemaVersion",1},{"external",QJsonObject{{"encoding","ascii"},{"header","@&"},{"footer","\\r\\n"},{"fields",QJsonArray{source,target,type,f("sequence","uint","metadata","&"),f("wait","uint","execution",";"),f("command","ascii","command","="),value,f("delay","uint","execution","\\n"),QJsonObject{{"name","end"},{"type","ascii"},{"role","fixed"},{"lengthMode","fixed"},{"length",4},{"fixedValue","END&"}},f("checksum","ascii","checksum","&")}}}},{"mappings",QJsonArray()}};
+    return config;
 }
-void FrameworkTest::sampleFormatFailuresPreserveConfiguration()
+static void addDelimitedMappings(ProtocolConfig *config)
 {
-    QJsonObject external{{"mode","textTemplate"},{"encoding","ascii"},{"header","["},{"footer","]"}};
-    const QJsonObject separators{{"region",";"},{"field","|"},{"assignment","="},{"parameter",","}};
-    SampleFormatDraft draft;TranslationError error;QJsonObject result;
-    QVERIFY(SampleFormat::prepare(external,"[1|MOVE=20,30]",separators,&draft,&error));QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));external.insert("textFormat",result);const auto before=external;
-    for(const QString bad:{QString("[1|MOVE=20,30,40]"),QString("[1|MOVE=20]"),QString("[1|MOVE=20;OTHER=30]"),QString("WRONG"),QString("[1|NEW=20,,30]")}) {
-        SampleFormatDraft proposal;QJsonObject output{{"untouched",true}};
-        if(SampleFormat::prepare(external,bad,separators,&proposal,&error))QVERIFY(!SampleFormat::apply(external,proposal,separators,&output,&error));
-        QCOMPARE(external,before);QVERIFY(output.value("untouched").toBool());
-    }
-    QVERIFY(SampleFormat::prepare(external,"[1|NEW=20]",separators,&draft,&error));auto modified=external;auto format=result;format.insert("note","changed after split");modified.insert("textFormat",format);
-    QVERIFY(!SampleFormat::apply(modified,draft,separators,&result,&error));QCOMPARE(error.code,QString("SAMPLE_STALE"));
+    QJsonArray mappings;for(const QString &code:{QStringLiteral("MFCV"),QStringLiteral("LED"),QStringLiteral("XYZ_PX")})mappings.append(QJsonObject{{"commandCode",code},{"operation","MOTOR_FORWARD"},{"parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","value"}}}}}});
+    config->root.insert("mappings",mappings);config->root.insert("device",QJsonObject{{"destination",2},{"source",1},{"devId",17},{"speedUmPerS",1000},{"minPositionUm",0},{"maxPositionUm",6000}});
 }
-
-void FrameworkTest::textTemplatesAndIndependentParsing()
+void FrameworkTest::sequentialDelimitedFieldsAndMapping()
 {
-    ProtocolConfig config; TranslationError error; ConversionPreview p;
-    QVERIFY2(ProtocolConfig::load(example("text-template.json"), &config, &error), qPrintable(error.message));
-    // The user's customer identifiers are test fixtures, never parser branches.
-    auto external = config.root.value("external").toObject();
-    auto format = external.value("textFormat").toObject();
-    auto commands = format.value("commands").toArray();
-    for (int i=0;i<3;++i) {
-        auto c=commands.at(i).toObject(); c.insert("code",QStringList{"MFCV","XYZ_PX","DI_PDDA"}.at(i)); commands.replace(i,c);
+    auto config=delimitedConfig();TranslationError error;ConversionPreview p;
+    for(const QString &code:{QStringLiteral("MFCV"),QStringLiteral("LED"),QStringLiteral("XYZ_PX"),QStringLiteral("UNKNOWN")})for(const int sequence:{1,12,255}) {
+        const QByteArray input="@&5A&01&SCT&"+QByteArray::number(sequence)+"&0;"+code.toLatin1()+"=234;10\nEND&?&\r\n";
+        QVERIFY2(ConversionEngine(config).parsePreview(input,&p,&error),qPrintable(error.message));QCOMPARE(p.fields.size(),10);QCOMPARE(p.fields.value("destination").toString(),QString("01"));QCOMPARE(p.fields.value("sequence").toInt(),sequence);QCOMPARE(p.fields.value("value").toInt(),234);QCOMPARE(p.notices.size(),3);QVERIFY(p.targetFrame.isEmpty());
     }
-    format.insert("commands",commands); external.insert("textFormat",format);
-    // Inactive legacy fields must not select command names or shift streaming boundaries.
-    external.insert("fields",QJsonArray{QJsonObject{{"name","oldCommand"},{"role","command"},{"length",4000},{"lengthMode","fixed"}}});
-    config.root.insert("external",external);
-    config.root.insert("device",QJsonObject{{"destination","invalid business value"}});
-    for (const int sequence : {1,12,255}) {
-        const QByteArray input="@&5A&01&SCT&"+QByteArray::number(sequence)+"&0;MFCV=255;10\nEND&?&\r\n";
-        QVERIFY2(ConversionEngine(config).parsePreview(input,&p,&error),qPrintable(error.message));
-        QCOMPARE(p.fields.value("source").toString(),QString("5A"));
-        QCOMPARE(p.fields.value("sequence").toInt(),sequence);
-        QCOMPARE(p.fields.value("value").toInt(),255);
-        QCOMPARE(p.fields.value("delay").toInt(),10);
-        QCOMPARE(p.fields.value("checksum").toString(),QString("?"));
-        QCOMPARE(p.notices.size(),3); QVERIFY(p.targetFrame.isEmpty());
-    }
-    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;XYZ_PX=234;10\nEND&?&\r\n",&p,&error));
-    QCOMPARE(p.fields.value("position").toInt(),234);
-    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;DI_PDDA=20,-200,30000;10\nEND&?&\r\n",&p,&error));
-    QCOMPARE(p.fields.value("x").toInt(),20); QCOMPARE(p.fields.value("y").toInt(),-200); QCOMPARE(p.fields.value("z").toInt(),30000);
-    QVERIFY(p.fieldOrder.indexOf("x")<p.fieldOrder.indexOf("y"));
-    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&1&0;PING=;10\nEND&?&\r\n",&p,&error));
-    QTemporaryDir dir; QVERIFY(config.save(dir.filePath("format.json"),&error));
-    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(dir.filePath("format.json"),&restored,&error)); QCOMPARE(restored.root,config.root);
+    QTemporaryDir dir;QVERIFY(config.save(dir.filePath("format.json"),&error));ProtocolConfig restored;QVERIFY(ProtocolConfig::load(dir.filePath("format.json"),&restored,&error));QCOMPARE(restored.root,config.root);
+    const QByteArray input="@&5A&01&SCT&12&0;MFCV=234;10\nEND&?&\r\n";
+    QVERIFY(!ConversionEngine(config).convert(input,false,&p,&error));QVERIFY(p.targetFrame.isEmpty());
+    addDelimitedMappings(&config);QVERIFY(!ConversionEngine(config).convert(input,false,&p,&error));QCOMPARE(error.code,QString("EXECUTION_SEMANTICS"));
+    auto external=config.root.value("external").toObject();auto fields=external.value("fields").toArray();for(int i:{4,7}){auto field=fields.at(i).toObject();field.insert("role","metadata");fields.replace(i,field);}external.insert("fields",fields);config.root.insert("external",external);
+    QVERIFY2(ConversionEngine(config).convert(input,false,&p,&error),qPrintable(error.message));QCOMPARE(p.command.parameters.value("positionUm").toInt(),234);QVERIFY(!p.targetFrame.isEmpty());
+    QVERIFY(!ConversionEngine(config).convert("@&5A&01&SCT&12&0;UNKNOWN=234;10\nEND&?&\r\n",false,&p,&error));QCOMPARE(error.code,QString("COMMAND_UNSUPPORTED"));QVERIFY(p.targetFrame.isEmpty());
+    // Legacy mapped-command mode and omissions work after a delimited variable prefix.
+    external={{"encoding","ascii"},{"header","!"},{"footer","\\r"},{"fields",QJsonArray{QJsonObject{{"name","sequence"},{"role","metadata"},{"type","uint"},{"lengthMode","delimited"},{"delimiter","|"}},QJsonObject{{"name","command"},{"role","command"},{"type","ascii"},{"lengthMode","mappedCommand"}},QJsonObject{{"name","value"},{"role","parameter"},{"type","uint"},{"lengthMode","toFooter"}}}}};
+    config.root.insert("external",external);config.root.insert("mappings",QJsonArray{QJsonObject{{"commandCode","MOVE"},{"operation","MOTOR_FORWARD"},{"parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","value"}}}}}},QJsonObject{{"commandCode","Q"},{"operation","QUERY_MOTOR"},{"parameters",QJsonObject()},{"input",QJsonObject{{"omitFields",QJsonArray{"value"}}}}}});
+    QVERIFY2(ConversionEngine(config).convert("!255|MOVE234\r",false,&p,&error),qPrintable(error.message));QVERIFY(ConversionEngine(config).convert("!1|Q\r",false,&p,&error));QVERIFY(!p.fields.contains("value"));
+    fields=external.value("fields").toArray();auto command=fields.at(1).toObject();command.insert("lengthMode","delimited");command.insert("delimiter","=");fields.replace(1,command);external.insert("fields",fields);config.root.insert("external",external);
+    QVERIFY2(ConversionEngine(config).convert("!12|Q=\r",false,&p,&error),qPrintable(error.message));
 }
-
-void FrameworkTest::textTemplateValidationAndFailures()
+void FrameworkTest::sequentialDelimitedFailureAndStream()
 {
-    ProtocolConfig config; TranslationError e; ConversionPreview p;
-    QVERIFY(ProtocolConfig::load(example("text-template.json"),&config,&e));
-    const QByteArray prefix="@&5A&01&SCT&1&0;", suffix=";10\nEND&?&\r\n";
-    for (const QByteArray bad : {QByteArray("VECTOR=1,2"),QByteArray("VECTOR=1,2,3,4"),QByteArray("VECTOR=1,2,abc"),QByteArray("VECTOR=1,2,3\n"),QByteArray("UNKNOWN=2"),QByteArray("SET=9223372036854775808"),QByteArray("SET=3\nSET=4")}) {
-        QVERIFY(ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix,&p,&e));
-        QVERIFY2(!ConversionEngine(config).parsePreview(prefix+bad+suffix,&p,&e),bad.constData());
-        QVERIFY(p.fields.isEmpty()); QVERIFY(p.targetFrame.isEmpty()); QVERIFY(e.isValid());
+    auto config=delimitedConfig();TranslationError error;ConversionPreview p;const QByteArray prefix="@&5A&01&SCT&1&0;MFCV=",suffix=";10\nEND&?&\r\n";
+    for(const QByteArray value:{QByteArray(""),QByteArray("abc"),QByteArray("1,2,3"),QByteArray(" 20"),QByteArray("20 "),QByteArray("20\n"),QByteArray("6001"),QByteArray("9223372036854775808")}) {
+        QVERIFY(ConversionEngine(config).parsePreview(prefix+"255"+suffix,&p,&error));QVERIFY(!ConversionEngine(config).parsePreview(prefix+value+suffix,&p,&error));QVERIFY(p.fields.isEmpty());QVERIFY(p.targetFrame.isEmpty());
     }
-    QVERIFY(!ConversionEngine(config).parsePreview("@&5A&01&UNKNOWN&1&0;SET=10"+suffix,&p,&e)); QCOMPARE(e.code,QString("FIELD_CONSTANT"));
-    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10;10\nWRONG&?&\r\n",&p,&e));
-    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix+"extra",&p,&e));
-    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix+prefix+"SET=20"+suffix,&p,&e));QCOMPARE(e.code,QString("FRAME_MULTIPLE"));
-    const auto original=config.root.value("external").toObject();
-    for (const QString bad : {QString("{command}{arguments}"),QString("{command}={command}"),QString("{command}={arguments};{undeclared}"),QString("{command}={arguments}\\q"),QString("{command}={arguments" )}) {
-        auto ext=original; auto f=ext.value("textFormat").toObject();f.insert("template",bad);ext.insert("textFormat",f);config.root.insert("external",ext);QVERIFY2(!config.validateFormat(&e),qPrintable(bad));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\nWRONG&?&\r\n",&p,&error));QCOMPARE(error.code,QString("FIELD_CONSTANT"));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\nEND&?\r\n",&p,&error));QCOMPARE(error.code,QString("FIELD_DELIMITER"));
+    const auto original=config.root.value("external").toObject();for(const QString &delimiter:{QString(),QString("\\q"),QString(129,'&'),QString("\\r\\n")}) {
+        auto external=original;auto fields=external.value("fields").toArray();auto f=fields.at(0).toObject();f.insert("delimiter",delimiter);fields.replace(0,f);external.insert("fields",fields);config.root.insert("external",external);QVERIFY(!config.validateFormat(&error));
     }
-    auto ext=original;auto f=ext.value("textFormat").toObject();auto cmds=f.value("commands").toArray();auto c=cmds.at(0).toObject();c.insert("template",QString::fromUtf8(u8"{数值}"));c.insert("fields",QJsonArray{QJsonObject{{"name",QString::fromUtf8(u8"数值")},{"type","uint"},{"role","parameter"}}});cmds.replace(0,c);f.insert("commands",cmds);ext.insert("textFormat",f);config.root.insert("external",ext);
-    QVERIFY2(ConversionEngine(config).parsePreview(prefix+"SET=10"+suffix,&p,&e),qPrintable(e.message));QCOMPARE(p.fields.value(QString::fromUtf8(u8"数值")).toInt(),10);
+    config.root.insert("external",original);ConversionEngine engine(config);QList<TranslationError> errors;const QByteArray frame=prefix+"255"+suffix;
+    QVERIFY(engine.feed("noise@",&errors).isEmpty());QVERIFY(engine.feed(frame.mid(1,15),&errors).isEmpty());auto frames=engine.feed(frame.mid(16)+frame,&errors);QCOMPARE(frames.size(),2);QVERIFY(errors.isEmpty());
+    frames=engine.feed(prefix+"bad"+suffix+frame,&errors);QCOMPARE(frames.size(),1);QVERIFY(!errors.isEmpty());errors.clear();QVERIFY(engine.feed(QByteArray(4097,'x'),&errors).isEmpty());QCOMPARE(errors.last().code,QString("INPUT_OVERFLOW"));QCOMPARE(engine.feed(frame,&errors).size(),1);
 }
-
-void FrameworkTest::textTemplateMappingAndStreaming()
+void FrameworkTest::retiredFormatsAreRejected()
 {
-    ProtocolConfig config;TranslationError e;ConversionPreview p;
-    QVERIFY(ProtocolConfig::load(example("text-template-mapping.json"),&config,&e));
-    auto ext=config.root.value("external").toObject();ext.insert("fields",QJsonArray{QJsonObject{{"name","oldCommand"},{"role","command"},{"length",4090},{"lengthMode","fixed"}}});config.root.insert("external",ext);
-    QVERIFY2(ConversionEngine(config).convert("[12|MOVE:234]\r",false,&p,&e),qPrintable(e.message));
-    QCOMPARE(p.command.parameters.value("positionUm").toInt(),234); QVERIFY(!p.targetFrame.isEmpty());
-    ConversionEngine stream(config);QList<TranslationError> errors;
-    QVERIFY(stream.feed("noise[12|MO",&errors).isEmpty());
-    const auto frames=stream.feed("VE:234]\r[255|TRIPLE:20/30/40]\r",&errors);QCOMPARE(frames.size(),2);QVERIFY(errors.isEmpty());
-    QVERIFY(stream.parsePreview(frames.last(),&p,&e));QCOMPARE(p.fields.value("z").toInt(),40);
-    QVERIFY(!stream.convert(frames.last(),false,&p,&e));QVERIFY(p.targetFrame.isEmpty());
-    auto format=ext.value("textFormat").toObject();auto fields=format.value("fields").toArray();auto field=fields.at(0).toObject();field.insert("role","execution");fields.replace(0,field);format.insert("fields",fields);ext.insert("textFormat",format);config.root.insert("external",ext);
-    QVERIFY(ConversionEngine(config).parsePreview("[12|MOVE:234]\r",&p,&e));
-    QVERIFY(!ConversionEngine(config).convert("[12|MOVE:234]\r",false,&p,&e));QCOMPARE(e.code,QString("EXECUTION_SEMANTICS"));QVERIFY(p.targetFrame.isEmpty());
-    auto mappings=config.root.value("mappings").toArray();auto mapping=mappings.at(0).toObject();mapping.insert("parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","x"}}}});mappings.replace(0,mapping);config.root.insert("mappings",mappings);
-    QVERIFY(!config.validate(&e));QCOMPARE(e.code,QString("CONFIG_EXPRESSION"));
+    auto config=delimitedConfig();auto external=config.root.value("external").toObject();external.insert("mode","textTemplate");external.insert("textFormat",QJsonObject{{"template","{command}={arguments}"},{"sampleEditor",QJsonObject{{"extension","retain"}}}});config.root.insert("external",external);
+    TranslationError error;ConversionPreview preview;ProtocolConfig loaded;QVERIFY(ProtocolConfig::retiredFormat(config.root));QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(config.root).toJson(),&loaded,&error));QCOMPARE(error.code,QString("UNSUPPORTED_FORMAT"));QVERIFY(!ConversionEngine(config).parsePreview("anything",&preview,&error));QCOMPARE(error.code,QString("UNSUPPORTED_FORMAT"));
 }
 
 void FrameworkTest::completeCommandCatalogMatchesProtocol()

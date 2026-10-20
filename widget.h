@@ -11,7 +11,6 @@
 #include "src/core/conversionengine.h"
 
 class QComboBox;
-class TextFormatEditor;
 class QLabel;
 class QLineEdit;
 class QGroupBox;
@@ -41,7 +40,6 @@ private:
     bool persistDraft(const QJsonObject &draft);
     void loadUiFromDraft();
     bool saveConfiguration();
-    bool sampleEditsResolved();
     bool saveUiToDraft();
     bool collectUiDraft(QJsonObject *draft);
     bool storeUiDraft(const QJsonObject &draft);
@@ -58,8 +56,7 @@ private:
     void updateLiveState();
     void preview(bool live);
     void parseFormatPreview();
-    QStringList numericSourceFields(const QString &code) const;
-    void updateFormatMode();
+    bool requireSequentialFormat();
     QByteArray inputBytes(const ProtocolConfig &config, TranslationError *error) const;
     QString previewText(const ConversionPreview &preview) const;
     void appendLog(const QString &text);
@@ -99,8 +96,6 @@ private:
     QLabel *m_draftVersion = nullptr;
     QLabel *m_activeVersion = nullptr;
     QLabel *m_validationState = nullptr;
-    QComboBox *m_formatMode = nullptr;
-    TextFormatEditor *m_textFormat = nullptr;
     QComboBox *m_encoding = nullptr;
     QLineEdit *m_header = nullptr;
     QLineEdit *m_footer = nullptr;

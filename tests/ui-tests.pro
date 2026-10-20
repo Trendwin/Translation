@@ -18,12 +18,3 @@ HEADERS += ../widget.h ../src/core/requestmanager.h ../src/core/translationservi
     ../src/qusheng/qushengprotocol.h ../src/transport/serialtransport.h
 
 include($$PWD/../src/qusheng/sdk/qusheng-sdk.pri)
-
-SOURCES += ../src/config/textformat.cpp
-HEADERS += ../src/config/textformat.h
-
-SOURCES += ../src/ui/textformateditor.cpp
-HEADERS += ../src/ui/textformateditor.h
-
-SOURCES += ../src/config/sampleformat.cpp
-HEADERS += ../src/config/sampleformat.h

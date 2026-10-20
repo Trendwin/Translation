@@ -1,5 +1,4 @@
 #include "protocolconfig.h"
-#include "textformat.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
 
@@ -126,8 +125,16 @@ bool ProtocolConfig::save(const QString &path, TranslationError *error) const
     return true;
 }
 
+bool ProtocolConfig::retiredFormat(const QJsonObject &root)
+{
+    const QJsonObject external = root.value("external").toObject();
+    return external.value("mode").toString() == "textTemplate" || external.contains("textFormat");
+}
+
 bool ProtocolConfig::validateFormat(TranslationError *error) const
 {
+    if (retiredFormat(root))
+        return fail(error, "UNSUPPORTED_FORMAT", QString::fromUtf8(u8"模板与样例格式已停用；仅可恢复保留的顺序字段，检查后显式保存。原文件未自动改写。"));
     if (!integer(root.value("schemaVersion"), 1, 1))
         return fail(error, "CONFIG_SCHEMA", QString::fromUtf8(u8"schemaVersion 必须为 1"));
 
@@ -152,7 +159,6 @@ bool ProtocolConfig::validateFormat(TranslationError *error) const
     if (!QStringList({"big", "little"}).contains(external.value("byteOrder").toString("big")))
         return fail(error, "CONFIG_ENDIAN", QString::fromUtf8(u8"高级字节序只能是大端或小端"));
 
-    if (TextFormat::enabled(external)) return TextFormat::validate(external, error);
     if (external.contains("mode") && external.value("mode").toString() != "sequential")
         return fail(error, "CONFIG_MODE", QString::fromUtf8(u8"未知的格式模式"));
 
@@ -171,31 +177,43 @@ bool ProtocolConfig::validateFormat(TranslationError *error) const
             return fail(error, "CONFIG_FIELD", QString::fromUtf8(u8"字段名称不能为空或重复（第 %1 行）").arg(index + 1));
         names.insert(name);
         const QString role = field.value("role").toString();
-        if (!QStringList({"command", "parameter", "fixed"}).contains(role))
+        if (!QStringList({"command", "parameter", "fixed", "metadata", "execution", "checksum"}).contains(role))
             return fail(error, "CONFIG_FIELD_ROLE", QString::fromUtf8(u8"字段“%1”的作用无效").arg(name));
         if (role == "command") ++commandFields;
         const QString type = field.value("type").toString();
         if (!QStringList({"ascii", "uint", "int"}).contains(type))
             return fail(error, "CONFIG_FIELD_TYPE", QString::fromUtf8(u8"字段“%1”的数据类型无效").arg(name));
         const QString lengthMode = field.value("lengthMode").toString();
-        if (!QStringList({"fixed", "toFooter", "mappedCommand"}).contains(lengthMode))
+        if (!QStringList({"fixed", "toFooter", "mappedCommand", "delimited"}).contains(lengthMode))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的长度方式无效").arg(name));
         if (lengthMode == "mappedCommand") {
             if (encoding != "ascii" || type != "ascii" || role != "command")
                 return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"按命令码识别仅适用于 ASCII 命令码字段"));
             for (int before = 0; before < index; ++before)
-                if (fields.at(before).toObject().value("lengthMode").toString() != "fixed")
-                    return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"可变命令码之前只能放固定长度字段"));
+                if (!QStringList({"fixed", "delimited"}).contains(fields.at(before).toObject().value("lengthMode").toString()))
+                    return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"按命令码识别之前只能放固定长度或按分隔符读取的字段"));
         }
         if (metTailField)
             return fail(error, "CONFIG_FIELD_ORDER", QString::fromUtf8(u8"读取到帧尾的字段必须排在最后"));
         if (lengthMode == "fixed" && !integer(field.value("length"), 1, 4096))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的固定长度必须大于 0").arg(name));
-        if (lengthMode == "toFooter") metTailField = true;
+        if (lengthMode == "delimited") {
+            QByteArray delimiter;
+            if (!field.value("delimiter").isString())
+                return fail(error, "CONFIG_DELIMITER", QString::fromUtf8(u8"字段“%1”需要填写分隔符").arg(name));
+            if (!decodeBytes(field.value("delimiter").toString(), encoding, &delimiter, error)) return false;
+            if (delimiter.isEmpty() || delimiter.size() > 128 || delimiter.contains(footerBytes))
+                return fail(error, "CONFIG_DELIMITER", QString::fromUtf8(u8"字段“%1”的分隔符应为 1～128 字节且不能包含完整帧尾").arg(name));
+            const int minimumContent = role == "fixed" && type == "ascii"
+                    ? field.value("fixedValue").toString().toLatin1().size() : 1;
+            if (role == "fixed" && type == "ascii" && field.value("fixedValue").toString().toLatin1().contains(delimiter))
+                return fail(error, "CONFIG_DELIMITER", QString::fromUtf8(u8"固定字段“%1”的值不能含自己的分隔符").arg(name));
+            fixedBytes += delimiter.size() + minimumContent;
+        } else if (lengthMode == "toFooter") metTailField = true;
         else fixedBytes += lengthMode == "mappedCommand" ? 1 : field.value("length").toInt();
         if (encoding == "hex" && type != "ascii"
-                && (lengthMode != "fixed" || field.value("length").toInt() > 8))
-            return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"HEX 整数字段必须固定为 1 至 8 字节"));
+                && ((lengthMode != "fixed" && lengthMode != "delimited") || (lengthMode == "fixed" && field.value("length").toInt() > 8)))
+            return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"HEX 整数字段须固定为 1 至 8 字节，或读到分隔符（实际不得超过 8 字节）"));
         if (role == "fixed" && !field.contains("fixedValue"))
             return fail(error, "CONFIG_FIELD_CONSTANT", QString::fromUtf8(u8"固定字段“%1”必须填写固定值").arg(name));
         if (role == "fixed") {
@@ -238,7 +256,6 @@ bool ProtocolConfig::validate(TranslationError *error) const
 {
     if (!validateFormat(error)) return false;
     const QJsonObject external = root.value("external").toObject();
-    const bool textMode = TextFormat::enabled(external);
     const QString encoding = external.value("encoding").toString();
     QByteArray headerBytes, footerBytes;
     decodeBytes(external.value("header").toString(), encoding, &headerBytes, nullptr);
@@ -249,8 +266,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
     if (root.contains("mappings") && !root.value("mappings").isArray())
         return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令映射必须为列表"));
     const QJsonArray mappings = root.value("mappings").toArray();
-    if (textMode && mappings.isEmpty()) return true;
-    if (mappings.isEmpty()) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"至少需要一条命令映射"));
+    if (mappings.isEmpty()) return true;
     QSet<QString> commandCodes;
     // SDK预置按操作保存。校验的是被声明的默认参数，不要求提前填写其它业务必填项。
     if (root.contains("sdkDefaults") && !root.value("sdkDefaults").isObject())
@@ -314,14 +330,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
         const QJsonObject input = mapping.value("input").toObject();
-        QJsonArray mappingFields = textMode ? TextFormat::fields(external, code) : fields;
-        if (textMode) {
-            bool declared = false;
-            for (const auto &v : external.value("textFormat").toObject().value("commands").toArray())
-                declared |= v.toObject().value("code").toString() == code;
-            if (!declared) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令映射“%1”没有对应的命令格式").arg(code));
-            if (!input.isEmpty()) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"文本模板按独立命令格式读取参数，不使用省略字段"));
-        }
+        const QJsonArray mappingFields = fields;
         QSet<QString> mappingNames;
         for (const auto &v : mappingFields) mappingNames.insert(v.toObject().value("name").toString());
         QSet<QString> available = mappingNames, omitted;
@@ -347,8 +356,12 @@ bool ProtocolConfig::validate(TranslationError *error) const
         }
         if (!input.isEmpty()) {
             bool mapped = false;
-            for (const QJsonValue &f : fields) mapped |= f.toObject().value("lengthMode").toString() == "mappedCommand";
-            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段需要将命令码长度方式设为“按命令码识别”"));
+            for (const QJsonValue &f : fields) {
+                const auto declared = f.toObject();
+                mapped |= declared.value("role").toString() == "command"
+                    && QStringList({"mappedCommand", "delimited"}).contains(declared.value("lengthMode").toString());
+            }
+            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段需要命令码使用“按命令码识别”或“读到分隔符”"));
         }
         if (code.size() > 128) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码超过 128 字符"));
         if (encoding == "ascii") {
@@ -361,10 +374,15 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"帧尾请在客户协议格式中设置；命令映射不再支持独立帧尾"));
         const QJsonObject effective = inputFormat(mapping);
         int minimumLength = headerBytes.size() + footerBytes.size();
-        for (const QJsonValue &f : (textMode ? QJsonArray() : effective.value("fields").toArray())) {
+        for (const QJsonValue &f : effective.value("fields").toArray()) {
             const QJsonObject effectiveField = f.toObject();
             const QString mode = effectiveField.value("lengthMode").toString();
-            minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : 1;
+            QByteArray delimiter;
+            if (mode == "delimited") decodeBytes(effectiveField.value("delimiter").toString(), encoding, &delimiter, nullptr);
+            minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : 1 + delimiter.size();
+            if (effectiveField.value("role").toString() == "command" && mode == "delimited"
+                    && code.toLatin1().contains(delimiter))
+                return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令码“%1”不能包含命令字段的分隔符").arg(code));
         }
         if (minimumLength > 4096)
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));

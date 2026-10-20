@@ -48,12 +48,3 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
 
 include($$PWD/src/qusheng/sdk/qusheng-sdk.pri)
-
-SOURCES += src/config/textformat.cpp
-HEADERS += src/config/textformat.h
-
-SOURCES += src/ui/textformateditor.cpp
-HEADERS += src/ui/textformateditor.h
-
-SOURCES += src/config/sampleformat.cpp
-HEADERS += src/config/sampleformat.h

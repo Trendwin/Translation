@@ -28,8 +28,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include "widget.h"
-#include "ui/textformateditor.h"
-#include <QToolButton>
 #include "transport/serialtransport.h"
 #include "core/translationservice.h"
 #include "core/requestmanager.h"
@@ -46,11 +44,9 @@ class WidgetTest : public QObject
     Q_OBJECT
 private slots:
     void initTestCase();
-    void sampleEditorWorkflowAndRestart();
-    void sampleEditorPendingChangesAndFailures();
-    void textFormatEditorLifecycle();
-    void textFormatSourcesAndFailedPreview();
-    void textFormatRanges();
+    void sequentialDelimiterEditorLifecycle();
+    void retiredDraftRecoveryRequiresExplicitSave();
+    void retiredImportDoesNotOverwriteDraft();
     void debugSendNeedsNoWorkflowOrSavedDraft();
     void selectingRowsDoesNotEditMappings();
     void newMappingFormAddsOnlyValidRows();
@@ -1165,143 +1161,37 @@ void WidgetTest::fieldDeletionTypesAndJsonBoundary()
 
 
 
-
-static int sampleRow(Widget &widget,const QString &value)
+static QJsonObject sequentialExample()
 {
-    auto *table=widget.findChild<QTableWidget *>("samplePieces");
-    for(int row=0;row<table->rowCount();++row)if(table->item(row,0)->text()==value)return row;
-    return -1;
+    const auto source=QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile file(source.filePath("../examples/delimited-single-parameter.json"));if(!file.open(QIODevice::ReadOnly))return QJsonObject();return QJsonDocument::fromJson(file.readAll()).object();
 }
-static void setupSampleEditor(Widget &widget)
+void WidgetTest::sequentialDelimiterEditorLifecycle()
 {
-    auto *mode=widget.findChild<QComboBox *>("formatMode");mode->setCurrentIndex(mode->findData("textTemplate"));
-    widget.findChild<QLineEdit *>("formatHeader")->setText("@&");widget.findChild<QLineEdit *>("formatFooter")->setText("\\r\\n");
-    widget.findChild<QTableWidget *>("mappingTable")->setRowCount(0);
-    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&1&0;DI_PDDA=20,200,3000;10\\nEND&?&\\r\\n");
-    button(widget,"suggestSampleSeparators")->click();button(widget,"splitSampleButton")->click();
-}
-void WidgetTest::sampleEditorWorkflowAndRestart()
-{
-    const QString path=freshDraftPath();Widget widget(nullptr,path);widget.show();setupSampleEditor(widget);
-    QVERIFY(widget.findChild<QWidget *>("textAdvancedSettings")->isHidden());
-    auto *editor=widget.findChild<TextFormatEditor *>("textFormatEditor");auto *pieces=widget.findChild<QTableWidget *>("samplePieces");
-    QCOMPARE(pieces->item(0,0)->text(),QString("DI_PDDA"));QCOMPARE(pieces->item(1,0)->text(),QString("20"));QCOMPARE(pieces->item(3,0)->text(),QString("3000"));
-    QVERIFY(editor->format().value("commands").toArray().isEmpty());
-    pieces->setCurrentCell(sampleRow(widget,"20"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("x");widget.findChild<QLineEdit *>("samplePieceMax")->setText("255");
-    pieces->setCurrentCell(sampleRow(widget,"200"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("y");
-    pieces->setCurrentCell(sampleRow(widget,"3000"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("z");
-    pieces->setCurrentCell(sampleRow(widget,"0"),0);auto *role=widget.findChild<QComboBox *>("samplePieceRole");role->setCurrentIndex(role->findData("execution"));
-    pieces->setCurrentCell(sampleRow(widget,"?"),0);role->setCurrentIndex(role->findData("checksum"));
-    button(widget,"applySampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());QCOMPARE(editor->format().value("commands").toArray().size(),1);
-    button(widget,"parseCurrentSampleButton")->click();auto *parsed=widget.findChild<QTextEdit *>("sampleParseResult");QVERIFY2(parsed->toPlainText().contains("z = 3000"),qPrintable(parsed->toPlainText()));
-    const auto outer=editor->format().value("fields");const auto original=editor->format().value("commands").toArray().at(0);
-    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&12&0;MFCV=255;10\\nEND&?&\\r\\n");button(widget,"splitSampleButton")->click();button(widget,"applySampleButton")->click();
-    QCOMPARE(editor->format().value("fields"),outer);QCOMPARE(editor->format().value("commands").toArray().at(0),original);
-    QCOMPARE(widget.findChild<QComboBox *>("sampleKnownCommands")->count(),2);
-    button(widget,"saveConfig")->click();const auto saved=draftRoot(widget);Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),saved);
-    auto *summary=restored.findChild<QComboBox *>("sampleKnownCommands");QCOMPARE(summary->count(),2);QVERIFY(summary->itemText(0).contains("3"));QVERIFY(!restored.findChild<QLineEdit *>("formatSampleInput")->text().isEmpty());
-    const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");if(!render.isEmpty()) {
-        auto *tabs=widget.findChild<QTabWidget *>("mainTabs");tabs->setCurrentIndex(0);QCoreApplication::processEvents();QDir().mkpath(render);QVERIFY(widget.grab().save(QDir(render).filePath("sample-editor-main.png")));
-        widget.findChild<QComboBox *>("sampleKnownCommands")->setCurrentIndex(0);button(widget,"splitSampleButton")->click();pieces->setCurrentCell(sampleRow(widget,"20"),0);QCoreApplication::processEvents();
-        QVERIFY(widget.grab().save(QDir(render).filePath("sample-editor-three-parameters.png")));
-    }
-}
-void WidgetTest::sampleEditorPendingChangesAndFailures()
-{
-    const QString path=freshDraftPath();Widget widget(nullptr,path);setupSampleEditor(widget);
-    auto *editor=widget.findChild<TextFormatEditor *>("textFormatEditor");QVERIFY(editor->hasPendingSampleEdits());button(widget,"saveConfig")->click();QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"未应用")));
-    button(widget,"applySampleButton")->click();button(widget,"saveConfig")->click();const auto saved=draftBytes(path);const auto format=editor->format();
-    // Browsing an existing command does not create uncommitted edits.
-    button(widget,"splitSampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());
-    auto *pieces=widget.findChild<QTableWidget *>("samplePieces");pieces->setCurrentCell(sampleRow(widget,"20"),0);widget.findChild<QLineEdit *>("samplePieceName")->setText("changed");QVERIFY(editor->hasPendingSampleEdits());
-    button(widget,"saveConfig")->click();QCOMPARE(draftBytes(path),saved);
-    bool prompt=false;QVERIFY(!closeWithChoice(widget,QString::fromUtf8(u8"保存"),&prompt));QVERIFY(prompt);QVERIFY(widget.isVisible());QCOMPARE(draftBytes(path),saved);
-    button(widget,"discardSampleButton")->click();QVERIFY(!editor->hasPendingSampleEdits());QCOMPARE(editor->format(),format);
-    widget.findChild<QLineEdit *>("formatSampleInput")->setText("@&5A&01&SCT&1&0;DI_PDDA=20,200;10\\nEND&?&\\r\\n");button(widget,"splitSampleButton")->click();button(widget,"applySampleButton")->click();QCOMPARE(editor->format(),format);
-    widget.findChild<QLineEdit *>("formatHeader")->setText("WRONG");button(widget,"splitSampleButton")->click();QVERIFY(widget.findChild<QLabel *>("sampleFormatStatus")->text().contains(QString::fromUtf8(u8"帧头")));QCOMPARE(editor->format(),format);
-    // Advanced edits update the summary without changing a sample the user is typing.
-    const QString typed=widget.findChild<QLineEdit *>("formatSampleInput")->text();widget.findChild<QTableWidget *>("textCommands")->item(0,0)->setText("RENAMED");QVERIFY(widget.findChild<QComboBox *>("sampleKnownCommands")->itemText(0).contains("RENAMED"));QCOMPARE(widget.findChild<QLineEdit *>("formatSampleInput")->text(),typed);
-}
-
-void WidgetTest::textFormatEditorLifecycle()
-{
-    const QString path=freshDraftPath(), exportedPath=freshDraftPath();
-    Widget widget(nullptr,path);widget.show();
-    QFile fixture(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().filePath("../examples/text-template.json"));
-    QVERIFY(fixture.open(QIODevice::ReadOnly));auto root=QJsonDocument::fromJson(fixture.readAll()).object();
-    auto external=root.value("external").toObject();external.insert("vendorExtension",QJsonObject{{"retain",42}});
-    // Switch mode from a legacy draft without erasing the inactive layout.
-    external.insert("fields",draftRoot(widget).value("external").toObject().value("fields"));
-    auto format=external.value("textFormat").toObject();auto fields=format.value("fields").toArray();auto first=fields.at(0).toObject();first.insert("description","retain me");fields.replace(0,first);format.insert("fields",fields);format.insert("extension",true);external.insert("textFormat",format);root.insert("external",external);
-    applyRoot(widget,root);QVERIFY(widget.findChild<QTableWidget *>("fieldTable")->isHidden());
-    QCOMPARE(widget.findChild<QComboBox *>("formatMode")->currentData().toString(),QString("textTemplate"));
-    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"尚无发送映射")));
-    auto *commands=widget.findChild<QTableWidget *>("textCommands");commands->setCurrentCell(2,0);QCoreApplication::processEvents();
-    auto *parameters=widget.findChild<QTableWidget *>("textCommandFields");QCOMPARE(parameters->rowCount(),3);
-    QCOMPARE(parameters->item(1,0)->text(),QString("y"));
-    widget.findChild<QLineEdit *>("customerInput")->setText("@&5A&01&SCT&255&0;VECTOR=20,200,3000;10\\nEND&?&\\r\\n");
-    button(widget,"parseFormatButton")->click();auto *output=widget.findChild<QTextEdit *>("previewOutput");
-    QVERIFY2(output->toPlainText().contains("z = 3000"),qPrintable(output->toPlainText()));QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"未校验")));
-    auto *target=widget.findChild<QTextEdit *>("targetOutput");QVERIFY(target);QVERIFY(target->toPlainText().isEmpty());
-    button(widget,"saveConfig")->click();const auto saved=draftRoot(widget);
-    QCOMPARE(saved.value("external").toObject().value("vendorExtension"),external.value("vendorExtension"));
-    QCOMPARE(saved.value("external").toObject().value("textFormat").toObject().value("fields").toArray().at(0).toObject().value("description").toString(),QString("retain me"));
-    Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),saved);
+    const QString path=freshDraftPath(),exportPath=freshDraftPath();Widget widget(nullptr,path);widget.show();auto root=sequentialExample();QVERIFY(!root.isEmpty());auto ext=root.value("external").toObject();ext.insert("extension","keep");auto rows=ext.value("fields").toArray();auto first=rows.at(0).toObject();first.insert("note","preserve");rows.replace(0,first);ext.insert("fields",rows);root.insert("external",ext);applyRoot(widget,root);
+    QVERIFY(!widget.findChild<QComboBox *>("formatMode"));QVERIFY(!widget.findChild<QWidget *>("textFormatEditor"));QVERIFY(!widget.findChild<QLineEdit *>("formatSampleInput"));
+    auto *table=widget.findChild<QTableWidget *>("fieldTable");QCOMPARE(table->columnCount(),9);QCOMPARE(table->rowCount(),10);QVERIFY(table->horizontalHeaderItem(5)->text().contains(QString::fromUtf8(u8"分隔符")));QCOMPARE(table->item(5,5)->text(),QString("="));
+    auto *input=widget.findChild<QLineEdit *>("customerInput");input->setText("[AA|BB|CTL|255|0;SET=234;10\\nDONE|?|]\\r");button(widget,"parseFormatButton")->click();auto *output=widget.findChild<QTextEdit *>("previewOutput");QVERIFY2(output->toPlainText().contains(QString::fromUtf8(u8"数值 = 234")),qPrintable(output->toPlainText()));QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"未校验")));QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    table->item(6,8)->setText("500");button(widget,"saveConfig")->click();const auto saved=draftRoot(widget);QCOMPARE(saved.value("external").toObject().value("extension").toString(),QString("keep"));QCOMPARE(saved.value("external").toObject().value("fields").toArray().at(0).toObject().value("note").toString(),QString("preserve"));
+    Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),saved);QCOMPARE(restored.findChild<QTableWidget *>("fieldTable")->item(7,5)->text(),QString("\\n"));
+    // Both export and import accept a format-only sequential configuration.
     auto fileAction=[&widget](const char *name,const QString &filePath){bool seen=false;QTimer::singleShot(0,&widget,[&widget,&seen,filePath](){auto *dialog=widget.findChild<QFileDialog *>();if(!dialog)return;seen=true;dialog->selectFile(filePath);QMetaObject::invokeMethod(dialog,"accept",Qt::QueuedConnection);});button(widget,name)->click();return seen;};
-    QVERIFY(fileAction("exportConfig",exportedPath));QCOMPARE(QJsonDocument::fromJson(draftBytes(exportedPath)).object(),saved);
-    QVERIFY(fileAction("importConfig",exportedPath));QCOMPARE(draftRoot(widget),saved);
-    const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");
-    if(!render.isEmpty()) {
-        QDir().mkpath(render);commands->setCurrentCell(2,0);QCoreApplication::processEvents();auto *tabs=widget.findChild<QTabWidget *>("mainTabs");tabs->setCurrentIndex(0);QCoreApplication::processEvents();
-        QVERIFY(widget.grab().save(QDir(render).filePath("text-template-outer.png")));
-        auto *scroll=qobject_cast<QScrollArea *>(tabs->widget(0));scroll->ensureWidgetVisible(parameters);QCoreApplication::processEvents();
-        QVERIFY(widget.grab().save(QDir(render).filePath("text-template-three-parameters.png")));
-        tabs->setCurrentIndex(2);QCoreApplication::processEvents();QVERIFY(widget.grab().save(QDir(render).filePath("text-template-parse.png")));
-    }
+    QVERIFY(fileAction("exportConfig",exportPath));QCOMPARE(QJsonDocument::fromJson(draftBytes(exportPath)).object(),saved);QVERIFY(fileAction("importConfig",exportPath));QCOMPARE(draftRoot(widget),saved);
+    input->setText("[AA|BB|CTL|1|0;SET=1,2,3;10\\nDONE|?|]\\r");button(widget,"parseFormatButton")->click();QVERIFY(output->toPlainText().contains("FIELD_NUMBER"));QVERIFY(!output->toPlainText().contains(QString::fromUtf8(u8"数值 = 234")));
+    input->setText("[AA|BB|CTL|1|0;SET=234;10\\nDONE|?|]\\r");button(widget,"parseFormatButton")->click();
+    const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");if(!render.isEmpty()){QDir().mkpath(render);auto *tabs=widget.findChild<QTabWidget *>("mainTabs");tabs->setCurrentIndex(0);QCoreApplication::processEvents();QVERIFY(widget.grab().save(QDir(render).filePath("sequential-fields.png")));tabs->setCurrentIndex(2);QCoreApplication::processEvents();QVERIFY(widget.grab().save(QDir(render).filePath("sequential-parse.png")));}
 }
-
-void WidgetTest::textFormatSourcesAndFailedPreview()
+void WidgetTest::retiredDraftRecoveryRequiresExplicitSave()
 {
-    Widget widget(nullptr,freshDraftPath());
-    QFile fixture(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().filePath("../examples/text-template-mapping.json"));
-    QVERIFY(fixture.open(QIODevice::ReadOnly));applyRoot(widget,QJsonDocument::fromJson(fixture.readAll()).object());
-    auto *code=widget.findChild<QLineEdit *>("mappingCode");auto *source=widget.findChild<QComboBox *>("mappingSource");
-    code->setText("MOVE");QVERIFY(source->findData("position")>=0);QCOMPARE(source->findData("x"),-1);
-    code->setText("TRIPLE");QVERIFY(source->findData("x")>=0);QVERIFY(source->findData("y")>=0);QCOMPARE(source->findData("position"),-1);
-    auto *input=widget.findChild<QLineEdit *>("customerInput");input->setText("[1|MOVE:234]\\r");
-    button(widget,"previewButton")->click();auto *target=widget.findChild<QTextEdit *>("targetOutput");QVERIFY(target);QVERIFY(!target->toPlainText().isEmpty());
-    button(widget,"parseFormatButton")->click();QVERIFY(target->toPlainText().isEmpty());
-    auto *output=widget.findChild<QTextEdit *>("previewOutput");QVERIFY(output->toPlainText().contains("position = 234"));
-    input->setText("[1|MOVE:234]\\r");button(widget,"previewButton")->click();QVERIFY(!target->toPlainText().isEmpty());
-    input->setText("[1|MOVE:abc]\\r");button(widget,"parseFormatButton")->click();QVERIFY(target->toPlainText().isEmpty());QVERIFY(!output->toPlainText().contains("position = 234"));QVERIFY(output->toPlainText().contains("FIELD_NUMBER"));
-    // A local rename does not guess a replacement source in an existing saved mapping.
-    auto *commands=widget.findChild<QTableWidget *>("textCommands");commands->setCurrentCell(0,0);
-    widget.findChild<QTableWidget *>("textCommandFields")->item(0,0)->setText("renamed");commands->item(0,1)->setText("{renamed}");
-    button(widget,"saveConfig")->click();QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"找不到客户字段")));
+    const QString path=freshDraftPath();auto root=sequentialExample();auto external=root.value("external").toObject();external.insert("mode","textTemplate");const QJsonObject retired{{"template","{command}={arguments}"},{"extension","keep retired metadata"}};external.insert("textFormat",retired);root.insert("external",external);DraftStore store(path);TranslationError error;QVERIFY(store.save(root,&error));const auto bytes=draftBytes(path);
+    Widget widget(nullptr,path);QCOMPARE(widget.findChild<QTableWidget *>("fieldTable")->rowCount(),10);QCOMPARE(draftBytes(path),bytes);widget.findChild<QLineEdit *>("customerInput")->setText("[AA|BB|CTL|1|0;SET=255;10\\nDONE|?|]\\r");
+    for(const char *action:{"parseFormatButton","previewButton","sendButton"}){button(widget,action)->click();QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("UNSUPPORTED_FORMAT"));QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());QCOMPARE(draftBytes(path),bytes);}
+    button(widget,"saveConfig")->click();const auto recovered=QJsonDocument::fromJson(draftBytes(path)).object();QVERIFY(!recovered.value("external").toObject().contains("mode"));QVERIFY(!recovered.value("external").toObject().contains("textFormat"));QCOMPARE(recovered.value("retiredFormatBackup").toObject().value("textFormat").toObject(),retired);button(widget,"parseFormatButton")->click();QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"解析成功")));
 }
-
-
-void WidgetTest::textFormatRanges()
+void WidgetTest::retiredImportDoesNotOverwriteDraft()
 {
-    Widget widget(nullptr,freshDraftPath());
-    QFile fixture(QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir().filePath("../examples/text-template-mapping.json"));
-    QVERIFY(fixture.open(QIODevice::ReadOnly));applyRoot(widget,QJsonDocument::fromJson(fixture.readAll()).object());
-    auto *parameters=widget.findChild<QTableWidget *>("textCommandFields");
-    QCOMPARE(parameters->columnCount(),6);parameters->item(0,4)->setText("10");parameters->item(0,5)->setText("255");button(widget,"saveConfig")->click();
-    const auto local=draftRoot(widget).value("external").toObject().value("textFormat").toObject().value("commands").toArray().at(0).toObject().value("fields").toArray().at(0).toObject();
-    QCOMPARE(local.value("min").toInt(),10);QCOMPARE(local.value("max").toInt(),255);
-    auto *input=widget.findChild<QLineEdit *>("customerInput");input->setText("[1|MOVE:256]\\r");button(widget,"parseFormatButton")->click();
-    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("FIELD_RANGE"));
-    parameters->item(0,4)->setText("abc");button(widget,"saveConfig")->click();QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"范围不是有效整数")));
-    parameters->item(0,4)->setText("");parameters->item(0,5)->setText("");button(widget,"saveConfig")->click();
-    const auto cleared=draftRoot(widget).value("external").toObject().value("textFormat").toObject().value("commands").toArray().at(0).toObject().value("fields").toArray().at(0).toObject();
-    QVERIFY(!cleared.contains("min"));QVERIFY(!cleared.contains("max"));button(widget,"parseFormatButton")->click();
-    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("position = 256"));
-    widget.findChild<QTableWidget *>("textCommands")->setCurrentCell(1,0);
-    parameters->removeRow(0); // Remaining row controls must follow their own items after a deletion.
-    auto *type=qobject_cast<QComboBox *>(parameters->cellWidget(0,1));type->setCurrentIndex(type->findData("ascii"));
-    QVERIFY(!(parameters->item(0,4)->flags() & Qt::ItemIsEnabled));
-    type->setCurrentIndex(type->findData("uint"));QVERIFY(parameters->item(0,4)->flags() & Qt::ItemIsEditable);
+    const QString path=freshDraftPath(),importPath=freshDraftPath();Widget widget(nullptr,path);button(widget,"saveConfig")->click();const auto before=draftBytes(path);auto root=sequentialExample();auto external=root.value("external").toObject();external.insert("mode","textTemplate");external.insert("textFormat",QJsonObject{{"extension",42}});root.insert("external",external);DraftStore imported(importPath);TranslationError error;QVERIFY(imported.save(root,&error));const auto original=draftBytes(importPath);
+    bool seen=false;QTimer::singleShot(0,&widget,[&widget,&seen,importPath](){auto *dialog=widget.findChild<QFileDialog *>();if(!dialog)return;seen=true;dialog->selectFile(importPath);QMetaObject::invokeMethod(dialog,"accept",Qt::QueuedConnection);});button(widget,"importConfig")->click();QVERIFY(seen);QCOMPARE(draftBytes(path),before);QCOMPARE(draftBytes(importPath),original);QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains("UNSUPPORTED_FORMAT"));
 }
 
 void WidgetTest::renderChinesePages()

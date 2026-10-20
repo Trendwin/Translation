@@ -1,5 +1,4 @@
 #include "conversionengine.h"
-#include "config/textformat.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
@@ -47,8 +46,26 @@ QJsonObject mappingForInput(const ProtocolConfig &config, const QByteArray &inpu
             }
             return selected;
         }
-        if (field.value("lengthMode").toString() != "fixed") break;
-        cursor += field.value("length").toInt();
+        const QString mode = field.value("lengthMode").toString();
+        QByteArray raw;
+        if (mode == "delimited") {
+            QByteArray delimiter;
+            ProtocolConfig::decodeBytes(field.value("delimiter").toString(), external.value("encoding").toString(), &delimiter, nullptr);
+            const int end = delimiter.isEmpty() ? -1 : input.indexOf(delimiter, cursor);
+            if (end < 0) return QJsonObject();
+            raw = input.mid(cursor, end - cursor);
+            cursor = end + delimiter.size();
+        } else if (mode == "fixed") {
+            const int length = field.value("length").toInt();
+            if (length <= 0 || cursor + length > input.size()) return QJsonObject();
+            raw = input.mid(cursor, length); cursor += length;
+        } else return QJsonObject();
+        if (field.value("role").toString() == "command") {
+            for (const auto &candidate : config.root.value("mappings").toArray())
+                if (candidate.toObject().value("commandCode").toVariant().toString().toLatin1() == raw)
+                    return candidate.toObject();
+            return QJsonObject();
+        }
     }
     return QJsonObject();
 }
@@ -149,11 +166,11 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
 
     // 字段只在去掉帧头、帧尾后的有效载荷中按表格顺序推进，不允许 offset 穿透到普通配置。
     const QByteArray payload = input.mid(header.size(), input.size() - header.size() - footer.size());
-    if (TextFormat::enabled(external)) {
-        if (payload.contains(footer))
-            return fail(error, "FRAME_MULTIPLE", QString::fromUtf8(u8"正文含完整帧尾或多条报文；每次解析只接受一条完整报文"));
-        return TextFormat::parse(external, payload, fields, order, notices, error);
-    }
+    bool delimited = false;
+    for (const auto &value : external.value("fields").toArray())
+        delimited |= value.toObject().value("lengthMode").toString() == "delimited";
+    if (delimited && payload.contains(footer))
+        return fail(error, "FRAME_MULTIPLE", QString::fromUtf8(u8"正文含完整帧尾或多条报文；每次只接受一条完整报文"));
     int cursor = 0;
     const bool asciiEncoding = external.value("encoding").toString() == "ascii";
     const bool littleEndian = external.value("byteOrder").toString("big") == "little";
@@ -167,10 +184,18 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
                 return fail(error, "COMMAND_UNSUPPORTED", QString::fromUtf8(u8"输入命令没有匹配的命令映射"));
             length = matchedInput.value("commandCode").toString().toLatin1().size();
         }
+        QByteArray delimiter;
+        if (field.value("lengthMode").toString() == "delimited") {
+            ProtocolConfig::decodeBytes(field.value("delimiter").toString(), external.value("encoding").toString(), &delimiter, nullptr);
+            const int end = payload.indexOf(delimiter, cursor);
+            if (end < 0)
+                return fail(error, "FIELD_DELIMITER", QString::fromUtf8(u8"字段“%1”之后缺少配置的分隔符").arg(name));
+            length = end - cursor;
+        }
         if (length <= 0 || cursor + length > payload.size())
             return fail(error, "FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的实际长度不符合配置").arg(name));
         const QByteArray raw = payload.mid(cursor, length);
-        cursor += length;
+        cursor += length + delimiter.size();
 
         QVariant parsed;
         const QString type = field.value("type").toString();
@@ -221,6 +246,11 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
             return fail(error, "FIELD_RANGE", QString::fromUtf8(u8"字段“%1”低于最小值").arg(name));
         if (field.contains("max") && parsed.toDouble() > field.value("max").toDouble())
             return fail(error, "FIELD_RANGE", QString::fromUtf8(u8"字段“%1”高于最大值").arg(name));
+        if (order) order->append(name);
+        if (notices && field.value("role").toString() == "checksum")
+            notices->append(QString::fromUtf8(u8"%1：仅提取校验值，未校验").arg(name));
+        if (notices && field.value("role").toString() == "execution")
+            notices->append(QString::fromUtf8(u8"%1：执行控制仅解析，本版本不执行，禁止转换发送").arg(name));
     }
     if (cursor != payload.size())
         return fail(error, "FIELD_LENGTH", QString::fromUtf8(u8"字段总长度与报文有效载荷不一致"));
@@ -230,8 +260,8 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
 bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand *command,
                            ConversionPreview *preview, TranslationError *error) const
 {
-    QString commandField = TextFormat::enabled(m_config.root.value("external").toObject()) ? QStringLiteral("command") : QString();
-    for (const QJsonValue &value : (TextFormat::enabled(m_config.root.value("external").toObject()) ? QJsonArray() : m_config.root.value("external").toObject().value("fields").toArray())) {
+    QString commandField;
+    for (const QJsonValue &value : m_config.root.value("external").toObject().value("fields").toArray()) {
         const QJsonObject field = value.toObject();
         if (field.value("role").toString() == "command") {
             commandField = field.value("name").toString();
@@ -367,14 +397,10 @@ bool ConversionEngine::parsePreview(const QByteArray &input, ConversionPreview *
     ConversionPreview result; result.input = input;
     if (!parse(input, &result.fields, error, &result.fieldOrder, &result.notices)) return false;
     const auto external = m_config.root.value("external").toObject();
-    if (TextFormat::enabled(external)) {
-        result.matchedCommandCode = result.fields.value("command").toString();
-    } else {
-        for (const auto &v : external.value("fields").toArray()) {
-            const auto f = v.toObject(); const auto name = f.value("name").toString();
-            if (result.fields.contains(name)) result.fieldOrder << name;
-            if (f.value("role").toString() == "command") result.matchedCommandCode = result.fields.value(name).toString();
-        }
+    for (const auto &value : external.value("fields").toArray()) {
+        const auto field = value.toObject();
+        if (field.value("role").toString() == "command")
+            result.matchedCommandCode = result.fields.value(field.value("name").toString()).toString();
     }
     if (out) *out = result;
     return true;
@@ -392,10 +418,10 @@ bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPre
     result.input = input;
     if (!parsePreview(input, &result, error)) return false;
     const auto external = m_config.root.value("external").toObject();
-    if (TextFormat::enabled(external)) {
-        for (const auto &v : TextFormat::fields(external, result.matchedCommandCode))
-            if (v.toObject().value("role").toString() == "execution")
-                return fail(error, "EXECUTION_SEMANTICS", QString::fromUtf8(u8"字段“%1”要求执行语义，本版本仅支持格式解析；不能忽略后转换发送").arg(v.toObject().value("name").toString()));
+    for (const auto &value : external.value("fields").toArray()) {
+        const auto field = value.toObject();
+        if (field.value("role").toString() == "execution" && result.fields.contains(field.value("name").toString()))
+            return fail(error, "EXECUTION_SEMANTICS", QString::fromUtf8(u8"字段“%1”要求执行控制，本版本仅解析，不能忽略后转换发送").arg(field.value("name").toString()));
     }
     if (!map(result.fields, &result.command, &result, error)) return false;
 
@@ -440,11 +466,13 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
         const QJsonObject format = m_config.inputFormat(selected);
         const QByteArray footer = configuredBytes(format, "footer");
         int fixedPayloadLength = 0;
-        bool hasTailField = TextFormat::enabled(external);
-        for (const QJsonValue &value : (TextFormat::enabled(external) ? QJsonArray() : format.value("fields").toArray())) {
+        bool hasTailField = false;
+        bool hasDelimitedField = false;
+        for (const QJsonValue &value : format.value("fields").toArray()) {
             const QJsonObject field = value.toObject();
             const QString mode = field.value("lengthMode").toString();
-            if (mode == "toFooter") hasTailField = true;
+            if (mode == "delimited") { hasDelimitedField = true; hasTailField = true; }
+            else if (mode == "toFooter") hasTailField = true;
             else if (mode == "mappedCommand") {
                 fixedPayloadLength += selected.value("commandCode").toString().size();
                 if (selected.isEmpty()) hasTailField = true;
@@ -452,7 +480,7 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
         }
         // 全部固定长度时按配置长度定位帧尾，HEX 参数中的同值字节不能被当成结束符。
         // 读取到帧尾则从固定字段之后搜索；此模式要求尾字段不含未转义的完整帧尾。
-        const int end = hasTailField ? m_buffer.indexOf(footer, header.size() + fixedPayloadLength)
+        const int end = hasTailField ? m_buffer.indexOf(footer, header.size() + (hasDelimitedField ? 0 : fixedPayloadLength))
                                     : header.size() + fixedPayloadLength;
         if (end < 0 || m_buffer.size() < end + footer.size()) break;
         const int frameSize = end + footer.size();

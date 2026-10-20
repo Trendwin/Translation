@@ -2,13 +2,11 @@
 
 普通用户主要通过中文页面编辑。完整 JSON 位于高级配置，修改后须明确“应用 JSON 到草稿”。保存、校验和启用彼此独立，顶部显示草稿和已启用版本。
 
-## 文本模板模式
+## 顺序字段与格式调试
 
-常规界面以“按样例拆分（文本）”生成格式，手写模板与字段表收在折叠高级设置中。可选`external.textFormat.sampleEditor`保留已应用样例、分隔符及上次命令，解析器不依赖这些界面元数据。新增命令保留外层定义；候选需要显式应用，未应用的字段编辑会阻止保存和关闭保存。
+界面只有原九列顺序字段表，schemaVersion仍为1。`ProtocolConfig::validateFormat`仅检查格式；`ConversionEngine::parsePreview`只输出字段与提示。`convert`复用同一解析结果，继续校验映射、SDK和设备。零条mappings允许保存、导出和独立解析，不要求device；转换未匹配命令时明确失败。
 
-schemaVersion仍为1，缺少`external.mode`时继续按旧顺序字段解释。`external.mode: "textTemplate"`启用通用ASCII模板，结构及示例见[文本模板说明](text-formats.md)。模板模式保存独立的`external.textFormat`，保留未启用的旧`fields`；两套布局不交叉解析。仅格式配置允许`mappings: []`，不要求device，仍可保存、重启、导入、导出和独立解析。
-
-`ProtocolConfig::validateFormat`仅检查格式；`ConversionEngine::parsePreview`仅输出字段和格式提示。`convert`复用解析结果并继续完整映射、SDK和设备检查。模板字段、命令及external对象的未知扩展键在表单保存时保留。外层及每命令参数的已知字段类型、用途和固定值由当前表单决定；改名不猜测替换已有映射引用。
+模板/样例格式已停用，`external.mode: "textTemplate"`或仍含`external.textFormat`均返回`UNSUPPORTED_FORMAT`。导入这种文件不会覆盖当前草稿或原文件。启动加载时可查看其保留的`external.fields`，但显式保存前禁止解析和发送；保存时移除已知废弃键并把原值保留于根`retiredFormatBackup`。读取不会自动写回。其余未知根、external、device和字段扩展随表单保存保留。
 
 ## 本地草稿与启动恢复
 
@@ -27,13 +25,13 @@ schemaVersion仍为1，缺少`external.mode`时继续按旧顺序字段解释。
 | byteOrder | big 或 little，只影响 HEX 多字节整数 |
 | fields | 有顺序的字段数组，连续读取，不填写 offset |
 
-字段的 name 必须唯一；role 为 command（命令码）、parameter（参数）或 fixed（固定字段），整个格式必须只有一个命令码字段。type 支持 ascii、uint、int。
+字段的 name 必须唯一，整个格式必须只有一个command命令码字段。role支持command（命令码）、parameter（可映射参数）、fixed（固定字段）、metadata（普通字段）、execution（执行控制仅解析）、checksum（校验值未校验）。type支持ascii、uint、int。execution字段存在于实际输入时拒绝转换发送；checksum仅提取，不验证客户校验算法。
 
 普通字段表改名会同步同一字段的映射来源及省略设置，JSON中的引用名称随保存更新。数字参数来源必须是role=parameter且type为uint/int的字段；删除、类型或作用变化造成失效时，错误包含客户命令码、目标参数和来源字段。JSON整体替换需自行保持名称引用一致，详见[field-adaptation.md](field-adaptation.md)。
 
-lengthMode 支持 fixed（固定长度）、toFooter（读取到帧尾）和 mappedCommand（按保存的命令码识别）。固定字段 length 是字节数；toFooter 只能位于最后。mappedCommand 仅用于 ASCII 命令码，之前只能有固定长度字段；按配置中客户命令码最长前缀识别，之后严格核对剩余字段和帧尾，不能用短命令吞掉多余参数。
+lengthMode支持fixed（固定长度）、toFooter（读取到帧尾）、mappedCommand（按保存命令码识别）和delimited（读到分隔符）。fixed使用length字节数，delimited使用delimiter字符串，两者在界面共用“长度 / 分隔符”一列。delimited读取到第一次出现的分隔符并消耗该分隔符，字段值不能为空；分隔符按encoding严格解码，必须1～128字节、不能包含完整帧尾。toFooter只能位于最后。mappedCommand仅用于ASCII命令码，前面可放固定或按分隔符读取的字段；按已保存命令码最长前缀识别，之后仍严格核对剩余字段和帧尾。命令码本身使用delimited时无需映射即可独立提取未知命令。
 
-fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCII 整数只接受十进制数字，有符号整数可有负号，不接受空白、正号、小数。HEX 整数固定1–8字节，使用 byteOrder；统一计算范围为有符号64位，超范围拒绝。JSON 数值范围限于可精确保存的整数 ±9007199254740991。
+fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCII 整数只接受十进制数字，有符号整数可有负号，不接受空白、正号、小数。HEX整数固定1–8字节，或按分隔符读取且实际不超过8字节，使用byteOrder；统一计算范围为有符号64位，超范围拒绝。JSON 数值范围限于可精确保存的整数 ±9007199254740991。
 
 ## 命令映射 mappings
 
@@ -44,7 +42,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 | parameters | 参数关系对象；查询使用空对象 |
 | input.omitFields | 此命令不读取的共用字段名称，仅允许命令码之后的字段，不能省略地址前缀或命令码 |
 
-使用字段省略设置必须把命令码长度方式设为 mappedCommand。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
+使用字段省略设置必须把命令码长度方式设为mappedCommand或delimited。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
 
 | operation | 参数关系 | 趋盛发送与状态 |
 |---|---|---|
@@ -88,7 +86,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 `dt-preview.json` 是上一阶段的固定1字节命令码/十倍换算回归；其含义不变，仍可加载。ASCII/HEX旧顺序字段配置继续兼容；旧实验 external.format、offset/endian字段、双连接结构明确拒绝，不能静默解释成新配置。
 
-完整帧与缓存均不超过4096字节。全固定长度分帧按长度定位帧尾，允许二进制参数中出现同值尾字节；toFooter模式不支持转义分隔符，尾字段不能包含完整帧尾序列。新可变命令模式在半包、粘包中重新按保存映射确定字段布局与边界。
+完整帧与缓存均不超过4096字节。全固定长度分帧按长度定位帧尾，允许二进制参数中出现同值尾字节；带delimited字段的正文不能包含完整帧尾序列，否则报多帧/边界错误。toFooter尾字段也不能包含完整帧尾。半包等待后续数据，粘包逐帧处理，字段分隔错误不沿用上次解析结果。详见[顺序字段说明](sequential-fields.md)。
 
 ## SDK默认参数
 
