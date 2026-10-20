@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "name": "通用文本单动作映射示例",
+  "external": {
+    "mode": "textTemplate",
+    "encoding": "ascii",
+    "header": "[",
+    "footer": "]\\r",
+    "textFormat": {
+      "template": "{sequence}|{command}:{arguments}",
+      "fields": [
+        {
+          "name": "sequence",
+          "type": "uint",
+          "role": "metadata"
+        }
+      ],
+      "commands": [
+        {
+          "code": "MOVE",
+          "template": "{position}",
+          "fields": [
+            {
+              "name": "position",
+              "type": "uint",
+              "role": "parameter"
+            }
+          ]
+        },
+        {
+          "code": "TRIPLE",
+          "template": "{x}/{y}/{z}",
+          "fields": [
+            {
+              "name": "x",
+              "type": "uint",
+              "role": "parameter"
+            },
+            {
+              "name": "y",
+              "type": "uint",
+              "role": "parameter"
+            },
+            {
+              "name": "z",
+              "type": "uint",
+              "role": "parameter"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "mappings": [
+    {
+      "commandCode": "MOVE",
+      "operation": "MOTOR_FORWARD",
+      "parameters": {
+        "positionUm": {
+          "kind": "field",
+          "field": "position"
+        }
+      }
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "speedUmPerS": 1000,
+    "minPositionUm": 0,
+    "maxPositionUm": 6000
+  }
+}

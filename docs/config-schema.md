@@ -2,6 +2,12 @@
 
 普通用户主要通过中文页面编辑。完整 JSON 位于高级配置，修改后须明确“应用 JSON 到草稿”。保存、校验和启用彼此独立，顶部显示草稿和已启用版本。
 
+## 文本模板模式
+
+schemaVersion仍为1，缺少`external.mode`时继续按旧顺序字段解释。`external.mode: "textTemplate"`启用通用ASCII模板，结构及示例见[文本模板说明](text-formats.md)。模板模式保存独立的`external.textFormat`，保留未启用的旧`fields`；两套布局不交叉解析。仅格式配置允许`mappings: []`，不要求device，仍可保存、重启、导入、导出和独立解析。
+
+`ProtocolConfig::validateFormat`仅检查格式；`ConversionEngine::parsePreview`仅输出字段和格式提示。`convert`复用解析结果并继续完整映射、SDK和设备检查。模板字段、命令及external对象的未知扩展键在表单保存时保留。外层及每命令参数的已知字段类型、用途和固定值由当前表单决定；改名不猜测替换已有映射引用。
+
 ## 本地草稿与启动恢复
 
 格式、命令映射和设备参数属于同一份草稿。表单“保存到草稿”、应用高级JSON、导入配置会写入本地`draft.json`，内容仍为原协议JSON，不新增用户需要编辑的存储开关。Windows默认路径为`%LOCALAPPDATA%/Trendwin/Translation/draft.json`，不依赖exe目录或当前工作目录。

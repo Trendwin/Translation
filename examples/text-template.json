@@ -1,0 +1,102 @@
+{
+  "schemaVersion": 1,
+  "name": "通用分隔文本格式示例（执行控制仅解析）",
+  "external": {
+    "mode": "textTemplate",
+    "encoding": "ascii",
+    "header": "@&",
+    "footer": "\\r\\n",
+    "textFormat": {
+      "template": "{source}&{destination}&{type}&{sequence}&{busyFlag};{command}={arguments};{delay}\\nEND&{checksum}&",
+      "fields": [
+        {
+          "name": "source",
+          "type": "ascii",
+          "role": "metadata"
+        },
+        {
+          "name": "destination",
+          "type": "ascii",
+          "role": "metadata"
+        },
+        {
+          "name": "type",
+          "type": "ascii",
+          "role": "metadata",
+          "fixedValue": "SCT"
+        },
+        {
+          "name": "sequence",
+          "type": "uint",
+          "role": "metadata"
+        },
+        {
+          "name": "busyFlag",
+          "type": "uint",
+          "role": "execution"
+        },
+        {
+          "name": "delay",
+          "type": "uint",
+          "role": "execution"
+        },
+        {
+          "name": "checksum",
+          "type": "ascii",
+          "role": "checksum"
+        }
+      ],
+      "commands": [
+        {
+          "code": "SET",
+          "template": "{value}",
+          "fields": [
+            {
+              "name": "value",
+              "type": "uint",
+              "role": "parameter"
+            }
+          ]
+        },
+        {
+          "code": "POSITION",
+          "template": "{position}",
+          "fields": [
+            {
+              "name": "position",
+              "type": "int",
+              "role": "parameter"
+            }
+          ]
+        },
+        {
+          "code": "VECTOR",
+          "template": "{x},{y},{z}",
+          "fields": [
+            {
+              "name": "x",
+              "type": "int",
+              "role": "parameter"
+            },
+            {
+              "name": "y",
+              "type": "int",
+              "role": "parameter"
+            },
+            {
+              "name": "z",
+              "type": "int",
+              "role": "parameter"
+            }
+          ]
+        },
+        {
+          "code": "PING",
+          "template": "",
+          "fields": []
+        }
+      ]
+    }
+  },
+  "mappings": []
+}
