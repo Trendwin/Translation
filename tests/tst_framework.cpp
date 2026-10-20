@@ -5,6 +5,7 @@
 #include <QTemporaryDir>
 
 #include "config/protocolconfig.h"
+#include "config/sampleformat.h"
 #include "core/conversionengine.h"
 #include "core/requestmanager.h"
 #include "demo/demointernalprotocol.h"
@@ -33,6 +34,8 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void sampleFormatGenerationAndAppend();
+    void sampleFormatFailuresPreserveConfiguration();
     void textTemplatesAndIndependentParsing();
     void textTemplateValidationAndFailures();
     void textTemplateMappingAndStreaming();
@@ -97,6 +100,51 @@ static QString example(const QString &name)
     return QFileInfo(source).dir().filePath("../examples/" + name);
 }
 
+
+
+void FrameworkTest::sampleFormatGenerationAndAppend()
+{
+    QJsonObject external{{"mode","textTemplate"},{"encoding","ascii"},{"header","@&"},{"footer","\\r\\n"}};
+    const QJsonObject separators{{"region",";"},{"field","&"},{"assignment","="},{"parameter",","}};
+    const QString sample="@&5A&01&SCT&1&0;DI_PDDA=20,200,3000;10\\nEND&?&\\r\\n";
+    SampleFormatDraft draft;TranslationError error;QJsonObject result;
+    QVERIFY2(SampleFormat::prepare(external,sample,separators,&draft,&error),qPrintable(error.message));
+    int localCount=0;
+    for(auto &piece:draft.pieces) {
+        if(piece.scope=="local"&&!piece.literal){++localCount;piece.field.insert("name",QStringList{"x","y","z"}.at(localCount-1));piece.field.insert("type","int");}
+        if(piece.scope=="outer"&&!piece.literal&&piece.bytes=="0"){piece.field.insert("role","execution");piece.field.insert("note","preserve");}
+        if(piece.scope=="outer"&&!piece.literal&&piece.bytes=="?")piece.field.insert("role","checksum");
+    }
+    QCOMPARE(localCount,3);QVERIFY(external.value("textFormat").isUndefined());
+    QVERIFY2(SampleFormat::apply(external,draft,separators,&result,&error),qPrintable(error.message));
+    external.insert("textFormat",result);const auto envelope=result.value("fields");
+    ProtocolConfig config;config.root={{"schemaVersion",1},{"external",external}};ConversionPreview preview;
+    QVERIFY(ConversionEngine(config).parsePreview("@&5A&01&SCT&255&0;DI_PDDA=-20,2000,30000;10\nEND&?&\r\n",&preview,&error));
+    QCOMPARE(preview.fields.value("z").toInt(),30000);QCOMPARE(preview.notices.size(),2);
+    QVERIFY(SampleFormat::prepare(external,"@&5A&01&SCT&12&0;MFCV=255;10\\nEND&?&\\r\\n",separators,&draft,&error));
+    QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));QCOMPARE(result.value("commands").toArray().size(),2);QCOMPARE(result.value("fields"),envelope);
+    const auto first=result.value("commands").toArray().at(0);external.insert("textFormat",result);
+    QVERIFY(SampleFormat::prepare(external,sample,separators,&draft,&error));QVERIFY(draft.existingCommand);
+    QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));QCOMPARE(result.value("commands").toArray().at(0),first);
+    const QJsonObject alternative{{"mode","textTemplate"},{"encoding","ascii"},{"header","<"},{"footer",">"}};
+    const QJsonObject other{{"region",""},{"field","|"},{"assignment",":"},{"parameter","/"}};
+    QVERIFY(SampleFormat::prepare(alternative,"<12|MOVE:-1/20/300>",other,&draft,&error));QVERIFY(SampleFormat::apply(alternative,draft,other,&result,&error));
+    QVERIFY(SampleFormat::prepare(alternative,"<12|PING:>",other,&draft,&error));QVERIFY(SampleFormat::apply(alternative,draft,other,&result,&error));QVERIFY(result.value("commands").toArray().at(0).toObject().value("fields").toArray().isEmpty());
+}
+void FrameworkTest::sampleFormatFailuresPreserveConfiguration()
+{
+    QJsonObject external{{"mode","textTemplate"},{"encoding","ascii"},{"header","["},{"footer","]"}};
+    const QJsonObject separators{{"region",";"},{"field","|"},{"assignment","="},{"parameter",","}};
+    SampleFormatDraft draft;TranslationError error;QJsonObject result;
+    QVERIFY(SampleFormat::prepare(external,"[1|MOVE=20,30]",separators,&draft,&error));QVERIFY(SampleFormat::apply(external,draft,separators,&result,&error));external.insert("textFormat",result);const auto before=external;
+    for(const QString bad:{QString("[1|MOVE=20,30,40]"),QString("[1|MOVE=20]"),QString("[1|MOVE=20;OTHER=30]"),QString("WRONG"),QString("[1|NEW=20,,30]")}) {
+        SampleFormatDraft proposal;QJsonObject output{{"untouched",true}};
+        if(SampleFormat::prepare(external,bad,separators,&proposal,&error))QVERIFY(!SampleFormat::apply(external,proposal,separators,&output,&error));
+        QCOMPARE(external,before);QVERIFY(output.value("untouched").toBool());
+    }
+    QVERIFY(SampleFormat::prepare(external,"[1|NEW=20]",separators,&draft,&error));auto modified=external;auto format=result;format.insert("note","changed after split");modified.insert("textFormat",format);
+    QVERIFY(!SampleFormat::apply(modified,draft,separators,&result,&error));QCOMPARE(error.code,QString("SAMPLE_STALE"));
+}
 
 void FrameworkTest::textTemplatesAndIndependentParsing()
 {

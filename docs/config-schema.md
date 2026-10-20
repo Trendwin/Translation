@@ -4,6 +4,8 @@
 
 ## 文本模板模式
 
+常规界面以“按样例拆分（文本）”生成格式，手写模板与字段表收在折叠高级设置中。可选`external.textFormat.sampleEditor`保留已应用样例、分隔符及上次命令，解析器不依赖这些界面元数据。新增命令保留外层定义；候选需要显式应用，未应用的字段编辑会阻止保存和关闭保存。
+
 schemaVersion仍为1，缺少`external.mode`时继续按旧顺序字段解释。`external.mode: "textTemplate"`启用通用ASCII模板，结构及示例见[文本模板说明](text-formats.md)。模板模式保存独立的`external.textFormat`，保留未启用的旧`fields`；两套布局不交叉解析。仅格式配置允许`mappings: []`，不要求device，仍可保存、重启、导入、导出和独立解析。
 
 `ProtocolConfig::validateFormat`仅检查格式；`ConversionEngine::parsePreview`仅输出字段和格式提示。`convert`复用解析结果并继续完整映射、SDK和设备检查。模板字段、命令及external对象的未知扩展键在表单保存时保留。外层及每命令参数的已知字段类型、用途和固定值由当前表单决定；改名不猜测替换已有映射引用。
