@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <limits>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -33,6 +34,9 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void integerListMixedMappings();
+    void integerListStrictValidation();
+    void integerListLayoutAndBudget();
     void sequentialDelimitedFieldsAndMapping();
     void sequentialDelimitedFailureAndStream();
     void retiredFormatsAreRejected();
@@ -101,6 +105,111 @@ static QString example(const QString &name)
     return QFileInfo(source).dir().filePath("../examples/" + name);
 }
 
+
+static ProtocolConfig integerListConfig()
+{
+    ProtocolConfig config;
+    TranslationError error;
+    if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
+        qWarning() << error.code << error.message;
+    return config;
+}
+
+void FrameworkTest::integerListMixedMappings()
+{
+    const auto config = integerListConfig();
+    TranslationError error;
+    ConversionPreview p;
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("!XYZ=66051,258,197637\r", false, &p, &error), qPrintable(error.message));
+    QCOMPARE(p.fields.value("values").toList(), QVariantList({qint64(66051), qint64(258), qint64(197637)}));
+    QCOMPARE(p.targetFrame.mid(8, 20), QByteArray::fromHex("0123010203000102030405001234001234001234"));
+    QVERIFY(p.parameterTrace.value("yPosition").contains(QString::fromUtf8(u8"第 2 项")));
+    QCOMPARE(p.command.targetDevice, QString("xyz:35"));
+    QVERIFY(ConversionEngine(config).convert("!ONE=50\r", false, &p, &error));
+    QCOMPARE(p.command.parameters.value("positionUm").toInt(), 50);
+    QCOMPARE(p.command.parameters.value("devId").toInt(), 18);
+    QVERIFY(ConversionEngine(config).convert("!MIX=20,200,3000\r", false, &p, &error));
+    QCOMPARE(p.command.parameters.value("xPosition").toInt(), 200);
+    QCOMPARE(p.command.parameters.value("zPosition").toInt(), 200);
+    QCOMPARE(p.command.parameters.value("yPosition").toInt(), 0);
+    for (const QByteArray input : {QByteArray("!ONE=1,2\r"), QByteArray("!XYZ=1,2\r"), QByteArray("!MIX=1,2,3,4\r")}) {
+        QVERIFY(!ConversionEngine(config).convert(input, false, &p, &error));
+        QCOMPARE(error.code, QString("PARAMETER_COUNT"));
+        QVERIFY(p.targetFrame.isEmpty());
+    }
+    auto formatOnly = config;
+    formatOnly.root.remove("device"); formatOnly.root.insert("mappings", QJsonArray());
+    QVERIFY(ConversionEngine(formatOnly).parsePreview("!UNKNOWN=20,200,3000\r", &p, &error));
+    QCOMPARE(p.fields.value("values").toList().size(), 3);
+    ConversionEngine stream(config); QList<TranslationError> errors;
+    QVERIFY(stream.feed("!XYZ=1,", &errors).isEmpty());
+    QCOMPARE(stream.feed("2,3\r!ONE=50\r", &errors).size(), 2);
+    QVERIFY(errors.isEmpty());
+    QTemporaryDir dir;
+    QVERIFY(config.save(dir.filePath("lists.json"), &error));
+    ProtocolConfig restored;
+    QVERIFY(ProtocolConfig::load(dir.filePath("lists.json"), &restored, &error));
+    QCOMPARE(restored.root, config.root);
+}
+
+void FrameworkTest::integerListStrictValidation()
+{
+    auto config = integerListConfig(); TranslationError error; ConversionPreview p;
+    for (const QByteArray value : {QByteArray(""), QByteArray(",1"), QByteArray("1,"), QByteArray("1,,2"),
+         QByteArray("1, 2"), QByteArray("1,2 "), QByteArray("1,+2"), QByteArray("1,2.0"),
+         QByteArray("1,2\n"), QByteArray("1,9223372036854775808"), QByteArray("1,8388608")}) {
+        QVERIFY(ConversionEngine(config).parsePreview("!XYZ=1,2,3\r", &p, &error));
+        QVERIFY2(!ConversionEngine(config).parsePreview("!XYZ=" + value + "\r", &p, &error), value.constData());
+        QVERIFY(p.fields.isEmpty()); QVERIFY(p.targetFrame.isEmpty());
+    }
+    auto ext = config.root.value("external").toObject(); auto fields = ext.value("fields").toArray();
+    auto field = fields[1].toObject(); field.remove("min"); field.remove("max"); fields[1] = field;
+    ext.insert("fields", fields); config.root.insert("external", ext);
+    QVERIFY(ConversionEngine(config).parsePreview("!XYZ=-9223372036854775808,0,9223372036854775807\r", &p, &error));
+    QCOMPARE(p.fields.value("values").toList().first().toLongLong(), std::numeric_limits<qint64>::min());
+    const auto original = integerListConfig();
+    for (const QJsonValue index : {QJsonValue(0), QJsonValue(-1), QJsonValue(1.5), QJsonValue("1"), QJsonValue(4)}) {
+        config = original; auto maps = config.root.value("mappings").toArray(); auto m = maps[1].toObject(); auto params = m.value("parameters").toObject();
+        auto expression = params.value("xPosition").toObject(); expression.insert("itemIndex", index);
+        params.insert("xPosition", expression); m.insert("parameters", params); maps[1] = m; config.root.insert("mappings", maps);
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_ITEM_INDEX"));
+    }
+    for (const QJsonValue count : {QJsonValue(0), QJsonValue(1.5), QJsonValue("3"), QJsonValue(2049)}) {
+        config = original; auto maps = config.root.value("mappings").toArray(); auto m = maps[1].toObject();
+        m.insert("input", QJsonObject{{"parameterCounts", QJsonObject{{"values", count}}}}); maps[1] = m; config.root.insert("mappings", maps);
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER_COUNT"));
+    }
+    config = original; ext = config.root.value("external").toObject(); fields = ext.value("fields").toArray(); field = fields[1].toObject();
+    field.insert("role", "metadata"); fields[1] = field; ext.insert("fields", fields); config.root.insert("external", ext);
+    QVERIFY(!config.validateFormat(&error)); QCOMPARE(error.code, QString("CONFIG_FIELD_TYPE"));
+    ext.insert("encoding", "hex"); config.root.insert("external", ext); QVERIFY(!config.validateFormat(&error));
+}
+
+void FrameworkTest::integerListLayoutAndBudget()
+{
+    auto config = integerListConfig(); TranslationError error; ConversionPreview p;
+    auto maps = config.root.value("mappings").toArray(); auto m = maps[0].toObject(); m.insert("commandCode", "ONE");
+    m.insert("input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 3}}}});
+    auto params = m.value("parameters").toObject();
+    params.insert("positionUm", QJsonObject{{"kind", "linear"}, {"field", "values"}, {"itemIndex", 2}, {"numerator", 2}, {"denominator", 1}, {"offset", 0}, {"round", "exact"}});
+    m.insert("parameters", params); config.root.insert("mappings", QJsonArray{m});
+    auto ext = config.root.value("external").toObject(); auto fields = ext.value("fields").toArray(); auto command = fields[0].toObject();
+    command.insert("lengthMode", "fixed"); command.remove("delimiter"); command.insert("length", 3); fields[0] = command;
+    ext.insert("fields", fields); config.root.insert("external", ext);
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QVERIFY(ConversionEngine(config).convert("!ONE20,200,3000\r", false, &p, &error));
+    QCOMPARE(p.command.parameters.value("positionUm").toInt(), 400);
+    auto list = fields[1].toObject(); list.insert("lengthMode", "fixed"); list.insert("length", 4); fields[1] = list;
+    ext.insert("fields", fields); config.root.insert("external", ext);
+    QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER_COUNT"));
+    config = integerListConfig(); maps = config.root.value("mappings").toArray(); m = maps[0].toObject(); m.insert("commandCode", "DI_PDDA");
+    m.insert("input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 2044}}}});
+    config.root.insert("mappings", QJsonArray{m});
+    QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_MAPPING_INPUT"));
+    m.insert("input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 2043}}}}); config.root.insert("mappings", QJsonArray{m});
+    QVERIFY2(config.validate(&error), qPrintable(error.message)); // Exact 4096-byte shortest frame.
+}
 
 static ProtocolConfig delimitedConfig()
 {

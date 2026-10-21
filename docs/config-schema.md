@@ -25,9 +25,9 @@
 | byteOrder | big 或 little，只影响 HEX 多字节整数 |
 | fields | 有顺序的字段数组，连续读取，不填写 offset |
 
-字段的 name 必须唯一，整个格式必须只有一个command命令码字段。role支持command（命令码）、parameter（可映射参数）、fixed（固定字段）、metadata（普通字段）、execution（执行控制仅解析）、checksum（校验值未校验）。type支持ascii、uint、int。execution字段存在于实际输入时拒绝转换发送；checksum仅提取，不验证客户校验算法。
+字段的 name 必须唯一，整个格式必须只有一个command命令码字段。role支持command（命令码）、parameter（可映射参数）、fixed（固定字段）、metadata（普通字段）、execution（执行控制仅解析）、checksum（校验值未校验）。type支持ascii、uint、int、integerList。integerList仅允许ASCII的parameter字段，按英文逗号拆分严格有符号十进制整数，单项合法；min/max逐项检查。execution字段存在于实际输入时拒绝转换发送；checksum仅提取，不验证客户校验算法。
 
-普通字段表改名会同步同一字段的映射来源及省略设置，JSON中的引用名称随保存更新。数字参数来源必须是role=parameter且type为uint/int的字段；删除、类型或作用变化造成失效时，错误包含客户命令码、目标参数和来源字段。JSON整体替换需自行保持名称引用一致，详见[field-adaptation.md](field-adaptation.md)。
+普通字段表改名会同步同一字段的映射来源及省略设置，JSON中的引用名称随保存更新。数字参数来源必须是role=parameter且type为uint/int/integerList的字段（列表必须明确itemIndex）；删除、类型或作用变化造成失效时，错误包含客户命令码、目标参数和来源字段。JSON整体替换需自行保持名称引用一致，详见[field-adaptation.md](field-adaptation.md)。
 
 lengthMode支持fixed（固定长度）、toFooter（读取到帧尾）、mappedCommand（按保存命令码识别）和delimited（读到分隔符）。fixed使用length字节数，delimited使用delimiter字符串，两者在界面共用“长度 / 分隔符”一列。delimited读取到第一次出现的分隔符并消耗该分隔符，字段值不能为空；分隔符按encoding严格解码，必须1～128字节、不能包含完整帧尾。toFooter只能位于最后。mappedCommand仅用于ASCII命令码，前面可放固定或按分隔符读取的字段；按已保存命令码最长前缀识别，之后仍严格核对剩余字段和帧尾。命令码本身使用delimited时无需映射即可独立提取未知命令。
 
@@ -40,6 +40,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 | commandCode | 配置定义的客户命令码；不可为空、重复或超过128字符 |
 | operation | 趋盛目录中的下发目标；已有模板见下表，其他项为 QUSHENG_XX（XX为大写两位指令码） |
 | parameters | 参数关系对象；查询使用空对象 |
+| input.parameterCounts | 对象：每个有效、未省略的integerList字段必须指定1～2048的输入项数；实际数量必须完全相同，与目标参数个数无关 |
 | input.omitFields | 此命令不读取的共用字段名称，仅允许命令码之后的字段，不能省略地址前缀或命令码 |
 
 使用字段省略设置必须把命令码长度方式设为mappedCommand或delimited。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
@@ -99,3 +100,9 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 `operation: "QUSHENG_C1"` 的 `parameters` 只允许 `moduleIndex`、`xPosition`、`yPosition`、`zPosition` 四个可编辑关系，四项都须明确提供（也可由显式SDK预置提供）。编号0–255，位置0–8388607，允许明确固定0，不隐式补0。三轴可引用同一客户数值字段或分别引用不同整数参数字段，不改变客户顺序字段的读取方式。
 
 SDK固定 `moduleType=1`，拒绝类型2。`xSpeed/ySpeed/zSpeed` 不能作为客户参数映射；各自按 `sdkDefaults.QUSHENG_C1`、`device.speedUmPerS`、软件初始1000补齐，范围0–8388607，显式0保持为0。单位由下位机配置决定。`targetDevice` 使用 `xyz:<moduleIndex>`，不会当作物理电机编号；全部补齐参数进入请求快照。完整布局、回告和示例见[XYZ说明](virtual-module-xyz.md)。
+
+## 整数列表索引
+
+`field`和`linear`表达式引用integerList时必须有从1开始的整数`itemIndex`，不得超过本映射`input.parameterCounts[field]`。标量来源及constant不允许itemIndex。例：`{"kind":"field","field":"values","itemIndex":2}`。列表字段改名时同步来源和数量键；删除、改类型不会静默删除索引或改绑。省略列表不能保留该列表的数量约束。
+
+逗号仅是列表内部规则；字段仍按fixed/delimited/toFooter读取。列表不接受空项、空白、正号、小数或64位溢出；负值是否可发送由字段范围和目标SDK范围共同决定。格式独立解析不依赖映射项数；转换和调试实发严格检查数量。完整帧最多4096字节，配置也检查列表及命令码的最短帧预算，实际可容纳项数取决于外层格式。详见[列表使用说明](integer-list-parameters.md)。

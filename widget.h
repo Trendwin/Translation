@@ -3,6 +3,7 @@
 
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QMap>
 #include <QWidget>
 #include <memory>
 
@@ -66,6 +67,9 @@ private:
     bool readNewMapping(QJsonObject *mapping);
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
+    void updateMappingCounts();
+    void addNumericSources(QComboBox *box, const QJsonArray &omitted);
+    void updateItemSelector(QComboBox *source, QSpinBox *index);
     QJsonArray mappingOmittedFields() const;
     void fieldFormatChanged();
     bool synchronizeFieldNames();
@@ -109,7 +113,11 @@ private:
     QLineEdit *m_mappingSearch = nullptr;
     QTableWidget *m_mappingParameters = nullptr;
     QLabel *m_mappingHint = nullptr;
+    QGroupBox *m_mappingCountsGroup = nullptr;
+    QTableWidget *m_mappingCounts = nullptr;
+    QMap<QString, int> m_listCounts;
     QComboBox *m_mappingSource = nullptr;
+    QSpinBox *m_mappingItemIndex = nullptr;
     QComboBox *m_mappingMotor = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
