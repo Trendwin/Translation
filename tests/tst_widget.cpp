@@ -43,6 +43,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void integerListMappingLifecycle();
+    void integerListFieldAdaptationAndDebugSend();
     void initTestCase();
     void sequentialDelimiterEditorLifecycle();
     void retiredDraftRecoveryRequiresExplicitSave();
@@ -1071,6 +1073,109 @@ void WidgetTest::sdkReportsAreVisibleWithoutCompletingRequests()
 }
 
 
+
+static QJsonObject listExample()
+{
+    const auto source = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile file(source.filePath("../examples/integer-list-parameters.json"));
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    return QJsonDocument::fromJson(file.readAll()).object();
+}
+
+void WidgetTest::integerListMappingLifecycle()
+{
+    const QString path = freshDraftPath(), exported = freshDraftPath();
+    Widget widget(nullptr, path); widget.resize(1100, 740); widget.show();
+    auto root = listExample(); QVERIFY(!root.isEmpty()); applyRoot(widget, root);
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable"); QCOMPARE(fields->columnCount(), 9);
+    QCOMPARE(qobject_cast<QComboBox *>(fields->cellWidget(1, 3))->currentData().toString(), QString("integerList"));
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    auto *params = widget.findChild<QTableWidget *>("mappingParameters");
+    auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts"); QCOMPARE(counts->rowCount(), 1);
+    qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
+    for (const auto &entry : {qMakePair(QString("xPosition"), 1), qMakePair(QString("yPosition"), 2), qMakePair(QString("zPosition"), 3)}) {
+        const int row = parameterRow(params, entry.first); QVERIFY(row >= 0);
+        auto *source = qobject_cast<QComboBox *>(params->cellWidget(row, 1)); source->setCurrentIndex(source->findData("values"));
+        qobject_cast<QSpinBox *>(params->cellWidget(row, 3))->setValue(entry.second);
+        QVERIFY(source->currentText().contains(QString::number(entry.second)));
+    }
+    const int module = parameterRow(params, "moduleIndex");
+    auto *moduleSource = qobject_cast<QComboBox *>(params->cellWidget(module, 1)); moduleSource->setCurrentIndex(moduleSource->findData("@constant"));
+    qobject_cast<QLineEdit *>(params->cellWidget(module, 2))->setText("35");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("TEST");
+    auto *tabs = widget.findChild<QTabWidget *>("mainTabs");
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render); tabs->setCurrentIndex(1); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("list-mapping-xyz.png")));
+        tabs->setCurrentIndex(0); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("list-format.png")));
+    }
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), 4);
+    button(widget, "saveConfig")->click(); const auto saved = draftRoot(widget);
+    const auto mapping = saved.value("mappings").toArray().last().toObject();
+    QCOMPARE(mapping.value("input").toObject().value("parameterCounts").toObject().value("values").toInt(), 3);
+    QCOMPARE(mapping.value("parameters").toObject().value("zPosition").toObject().value("itemIndex").toInt(), 3);
+    Widget restored(nullptr, path); QCOMPARE(draftRoot(restored), saved);
+    auto fileAction = [&restored](const char *name, const QString &filePath) {
+        bool seen = false;
+        QTimer::singleShot(0, &restored, [&restored, &seen, filePath]() {
+            auto *dialog = restored.findChild<QFileDialog *>(); if (!dialog) return;
+            seen = true; dialog->selectFile(filePath); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(restored, name)->click(); return seen;
+    };
+    QVERIFY(fileAction("exportConfig", exported)); QVERIFY(fileAction("importConfig", exported)); QCOMPARE(draftRoot(restored), saved);
+    auto *input = widget.findChild<QLineEdit *>("customerInput"); input->setText("!TEST=20,200,3000\\r");
+    button(widget, "previewButton")->click();
+    QVERIFY(!widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    button(widget, "parseFormatButton")->click();
+    const auto output = widget.findChild<QTextEdit *>("previewOutput")->toPlainText();
+    QVERIFY(output.contains("values = [20, 200, 3000]")); QVERIFY(output.contains(QString::fromUtf8(u8"第 3 项 = 3000")));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    if (!render.isEmpty()) {
+        tabs->setCurrentIndex(2); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("list-parse.png")));
+    }
+    // Arbitrary item index, including the old motion relation editor.
+    operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource"); source->setCurrentIndex(source->findData("values"));
+    widget.findChild<QSpinBox *>("mappingItemIndex")->setValue(5);
+    qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(5);
+    widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("FIVE"); button(widget, "addMapping")->click();
+    const auto five = mappingRows(widget).last().toObject();
+    QCOMPARE(five.value("parameters").toObject().value("positionUm").toObject().value("itemIndex").toInt(), 5);
+    QCOMPARE(five.value("parameters").toObject().value("positionUm").toObject().value("kind").toString(), QString("linear"));
+}
+
+void WidgetTest::integerListFieldAdaptationAndDebugSend()
+{
+    Widget widget(nullptr, freshDraftPath()); applyRoot(widget, listExample());
+    auto *input = widget.findChild<QLineEdit *>("customerInput");
+    auto *target = widget.findChild<QTextEdit *>("targetOutput"); auto *preview = widget.findChild<QTextEdit *>("previewOutput");
+    input->setText("!XYZ=20,200,3000\\r"); button(widget, "previewButton")->click(); QVERIFY(!target->toPlainText().isEmpty());
+    input->setText("!XYZ=20,200\\r"); button(widget, "sendButton")->click();
+    QVERIFY(target->toPlainText().isEmpty()); QVERIFY2(preview->toPlainText().contains("PARAMETER_COUNT"), qPrintable(preview->toPlainText()));
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource"); source->setCurrentIndex(source->findData("values"));
+    widget.findChild<QSpinBox *>("mappingItemIndex")->setValue(3);
+    auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts"); qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable"); fields->item(1, 1)->setText("renamed");
+    QCOMPARE(source->currentData().toString(), QString("renamed")); QCOMPARE(widget.findChild<QSpinBox *>("mappingItemIndex")->value(), 3);
+    button(widget, "saveConfig")->click(); const auto saved = draftRoot(widget);
+    const auto xyz = saved.value("mappings").toArray()[1].toObject();
+    QCOMPARE(xyz.value("input").toObject().value("parameterCounts").toObject().value("renamed").toInt(), 3);
+    QCOMPARE(xyz.value("parameters").toObject().value("zPosition").toObject().value("field").toString(), QString("renamed"));
+    QCOMPARE(xyz.value("parameters").toObject().value("zPosition").toObject().value("itemIndex").toInt(), 3);
+    auto *type = qobject_cast<QComboBox *>(fields->cellWidget(1, 3)); type->setCurrentIndex(type->findData("int"));
+    QVERIFY(source->currentText().contains(QString::fromUtf8(u8"类型已变化")));
+    button(widget, "saveConfig")->click();
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"失效"))
+            || widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"有误")));
+    QCOMPARE(draftRoot(widget).value("mappings").toArray()[1].toObject().value("parameters").toObject().value("zPosition").toObject().value("itemIndex").toInt(), 3);
+    applyRoot(widget, saved); input->setText("!XYZ=1,2,3\\r"); button(widget, "previewButton")->click(); QVERIFY(!target->toPlainText().isEmpty());
+}
 
 void WidgetTest::xyzModuleMappingLifecycle()
 {

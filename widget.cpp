@@ -154,6 +154,41 @@ void selectData(QComboBox *box, const QString &data)
     if (index >= 0) box->setCurrentIndex(index);
 }
 
+
+bool isListSource(const QComboBox *box)
+{ return box->currentData(Qt::UserRole + 1).toBool(); }
+
+void restoreSource(QComboBox *box, const QString &name, bool list)
+{
+    for (int i = 0; i < box->count(); ++i)
+        if (box->itemData(i).toString() == name && box->itemData(i, Qt::UserRole + 1).toBool() == list) {
+            box->setCurrentIndex(i); return;
+        }
+    if (name.isEmpty()) { box->setCurrentIndex(0); return; }
+    box->addItem(QString::fromUtf8(u8"来源不可用或类型已变化：%1").arg(name), name);
+    box->setItemData(box->count() - 1, list, Qt::UserRole + 1);
+    box->setCurrentIndex(box->count() - 1);
+}
+
+QString sourceName(const QJsonObject &expression)
+{
+    const QString field = expression.value("field").toString();
+    return expression.contains("itemIndex")
+        ? QString::fromUtf8(u8"%1 · 第 %2 项").arg(field).arg(expression.value("itemIndex").toVariant().toString()) : field;
+}
+
+QStringList fieldPreview(const QString &name, const QVariant &value)
+{
+    if (value.type() != QVariant::List) return {QStringLiteral("%1 = %2").arg(name, value.toString())};
+    QStringList values, lines;
+    const QVariantList items = value.toList();
+    for (const auto &item : items) values.append(item.toString());
+    lines.append(QStringLiteral("%1 = [%2]").arg(name, values.join(", ")));
+    for (int i = 0; i < items.size(); ++i)
+        lines.append(QString::fromUtf8(u8"  %1 · 第 %2 项 = %3").arg(name).arg(i + 1).arg(items.at(i).toString()));
+    return lines;
+}
+
 QString operationName(const QString &operation)
 {
     const QString name = QushengCommandCatalog::name(operation);
@@ -362,8 +397,8 @@ void Widget::buildUi()
     }
     auto *searchLine = new QHBoxLayout; searchLine->addWidget(m_mappingSearch);
     m_mappingParameters = new QTableWidget(this); m_mappingParameters->setObjectName("mappingParameters");
-    m_mappingParameters->setColumnCount(3);
-    m_mappingParameters->setHorizontalHeaderLabels({QString::fromUtf8(u8"趋盛参数"), QString::fromUtf8(u8"取值来源"), QString::fromUtf8(u8"固定值")});
+    m_mappingParameters->setColumnCount(4);
+    m_mappingParameters->setHorizontalHeaderLabels({QString::fromUtf8(u8"趋盛参数"), QString::fromUtf8(u8"取值来源"), QString::fromUtf8(u8"固定值"), QString::fromUtf8(u8"列表项号")});
     m_mappingParameters->verticalHeader()->hide(); m_mappingParameters->setMinimumHeight(100); m_mappingParameters->setMaximumHeight(190);
     m_mappingParameters->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_mappingParameters->horizontalHeaderItem(0)->setToolTip(QString::fromUtf8(u8"趋盛参数。"));
@@ -372,6 +407,9 @@ void Widget::buildUi()
     connect(m_mappingSearch, &QLineEdit::textChanged, this, &Widget::filterMappingCommands);
     m_mappingSource = new QComboBox(this); m_mappingSource->setObjectName("mappingSource");
     m_mappingSource->setToolTip(QString::fromUtf8(u8"选择客户字段、固定值，或无参数报文。"));
+    m_mappingItemIndex = new QSpinBox(this); m_mappingItemIndex->setObjectName("mappingItemIndex");
+    m_mappingItemIndex->setRange(1, 2048);
+    m_mappingItemIndex->setToolTip(QString::fromUtf8(u8"从1开始选择列表项，不能超过本条映射设置的输入项数。"));
     m_mappingMotor = new QComboBox(this); m_mappingMotor->setObjectName("mappingMotor");
     m_mappingMotor->addItem(QString::fromUtf8(u8"设备默认"), 0);
     for (int id = 0x11; id <= 0x1c; ++id)
@@ -386,9 +424,21 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"趋盛指令"), m_mappingOperation);
     editorForm->addRow(QString::fromUtf8(u8"电机编号"), m_mappingMotor);
     editorForm->addRow(QString::fromUtf8(u8"取值来源"), m_mappingSource);
+    editorForm->addRow(QString::fromUtf8(u8"列表项号"), m_mappingItemIndex);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
     editorLayout->addLayout(editorForm);
+    m_mappingCountsGroup = new QGroupBox(QString::fromUtf8(u8"列表输入项数（本条命令）"), this);
+    auto *countsLayout = new QVBoxLayout(m_mappingCountsGroup);
+    countsLayout->setContentsMargins(4, 4, 4, 4);
+    m_mappingCounts = new QTableWidget(this); m_mappingCounts->setObjectName("mappingParameterCounts");
+    m_mappingCounts->setColumnCount(2);
+    m_mappingCounts->setHorizontalHeaderLabels({QString::fromUtf8(u8"整数列表字段"), QString::fromUtf8(u8"输入项数")});
+    m_mappingCounts->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_mappingCounts->verticalHeader()->hide();
+    m_mappingCounts->setToolTip(QString::fromUtf8(u8"列表用英文逗号分隔，例如50为1项，20,20,20为3项。实际项数必须完全相同，即使部分目标固定或重复引用。"));
+    countsLayout->addWidget(m_mappingCounts);
+    editorLayout->addWidget(m_mappingCountsGroup);
     editorLayout->addWidget(m_mappingParameters);
     m_mappingHint = new QLabel(QString::fromUtf8(u8"模块编号不是物理电机编号。三个位置都须设置，固定0表示位置0；三轴速度沿用设备页默认运动速度，单位由下位机配置决定。"), this);
     m_mappingHint->setObjectName("mappingHint");
@@ -626,6 +676,7 @@ void Widget::connectSignals()
         m_header->setPlaceholderText(binary ? QString::fromUtf8(u8"例如 AA55") : QString::fromUtf8(u8"例如 /"));
         m_footer->setPlaceholderText(binary ? QString::fromUtf8(u8"例如 0D0A") : QString::fromUtf8(u8"例如 R\\r"));
         markDraftDirty();
+        updateMappingSources();
     });
     for (QLineEdit *edit : {m_header, m_footer})
         connect(edit, &QLineEdit::textChanged, this, &Widget::markDraftDirty);
@@ -661,6 +712,7 @@ void Widget::connectSignals()
         updateMappingControls();
     });
     connect(m_mappingSource, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { updateMappingSources(); updateMappingControls(); });
+    connect(m_mappingItemIndex, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() { updateItemSelector(m_mappingSource, m_mappingItemIndex); });
     for (QSpinBox *spin : {m_destination, m_source, m_devId, m_action, m_speed, m_minPosition, m_maxPosition})
         connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
             markDraftDirty();
@@ -825,7 +877,9 @@ void Widget::addFieldRow(const QJsonObject &field)
                               {QString::fromUtf8(u8"校验值（未校验）"), QStringLiteral("checksum")}});
     auto *type = combo(this, {{QStringLiteral("ASCII"), QStringLiteral("ascii")},
                               {QString::fromUtf8(u8"无符号整数"), QStringLiteral("uint")},
-                              {QString::fromUtf8(u8"有符号整数"), QStringLiteral("int")}});
+                              {QString::fromUtf8(u8"有符号整数"), QStringLiteral("int")},
+                              {QString::fromUtf8(u8"整数列表"), QStringLiteral("integerList")}});
+    type->setToolTip(QString::fromUtf8(u8"整数列表仅用于ASCII参数：英文逗号分隔有符号整数，单项合法；不接受空项、空白或小数，上下限逐项检查。"));
     auto *lengthMode = combo(this, {{QString::fromUtf8(u8"固定长度"), QStringLiteral("fixed")},
                                     {QString::fromUtf8(u8"读取到帧尾"), QStringLiteral("toFooter")},
                                     {QString::fromUtf8(u8"按命令码识别"), QStringLiteral("mappedCommand")},
@@ -875,7 +929,7 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     if (isMotionEditor(operation)) {
         const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
         if (expression.value("kind").toString() == "constant") summary = QString::fromUtf8(u8"固定数值 %1").arg(expression.value("value").toVariant().toString());
-        else summary = expression.value("field").toString() + (expression.value("kind").toString() == "linear"
+        else summary = sourceName(expression) + (expression.value("kind").toString() == "linear"
                      ? QString::fromUtf8(u8" × %1").arg(multiplierText(expression)) : QString());
         if (expression.value("offset").toDouble() != 0 || expression.value("round").toString("exact") != "exact")
             summary += QString::fromUtf8(u8"（高级配置）");
@@ -887,7 +941,7 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
             const QJsonObject relation = parameters.value(definition.value("key").toString()).toObject();
             const QString source = relation.isEmpty() ? parameterDefaultText(definition, operation)
                 : relation.value("kind").toString() == "constant" ? relation.value("value").toVariant().toString()
-                : relation.value("field").toString() + (relation.value("kind").toString() == "linear"
+                : sourceName(relation) + (relation.value("kind").toString() == "linear"
                   ? QString::fromUtf8(u8" × %1（高级）").arg(multiplierText(relation)) : QString());
             references << definition.value("label").toString() + " = " + source;
         }
@@ -902,6 +956,9 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
         // 停止和复位也显示本条实际选择，不用全局电机标签代替。
         summary.prepend(QString::fromUtf8(u8"电机 %1；").arg(selected));
     }
+    const QJsonObject counts = mapping.value("input").toObject().value("parameterCounts").toObject();
+    for (auto it = counts.begin(); it != counts.end(); ++it)
+        summary += QString::fromUtf8(u8"；%1 输入%2项").arg(it.key()).arg(it.value().toVariant().toString());
     const QString issue = mappingFieldIssue(mapping);
     m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
     m_mappingTable->item(row, 2)->setToolTip(issue);
@@ -936,22 +993,25 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         label->setToolTip(parameterTip); label->setData(Qt::UserRole, parameter); label->setData(Qt::UserRole + 1, expression); label->setData(Qt::UserRole + 2, false);
         m_mappingParameters->setItem(row, 0, label);
         auto *source = new QComboBox(m_mappingParameters); source->addItem(parameterDefaultText(parameter, operation), "");
-        const QJsonArray omitted = mappingOmittedFields();
-        for (int field = 0; field < m_fieldTable->rowCount(); ++field) {
-            const QString name = itemText(m_fieldTable, field, 1);
-            if (comboData(m_fieldTable, field, 2) == "parameter" && comboData(m_fieldTable, field, 3) != "ascii" && !omitted.contains(name))
-                source->addItem(name, name);
-        }
+        addNumericSources(source, mappingOmittedFields());
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
         const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
-        if (!selected.isEmpty() && source->findData(selected) < 0) source->addItem(QString::fromUtf8(u8"未找到字段：%1").arg(selected), selected);
-        selectData(source, selected); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
+        restoreSource(source, selected, expression.contains("itemIndex")); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
         const QString emptyHint = source->itemText(0).contains(QString::fromUtf8(u8"默认"))
             ? QString::fromUtf8(u8"无需填写") : QString::fromUtf8(u8"先选择来源");
         auto *fixed = new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(selected == "@constant" ? QString::fromUtf8(u8"填写整数")
             : selected.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
         fixed->setEnabled(selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
-        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint]() {
+        auto *itemIndex = new QSpinBox(m_mappingParameters); itemIndex->setRange(1, 2048);
+        itemIndex->setObjectName("mappingItemIndex_" + key);
+        itemIndex->setValue(expression.value("itemIndex").toInt(1));
+        m_mappingParameters->setCellWidget(row, 3, itemIndex);
+        updateItemSelector(source, itemIndex);
+        connect(itemIndex, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, source, itemIndex, label]() {
+            label->setData(Qt::UserRole + 2, true); updateItemSelector(source, itemIndex);
+        });
+        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint, itemIndex]() {
+            updateItemSelector(source, itemIndex);
             label->setData(Qt::UserRole + 2, true); const QString chosen = source->currentData().toString();
             fixed->setEnabled(chosen == "@constant");
             fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
@@ -1011,6 +1071,9 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
             const bool linear = expression.value("kind").toString() == "linear";
             expression.insert("kind", linear ? "linear" : "field"); expression.insert("field", selected); expression.remove("value");
         }
+        if (selected != "@constant" && isListSource(source))
+            expression.insert("itemIndex", qobject_cast<QSpinBox *>(m_mappingParameters->cellWidget(row, 3))->value());
+        else expression.remove("itemIndex");
         parameters->insert(key, expression);
     }
     return true;
@@ -1023,6 +1086,7 @@ void Widget::resetMappingForm()
     selectData(m_mappingOperation,"MOTOR_FORWARD"); m_editorOperation="MOTOR_FORWARD";
     m_mappingValue->clear(); m_mappingMultiplier->setText("1");
     m_mappingMotor->setCurrentIndex(0);
+    m_mappingItemIndex->setValue(1); m_listCounts.clear();
     updateMappingSources(); selectData(m_mappingSource,"");
     loadCatalogParameters(QJsonObject()); updateMappingControls();
     m_loadingMapping=false;
@@ -1092,6 +1156,13 @@ bool Widget::synchronizeFieldNames()
                             omitted[i] = renames.value(omitted.at(i).toString());
                     input.insert("omitFields", omitted);
                 }
+                if (input.value("parameterCounts").isObject()) {
+                    const QJsonObject previous = input.value("parameterCounts").toObject();
+                    QJsonObject renamed;
+                    for (auto it = previous.begin(); it != previous.end(); ++it)
+                        renamed.insert(renames.value(it.key(), it.key()), it.value());
+                    input.insert("parameterCounts", renamed);
+                }
                 mapping.insert("input", input);
             }
             updateMappingSummary(row, mapping);
@@ -1105,12 +1176,16 @@ bool Widget::synchronizeFieldNames()
             const QString old=box->currentData().toString();
             if (!renames.contains(old)) return;
             const QString name=renames.value(old);
-            if (box->findData(name)<0) box->addItem(name,name);
-            selectData(box,name);
+            box->setItemData(box->currentIndex(), name);
+            box->setItemText(box->currentIndex(), name);
         };
         renameSource(m_mappingSource);
         for (int row=0;row<m_mappingParameters->rowCount();++row)
             if (auto *box=qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row,1))) renameSource(box);
+        const auto previousCounts = m_listCounts;
+        m_listCounts.clear();
+        for (auto it = previousCounts.begin(); it != previousCounts.end(); ++it)
+            m_listCounts.insert(renames.value(it.key(), it.key()), it.value());
         m_loadingMapping=previousLoading; m_syncingFields=false;
     } else {
         const QSignalBlocker blocker(m_fieldTable);
@@ -1123,6 +1198,7 @@ bool Widget::synchronizeFieldNames()
 QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
 {
     QSet<QString> numeric, omittable, seen; bool commandSeen = false;
+    QSet<QString> lists;
     for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
         const QString name = itemText(m_fieldTable, row, 1);
         if (name.isEmpty() || seen.contains(name)) return QString::fromUtf8(u8"字段名称为空或重复");
@@ -1130,16 +1206,37 @@ QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
         const QString role = comboData(m_fieldTable, row, 2);
         if (role == "command") commandSeen = true; else if (commandSeen) omittable.insert(name);
         if (role == "parameter" && comboData(m_fieldTable, row, 3) != "ascii") numeric.insert(name);
+        if (role == "parameter" && comboData(m_fieldTable, row, 3) == "integerList") lists.insert(name);
     }
     for (const QJsonValue &omitted : mapping.value("input").toObject().value("omitFields").toArray()) {
         if (!omittable.contains(omitted.toString())) return QString::fromUtf8(u8"省略字段不可用：%1").arg(omitted.toString());
         numeric.remove(omitted.toString());
+        lists.remove(omitted.toString());
     }
+    const QJsonObject input = mapping.value("input").toObject();
+    if (input.contains("parameterCounts") && !input.value("parameterCounts").isObject())
+        return QString::fromUtf8(u8"列表输入项数必须为对象");
+    const auto counts = input.value("parameterCounts").toObject();
+    for (auto it = counts.begin(); it != counts.end(); ++it)
+        if (!lists.contains(it.key()) || !it.value().isDouble() || it.value().toDouble() != it.value().toInt()
+                || it.value().toInt() < 1 || it.value().toInt() > 2048)
+            return QString::fromUtf8(u8"列表输入项数不可用：%1").arg(it.key());
+    for (const QString &name : lists)
+        if (!counts.contains(name)) return QString::fromUtf8(u8"请设置列表“%1”的输入项数").arg(name);
     const QJsonObject parameters = mapping.value("parameters").toObject();
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject(); const QString kind = expression.value("kind").toString();
         if ((kind == "field" || kind == "linear") && !numeric.contains(expression.value("field").toString()))
             return QString::fromUtf8(u8"来源字段不可用：%1").arg(expression.value("field").toString());
+        if (kind == "field" || kind == "linear") {
+            const QString field = expression.value("field").toString();
+            if (lists.contains(field)) {
+                const auto index = expression.value("itemIndex");
+                if (!index.isDouble() || index.toDouble() != index.toInt() || index.toInt() < 1 || index.toInt() > counts.value(field).toInt())
+                    return QString::fromUtf8(u8"列表“%1”的项号应为1～%2").arg(field).arg(counts.value(field).toInt());
+            } else if (expression.contains("itemIndex"))
+                return QString::fromUtf8(u8"标量字段“%1”不能带列表项号").arg(field);
+        }
     }
     return QString();
 }
@@ -1150,46 +1247,98 @@ void Widget::refreshMappingSummaries()
         updateMappingSummary(row, m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject());
 }
 
+
+void Widget::updateMappingCounts()
+{
+    const QJsonArray omitted = mappingOmittedFields();
+    m_mappingCounts->setRowCount(0);
+    for (int field = 0; field < m_fieldTable->rowCount(); ++field) {
+        const QString name = itemText(m_fieldTable, field, 1);
+        if (m_encoding->currentData().toString() != "ascii" || name.isEmpty() || omitted.contains(name)
+                || comboData(m_fieldTable, field, 2) != "parameter" || comboData(m_fieldTable, field, 3) != "integerList") continue;
+        if (!m_listCounts.contains(name)) m_listCounts.insert(name, 1);
+        const int row = m_mappingCounts->rowCount(); m_mappingCounts->insertRow(row);
+        auto *label = new QTableWidgetItem(name); label->setFlags(label->flags() & ~Qt::ItemIsEditable);
+        m_mappingCounts->setItem(row, 0, label);
+        auto *count = new QSpinBox(m_mappingCounts); count->setRange(1, 2048); count->setValue(m_listCounts.value(name));
+        count->setObjectName("parameterCount_" + name);
+        m_mappingCounts->setCellWidget(row, 1, count);
+        connect(count, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, name](int value) {
+            m_listCounts.insert(name, value);
+        });
+    }
+    m_mappingCounts->setFixedHeight(qMin(126, (m_mappingCounts->rowCount() + 1) * 30 + 6));
+    m_mappingCountsGroup->setVisible(m_mappingCounts->rowCount() > 0);
+    // Leave room for the list count and all four XYZ parameters in the normal window.
+    m_mappingTable->setMaximumHeight(m_mappingCounts->rowCount() > 0 ? 180 : QWIDGETSIZE_MAX);
+}
+
+void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
+{
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+        const QString name = itemText(m_fieldTable, row, 1);
+        const QString type = comboData(m_fieldTable, row, 3);
+        if (comboData(m_fieldTable, row, 2) != "parameter" || type == "ascii" || name.isEmpty() || omitted.contains(name)) continue;
+        const bool list = type == "integerList";
+        box->addItem(list ? QString::fromUtf8(u8"%1 · 第 1 项").arg(name) : name, name);
+        box->setItemData(box->count() - 1, list, Qt::UserRole + 1);
+    }
+}
+
+void Widget::updateItemSelector(QComboBox *source, QSpinBox *index)
+{
+    const bool list = isListSource(source);
+    index->setEnabled(list);
+    if (list && !source->currentText().startsWith(QString::fromUtf8(u8"来源不可用")))
+        source->setItemText(source->currentIndex(), QString::fromUtf8(u8"%1 · 第 %2 项").arg(source->currentData().toString()).arg(index->value()));
+}
+
 void Widget::updateMappingSources()
 {
     const QSignalBlocker blocker(m_mappingSource);
     const bool motion = isMotionEditor(m_mappingOperation->currentData().toString());
     QString selected = m_mappingSource->currentData().toString();
+    const bool selectedList = isListSource(m_mappingSource);
     if (!motion && selected != "@none") selected = "@fields";
     else if (motion && selected == "@fields") selected.clear();
     m_mappingSource->clear();
     m_mappingSource->addItem(motion ? QString::fromUtf8(u8"请选择字段") : QString::fromUtf8(u8"客户参数"), motion ? "" : "@fields");
-    QStringList numeric;
-    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
-        const QString name = itemText(m_fieldTable, row, 1);
-        if (comboData(m_fieldTable, row, 2) == "parameter" && comboData(m_fieldTable, row, 3) != "ascii" && !name.isEmpty()) {
-            numeric << name;
-            if (motion) m_mappingSource->addItem(name, name);
-        }
+    if (motion) {
+        addNumericSources(m_mappingSource, {});
+        m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
     }
-    if (motion) m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
     m_mappingSource->addItem(QString::fromUtf8(u8"无参数"), "@none");
-    // 删除或改为文本后保留失效来源，不自动选择另一个字段。
-    if (!selected.isEmpty() && m_mappingSource->findData(selected) < 0)
-        m_mappingSource->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(selected), selected);
-    selectData(m_mappingSource, selected);
+    restoreSource(m_mappingSource, selected, motion && selectedList);
+    updateItemSelector(m_mappingSource, m_mappingItemIndex);
+    updateMappingCounts();
     const QJsonArray omitted = mappingOmittedFields();
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)); if (!source) continue;
-        const QSignalBlocker sourceBlocker(source); const QString chosen = source->currentData().toString();
+        const QSignalBlocker sourceBlocker(source);
+        const QString chosen = source->currentData().toString(); const bool list = isListSource(source);
         source->clear(); source->addItem(parameterDefaultText(m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject(),
             m_mappingOperation->currentData().toString()), "");
-        for (const QString &name : numeric) if (!omitted.contains(name)) source->addItem(name, name);
+        addNumericSources(source, omitted);
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
-        if (!chosen.isEmpty() && source->findData(chosen) < 0) source->addItem(QString::fromUtf8(u8"未找到可用字段：%1").arg(chosen), chosen);
-        selectData(source, chosen);
+        restoreSource(source, chosen, list);
+        updateItemSelector(source, qobject_cast<QSpinBox *>(m_mappingParameters->cellWidget(row, 3)));
     }
+    updateMappingControls();
 }
 void Widget::updateMappingControls()
 {
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     m_mappingParameters->setVisible(!motion && m_mappingParameters->rowCount() > 0);
+    bool listSources = m_mappingCounts->rowCount() > 0;
+    for (int row = 0; row < m_mappingParameters->rowCount(); ++row)
+        listSources |= isListSource(qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)));
+    m_mappingParameters->setColumnHidden(3, !listSources);
+    const bool indexedMotion = motion && isListSource(m_mappingSource);
+    m_mappingItemIndex->setVisible(indexedMotion);
+    for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
+        if (auto *form = qobject_cast<QFormLayout *>(m_mappingEditor->layout()->itemAt(i)->layout()))
+            if (QWidget *label = form->labelForField(m_mappingItemIndex)) label->setVisible(indexedMotion);
     m_mappingHint->setVisible(operation == "QUSHENG_C1");
     const bool motor = motion || QushengCommandCatalog::isStopOrReset(operation);
     m_mappingMotor->setVisible(motor);
@@ -1258,6 +1407,7 @@ bool Widget::readNewMapping(QJsonObject *result)
                 expression.insert("denominator",double(denominator)); expression.insert("offset",0); expression.insert("round","exact");
             }
         }
+        if (isListSource(m_mappingSource)) expression.insert("itemIndex", m_mappingItemIndex->value());
         parameters.insert(mappingParameterKey(operation),expression);
     } else {
         QString reason;
@@ -1276,6 +1426,14 @@ bool Widget::readNewMapping(QJsonObject *result)
     // 停止/复位显式选择客户参数时也保存空列表，避免重启时被旧配置兼容逻辑改成无参数。
     if (!omitted.isEmpty() || QushengCommandCatalog::isStopOrReset(operation))
         mapping.insert("input",QJsonObject{{"omitFields",omitted}});
+    QJsonObject input = mapping.value("input").toObject(), counts;
+    for (int row = 0; row < m_mappingCounts->rowCount(); ++row) {
+        const QString field = m_mappingCounts->item(row, 0)->text();
+        counts.insert(field, qobject_cast<QSpinBox *>(m_mappingCounts->cellWidget(row, 1))->value());
+    }
+    if (!counts.isEmpty()) { input.insert("parameterCounts", counts); mapping.insert("input", input); }
+    const QString issue = mappingFieldIssue(mapping);
+    if (!issue.isEmpty()) return fail(issue);
     *result=mapping; return true;
 }
 
@@ -1763,7 +1921,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
     lines << QString::fromUtf8(u8"原始输入：%1").arg(visibleBytes(preview.input));
     lines << QString::fromUtf8(u8"识别字段：");
     for (const QString &name : preview.fieldOrder)
-        lines << QStringLiteral("  %1 = %2").arg(name, preview.fields.value(name).toString());
+        lines += fieldPreview(name, preview.fields.value(name));
     lines << QString::fromUtf8(u8"命中的客户命令码：%1").arg(preview.matchedCommandCode);
     lines += preview.notices;
     lines << QString::fromUtf8(u8"参数换算：");
@@ -1801,7 +1959,7 @@ void Widget::parseFormatPreview()
         m_previewOutput->setPlainText(QString::fromUtf8(u8"格式解析失败：%1\n%2").arg(error.code, error.message)); return;
     }
     QStringList lines{QString::fromUtf8(u8"顺序字段解析成功（当前编辑内容；未生成或发送目标帧）")};
-    for (const QString &name : parsed.fieldOrder) lines << QStringLiteral("%1 = %2").arg(name, parsed.fields.value(name).toString());
+    for (const QString &name : parsed.fieldOrder) lines += fieldPreview(name, parsed.fields.value(name));
     lines += parsed.notices; m_previewOutput->setPlainText(lines.join('\n'));
 }
 

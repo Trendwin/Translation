@@ -38,7 +38,7 @@ bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNa
                      qint64 constantMin = 0, qint64 constantMax = 0xfffffe)
 {
     const QString kind = expression.value("kind").toString();
-    if (kind == "constant") return integer(expression.value("value"), constantMin, constantMax);
+    if (kind == "constant") return !expression.contains("itemIndex") && integer(expression.value("value"), constantMin, constantMax);
     if (kind == "field") return fieldNames.contains(expression.value("field").toString());
     if (kind != "linear" || !fieldNames.contains(expression.value("field").toString())) return false;
     return integer(expression.value("numerator"), -1000000000, 1000000000)
@@ -181,8 +181,10 @@ bool ProtocolConfig::validateFormat(TranslationError *error) const
             return fail(error, "CONFIG_FIELD_ROLE", QString::fromUtf8(u8"字段“%1”的作用无效").arg(name));
         if (role == "command") ++commandFields;
         const QString type = field.value("type").toString();
-        if (!QStringList({"ascii", "uint", "int"}).contains(type))
+        if (!QStringList({"ascii", "uint", "int", "integerList"}).contains(type))
             return fail(error, "CONFIG_FIELD_TYPE", QString::fromUtf8(u8"字段“%1”的数据类型无效").arg(name));
+        if (type == "integerList" && (encoding != "ascii" || role != "parameter"))
+            return fail(error, "CONFIG_FIELD_TYPE", QString::fromUtf8(u8"整数列表仅适用于 ASCII 参数字段（%1）").arg(name));
         const QString lengthMode = field.value("lengthMode").toString();
         if (!QStringList({"fixed", "toFooter", "mappedCommand", "delimited"}).contains(lengthMode))
             return fail(error, "CONFIG_FIELD_LENGTH", QString::fromUtf8(u8"字段“%1”的长度方式无效").arg(name));
@@ -355,7 +357,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
             }
             omitted.insert(omittedName); available.remove(omittedName);
         }
-        if (!input.isEmpty()) {
+        if (!omitted.isEmpty()) {
             bool mapped = false;
             for (const QJsonValue &f : fields) {
                 const auto declared = f.toObject();
@@ -380,7 +382,13 @@ bool ProtocolConfig::validate(TranslationError *error) const
             const QString mode = effectiveField.value("lengthMode").toString();
             QByteArray delimiter;
             if (mode == "delimited") decodeBytes(effectiveField.value("delimiter").toString(), encoding, &delimiter, nullptr);
-            minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : 1 + delimiter.size();
+            const int count = input.value("parameterCounts").toObject().value(effectiveField.value("name").toString()).toInt(1);
+            const int minimumContent = effectiveField.value("role").toString() == "command" ? code.size()
+                    : effectiveField.value("type").toString() == "integerList" && count >= 1 && count <= 2048
+                      ? 2 * count - 1 : 1;
+            if (mode == "fixed" && minimumContent > effectiveField.value("length").toInt())
+                return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"列表“%1”的输入项数放不进固定字段长度").arg(effectiveField.value("name").toString()));
+            minimumLength += mode == "mappedCommand" ? code.size() : mode == "fixed" ? effectiveField.value("length").toInt() : minimumContent + delimiter.size();
             if (effectiveField.value("role").toString() == "command" && mode == "delimited"
                     && code.toLatin1().contains(delimiter))
                 return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令码“%1”不能包含命令字段的分隔符").arg(code));
@@ -388,13 +396,25 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (minimumLength > 4096)
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));
         QSet<QString> numericParameters;
+        QSet<QString> listParameters;
         for (const QJsonValue &fieldValue : mappingFields) {
             const QJsonObject field = fieldValue.toObject();
             if (available.contains(field.value("name").toString())
                     && field.value("role").toString("parameter") == "parameter"
                     && field.value("type").toString() != "ascii")
                 numericParameters.insert(field.value("name").toString());
+            if (available.contains(field.value("name").toString()) && field.value("type").toString() == "integerList")
+                listParameters.insert(field.value("name").toString());
         }
+        if (input.contains("parameterCounts") && !input.value("parameterCounts").isObject())
+            return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表输入项数必须为对象").arg(code));
+        const QJsonObject counts = input.value("parameterCounts").toObject();
+        for (auto it = counts.begin(); it != counts.end(); ++it)
+            if (!listParameters.contains(it.key()) || !integer(it.value(), 1, 2048))
+                return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表“%2”不可用或输入项数不是1～2048整数").arg(code, it.key()));
+        for (const QString &name : listParameters)
+            if (!counts.contains(name))
+                return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”需设置整数列表“%2”的输入项数").arg(code, name));
         // 待实现指令可以先保存部分参数关系；这只验证编辑意图，不能冒充完整发送配置。
         // 标量按自身表示范围检查，例如有符号PWM和32位固件长度，不能套用运动的24位位置范围。
         // 位结构、嵌套命令和可变字节串仍只读，首版不通过数值表达式伪造复杂协议布局。
@@ -434,6 +454,11 @@ bool ProtocolConfig::validate(TranslationError *error) const
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source));
                 if (!numericParameters.contains(source))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
+                if (listParameters.contains(source)) {
+                    if (!integer(expression.value("itemIndex"), 1, counts.value(source).toInt()))
+                        return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"命令“%1”引用列表“%2”须选择第1～%3项").arg(code, source).arg(counts.value(source).toInt()));
+                } else if (expression.contains("itemIndex"))
+                    return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能带列表项号").arg(source));
             }
             if (!it.value().isObject() || !validExpression(expression, numericParameters, minimum, maximum))
                 return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”关系无效；请检查固定值范围或换算设置").arg(code, parameterName));

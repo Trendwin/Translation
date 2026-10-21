@@ -96,16 +96,27 @@ bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fiel
     const QString field = expression.value("field").toString();
     if (!fields.contains(field))
         return fail(error, "MISSING_FIELD", QString::fromUtf8(u8"参数关系引用了不存在的字段“%1”").arg(field));
+    QVariant source = fields.value(field);
+    QString sourceName = field;
+    if (source.type() == QVariant::List) {
+        const int index = expression.value("itemIndex").toInt();
+        const QVariantList items = source.toList();
+        if (index < 1 || index > items.size())
+            return fail(error, "ITEM_INDEX", QString::fromUtf8(u8"列表“%1”没有第%2项").arg(field).arg(index));
+        source = items.at(index - 1);
+        sourceName = QString::fromUtf8(u8"%1 · 第 %2 项").arg(field).arg(index);
+    } else if (expression.contains("itemIndex"))
+        return fail(error, "ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能选择列表项").arg(field));
     if (kind == "field") {
-        *output = fields.value(field);
-        if (trace) *trace = QString::fromUtf8(u8"直接引用 %1 = %2").arg(field, output->toString());
+        *output = source;
+        if (trace) *trace = QString::fromUtf8(u8"直接引用 %1 = %2").arg(sourceName, output->toString());
         return true;
     }
     if (kind != "linear")
         return fail(error, "EXPRESSION_UNSUPPORTED", QString::fromUtf8(u8"第一阶段不支持此参数关系"));
 
     bool ok = false;
-    const qint64 input = fields.value(field).toLongLong(&ok);
+    const qint64 input = source.toLongLong(&ok);
     if (!ok) return fail(error, "CONVERSION_TYPE", QString::fromUtf8(u8"字段“%1”不是可换算的整数").arg(field));
     const qint64 numerator = qint64(expression.value("numerator").toDouble());
     const qint64 denominator = qint64(expression.value("denominator").toDouble());
@@ -136,7 +147,7 @@ bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fiel
             {"floor", QString::fromUtf8(u8"向下取整")}, {"ceil", QString::fromUtf8(u8"向上取整")},
             {"nearest", QString::fromUtf8(u8"四舍五入")}};
         *trace = QString::fromUtf8(u8"%1(%2) × %3 ÷ %4 + %5 = %6，舍入：%7")
-                .arg(field).arg(input).arg(numerator).arg(denominator).arg(offset)
+                .arg(sourceName).arg(input).arg(numerator).arg(denominator).arg(offset)
                 .arg(converted, 0, 10).arg(roundNames.value(rounding));
     }
     return true;
@@ -204,6 +215,23 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
                 if (quint8(byte) > 127)
                     return fail(error, "FIELD_ASCII", QString::fromUtf8(u8"字段“%1”包含非 ASCII 字节").arg(name));
             parsed = QString::fromLatin1(raw);
+        } else if (type == "integerList") {
+            QVariantList items;
+            const QList<QByteArray> parts = raw.split(',');
+            const QRegularExpression pattern(QStringLiteral("^-?[0-9]+$"));
+            for (int item = 0; item < parts.size(); ++item) {
+                const QString text = QString::fromLatin1(parts.at(item));
+                const auto match = pattern.match(text);
+                bool ok = false;
+                const qint64 number = text.toLongLong(&ok, 10);
+                if (!ok || !match.hasMatch() || match.capturedLength() != text.size())
+                    return fail(error, "FIELD_LIST_NUMBER", QString::fromUtf8(u8"整数列表“%1”的第%2项不是有效十进制整数（不能留空或含空白）").arg(name).arg(item + 1));
+                if ((field.contains("min") && number < field.value("min").toDouble())
+                        || (field.contains("max") && number > field.value("max").toDouble()))
+                    return fail(error, "FIELD_RANGE", QString::fromUtf8(u8"整数列表“%1”的第%2项超出配置范围").arg(name).arg(item + 1));
+                items.append(QVariant::fromValue(number));
+            }
+            parsed = items;
         } else if (asciiEncoding) {
             // ASCII 编码下，整数也是十进制字符；这让字段表能描述多种客户文本协议。
             const QString text = QString::fromLatin1(raw);
@@ -242,9 +270,9 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
                 : parsed.toLongLong() != field.value("fixedValue").toVariant().toLongLong();
         if (field.contains("fixedValue") && constantMismatch)
             return fail(error, "FIELD_CONSTANT", QString::fromUtf8(u8"固定字段“%1”的值不匹配").arg(name));
-        if (field.contains("min") && parsed.toDouble() < field.value("min").toDouble())
+        if (type != "integerList" && field.contains("min") && parsed.toDouble() < field.value("min").toDouble())
             return fail(error, "FIELD_RANGE", QString::fromUtf8(u8"字段“%1”低于最小值").arg(name));
-        if (field.contains("max") && parsed.toDouble() > field.value("max").toDouble())
+        if (type != "integerList" && field.contains("max") && parsed.toDouble() > field.value("max").toDouble())
             return fail(error, "FIELD_RANGE", QString::fromUtf8(u8"字段“%1”高于最大值").arg(name));
         if (order) order->append(name);
         if (notices && field.value("role").toString() == "checksum")
@@ -285,6 +313,12 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     if (matched.isEmpty())
         return fail(error, "COMMAND_UNSUPPORTED",
                     QString::fromUtf8(u8"客户命令码“%1”没有匹配的命令映射").arg(incomingCode));
+    const QJsonObject counts = matched.value("input").toObject().value("parameterCounts").toObject();
+    for (auto it = counts.begin(); it != counts.end(); ++it) {
+        const int actual = fields.value(it.key()).toList().size();
+        if (actual != it.value().toInt())
+            return fail(error, "PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表“%2”需要%3项，实际%4项").arg(incomingCode, it.key()).arg(it.value().toInt()).arg(actual));
+    }
 
     // 目录完整不等于执行完整。按命中的单条映射阻止待实现指令，避免把其参数误套成运动位置；
     // 同一配置中的已验证运动/查询仍可正常使用。拒绝点必须在组帧之前，不能生成可误发的HEX。

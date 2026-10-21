@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "name": "Integer list mapping example",
+  "external": {
+    "encoding": "ascii",
+    "header": "!",
+    "footer": "\\r",
+    "byteOrder": "big",
+    "fields": [
+      {
+        "name": "command",
+        "role": "command",
+        "type": "ascii",
+        "lengthMode": "delimited",
+        "delimiter": "="
+      },
+      {
+        "name": "values",
+        "role": "parameter",
+        "type": "integerList",
+        "lengthMode": "toFooter",
+        "min": 0,
+        "max": 8388607
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "ONE",
+      "operation": "MOTOR_FORWARD",
+      "parameters": {
+        "positionUm": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 1
+        },
+        "devId": {
+          "kind": "constant",
+          "value": 18
+        }
+      },
+      "input": {
+        "parameterCounts": {
+          "values": 1
+        }
+      }
+    },
+    {
+      "commandCode": "XYZ",
+      "operation": "QUSHENG_C1",
+      "parameters": {
+        "moduleIndex": {
+          "kind": "constant",
+          "value": 35
+        },
+        "xPosition": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 1
+        },
+        "yPosition": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 2
+        },
+        "zPosition": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 3
+        }
+      },
+      "input": {
+        "parameterCounts": {
+          "values": 3
+        }
+      }
+    },
+    {
+      "commandCode": "MIX",
+      "operation": "QUSHENG_C1",
+      "parameters": {
+        "moduleIndex": {
+          "kind": "constant",
+          "value": 36
+        },
+        "xPosition": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 2
+        },
+        "yPosition": {
+          "kind": "constant",
+          "value": 0
+        },
+        "zPosition": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 2
+        }
+      },
+      "input": {
+        "parameterCounts": {
+          "values": 3
+        }
+      }
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "speedUmPerS": 4660,
+    "minPositionUm": 0,
+    "maxPositionUm": 60000
+  }
+}
