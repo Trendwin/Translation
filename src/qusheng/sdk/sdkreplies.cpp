@@ -42,7 +42,7 @@ bool unsupported(quint8 command, TranslationError *error)
     switch (command) {
     case 0x17: case 0x45: case 0xd9: case 0xe6:
         return fail(error, "SDK_RECEIVE_ONLY", QString::fromUtf8(u8"此命令为主动上报，不能按请求应答解析"));
-    case 0x72: case 0xc1:
+    case 0x72:
         return fail(error, "SDK_LAYOUT_PENDING", QString::fromUtf8(u8"协议布局存在歧义，回告接口等待确认"));
     case 0x0b: case 0x13: case 0x15: case 0x71: case 0x73: case 0x74:
     case 0xc2: case 0xc3: case 0xd1: case 0xd2: case 0xd3: case 0xd4:

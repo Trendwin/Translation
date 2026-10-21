@@ -68,6 +68,8 @@ private slots:
     void newQueriesOmitNumericFields();
     void sdkReportsAreVisibleWithoutCompletingRequests();
     void fixedMotorActionsAndLegacyCompatibility();
+    void perMappingMotorLifecycle();
+    void xyzModuleMappingLifecycle();
     void stopResetMappingsHaveNoDistanceControls();
     void resetAndStopOmitClientParameters();
     void noParameterSourceKeepsFixedMotionAndCommonFields();
@@ -1068,6 +1070,123 @@ void WidgetTest::sdkReportsAreVisibleWithoutCompletingRequests()
     QVERIFY(result->toPlainText().contains("DE AD BE EF"));
 }
 
+
+
+void WidgetTest::xyzModuleMappingLifecycle()
+{
+    const QString path = freshDraftPath(), exported = freshDraftPath();
+    Widget widget(nullptr, path);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    QVERIFY(!operation->currentText().contains(QString::fromUtf8(u8"待实现")));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    QCOMPARE(parameters->rowCount(), 4); QVERIFY(widget.findChild<QComboBox *>("mappingMotor")->isHidden());
+    const auto choose = [parameters](const char *key, const QString &source, const QString &value = QString()) {
+        const int row = parameterRow(parameters, key); QVERIFY(row >= 0);
+        auto *box = qobject_cast<QComboBox *>(parameters->cellWidget(row, 1));
+        box->setCurrentIndex(box->findData(source));
+        qobject_cast<QLineEdit *>(parameters->cellWidget(row, 2))->setText(value);
+    };
+    choose("moduleIndex", "@constant", "35");
+    choose("xPosition", QString::fromUtf8(u8"位置"));
+    choose("yPosition", "@constant", "0");
+    choose("zPosition", QString::fromUtf8(u8"位置"));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("XYZ");
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        widget.resize(1100, 740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+        QCoreApplication::processEvents(); QDir().mkpath(render);
+        QVERIFY(widget.grab().save(QDir(render).filePath("mapping-xyz-fields.png")));
+    }
+    button(widget, "addMapping")->click(); button(widget, "saveConfig")->click();
+    const QJsonObject saved = draftRoot(widget);
+    const auto xyz = saved.value("mappings").toArray().last().toObject();
+    QCOMPARE(xyz.value("operation").toString(), QString("QUSHENG_C1"));
+    QCOMPARE(xyz.value("parameters").toObject().size(), 4);
+    widget.findChild<QLineEdit *>("customerInput")->setText("/1XYZ2000R\\r");
+    button(widget, "previewButton")->click();
+    const QByteArray frame = QByteArray::fromHex(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().toLatin1());
+    QVERIFY(frame.size() >= 28);
+    QCOMPARE(quint8(frame.at(7)), quint8(0xc1));
+    QCOMPARE(frame.mid(8, 20), QByteArray::fromHex("01230007d00000000007d00003e80003e80003e8"));
+    if (!render.isEmpty()) {
+        widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("mapping-xyz-preview.png")));
+    }
+    Widget restarted(nullptr, path); QCOMPARE(draftRoot(restarted), saved);
+    const auto fileAction = [&restarted](const char *name, const QString &filePath) {
+        bool seen = false;
+        QTimer::singleShot(0, &restarted, [&restarted, &seen, filePath]() {
+            auto *dialog = restarted.findChild<QFileDialog *>(); if (!dialog) return;
+            seen = true; dialog->selectFile(filePath); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(restarted, name)->click(); return seen;
+    };
+    QVERIFY(fileAction("exportConfig", exported));
+    QVERIFY(fileAction("importConfig", exported)); QCOMPARE(draftRoot(restarted), saved);
+    operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    choose("moduleIndex", "@constant", "256"); widget.findChild<QLineEdit *>("mappingCode")->setText("BAD");
+    const int count = mappingRows(widget).size(); button(widget, "addMapping")->click();
+    QCOMPARE(mappingRows(widget).size(), count);
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"固定值")));
+}
+
+void WidgetTest::perMappingMotorLifecycle()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    const QJsonArray original = mappingRows(widget);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *motor = widget.findChild<QComboBox *>("mappingMotor");
+    QVERIFY(motor); QCOMPARE(motor->count(), 13); QCOMPARE(motor->currentData().toInt(), 0);
+    const QStringList actions{"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
+    for (int index = 0; index < actions.size(); ++index) {
+        operation->setCurrentIndex(operation->findData(actions.at(index)));
+        QVERIFY(!motor->isHidden());
+        motor->setCurrentIndex(motor->findData(0x12 + index));
+        addNewMapping(widget, "N" + QString::number(index), actions.at(index),
+                      index == 0 || index == 2 ? "@constant" : "", index == 0 || index == 2 ? "2000" : "");
+        const QJsonObject added = mappingRows(widget).last().toObject();
+        QCOMPARE(added.value("parameters").toObject().value("devId").toObject(),
+                 (QJsonObject{{"kind", "constant"}, {"value", 0x12 + index}}));
+        QCOMPARE(motor->currentData().toInt(), 0); // New rows do not inherit the previous motor.
+    }
+    button(widget, "saveConfig")->click();
+    const QJsonArray saved = mappingRows(widget);
+    for (int index = 0; index < original.size(); ++index) QCOMPARE(saved.at(index), original.at(index));
+
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored), saved);
+    const QString exported = freshDraftPath();
+    const auto fileAction = [&restored](const char *name, const QString &filePath) {
+        bool seen = false;
+        QTimer::singleShot(0, &restored, [&restored, &seen, filePath]() {
+            auto *dialog = restored.findChild<QFileDialog *>(); if (!dialog) return;
+            seen = true; dialog->selectFile(filePath); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(restored, name)->click(); return seen;
+    };
+    QVERIFY(fileAction("exportConfig", exported)); QVERIFY(fileAction("importConfig", exported));
+    QCOMPARE(mappingRows(restored), saved);
+    for (int index = 0; index < actions.size(); ++index) {
+        restored.findChild<QLineEdit *>("customerInput")->setText(
+            "/1N" + QString::number(index) + (index == 0 || index == 2 ? "2000R\\r" : "R\\r"));
+        button(restored, "previewButton")->click();
+        const QByteArray frame = QByteArray::fromHex(restored.findChild<QTextEdit *>("targetOutput")->toPlainText().toLatin1());
+        QVERIFY2(frame.size() > 8, qPrintable(restored.findChild<QTextEdit *>("previewOutput")->toPlainText()));
+        QCOMPARE(quint8(frame.at(8)), quint8(0x12 + index));
+    }
+    operation->setCurrentIndex(operation->findData("QUERY_MOTOR")); QVERIFY(motor->isHidden());
+    operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); QCOMPARE(motor->currentData().toInt(), 0);
+    const QString renderDir = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!renderDir.isEmpty()) {
+        widget.resize(1100, 740); widget.show();
+        widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+        motor->setCurrentIndex(motor->findData(0x1c));
+        QCoreApplication::processEvents(); QDir().mkpath(renderDir);
+        QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-motor-selection.png")));
+    }
+}
+
 void WidgetTest::fixedMotorActionsAndLegacyCompatibility()
 {
     Widget widget(nullptr,freshDraftPath());const QJsonArray original=mappingRows(widget);
@@ -1223,7 +1342,7 @@ void WidgetTest::renderChinesePages()
     percentSource->setCurrentIndex(percentSource->findData(QString::fromUtf8(u8"位置")));
     widget.findChild<QPushButton *>("saveConfig")->click(); QCoreApplication::processEvents();
     if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-sdk-81.png")));
-    operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    operation->setCurrentIndex(operation->findData("QUSHENG_C2"));
     auto *mappingScroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(mappingScroll);
     operation->setCurrentIndex(operation->findData("QUSHENG_22"));
     mappingScroll->ensureWidgetVisible(operation); QCoreApplication::processEvents();

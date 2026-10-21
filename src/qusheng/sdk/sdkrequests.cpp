@@ -104,6 +104,17 @@ QMap<quint8, QushengCommandDefinition> definitions()
     add(0xa1, u8"直流电机控制", Simple, {
         p("devId", u8"电机编号", "uint8", 0x21, 0x2e, 0x21, QString(), false, {0x21,0x22,0x23,0x24,0x25,0x26,0x2e}),
         p("pwm", u8"方向与输出值", "int8", -128, 127, 0)});
+    // XYZ 子类型与 TrendView GenXYZCmd 一致：两字节模块头、三轴位置、三轴速度。
+    // 位置/速度单位由下位机配置决定。1000是软件初始值，并非厂家默认值。
+    add(0xc1, u8"虚拟模块控制（XYZ）", Simple, {
+        p("moduleType", u8"模块类型", "uint8", 1, 1, 1, QString(), false, {1}),
+        p("moduleIndex", u8"虚拟模块编号", "uint8", 0, 255, QVariant(), QString(), true),
+        p("xPosition", u8"X位置", "uint24", 0, 0x7fffff, QVariant(), QString(), true),
+        p("yPosition", u8"Y位置", "uint24", 0, 0x7fffff, QVariant(), QString(), true),
+        p("zPosition", u8"Z位置", "uint24", 0, 0x7fffff, QVariant(), QString(), true),
+        p("xSpeed", u8"X速度", "uint24", 0, 0x7fffff, 1000, QStringLiteral("speedUmPerS")),
+        p("ySpeed", u8"Y速度", "uint24", 0, 0x7fffff, 1000, QStringLiteral("speedUmPerS")),
+        p("zSpeed", u8"Z速度", "uint24", 0, 0x7fffff, 1000, QStringLiteral("speedUmPerS"))});
 
     // 完整目录接口保留，复杂结构按名字/类型标明必需输入。不提供空内容或全零硬件配置
     // 来假装实现升级、动作或事件编排；未来增加专用结构接口时仍须遵守本层能力门禁。
@@ -138,9 +149,6 @@ QMap<quint8, QushengCommandDefinition> definitions()
     const auto moduleParameters = []() { return QList<QushengParameterDefinition>{
         p("moduleType", u8"模块类型", "uint8", 1, 2, QVariant(), QString(), true),
         p("moduleIndex", u8"模块编号", "uint8", 0, 255, QVariant(), QString(), true)}; };
-    auto moduleControl = moduleParameters();
-    moduleControl << p("xyzMotion", u8"XYZ运动参数", "structure", 0, 0) << p("valvePumpMotion", u8"阀泵动作参数", "structure", 0, 0);
-    add(0xc1, u8"虚拟模块控制", LayoutPending, moduleControl);
     auto moduleConfig = moduleParameters();
     moduleConfig << p("xyzConfiguration", u8"XYZ配置", "structure", 0, 0) << p("valvePumpConfiguration", u8"阀泵配置", "structure", 0, 0);
     add(0xc2, u8"虚拟模块配置", Deferred, moduleConfig);
@@ -382,6 +390,10 @@ bool QushengSdk::encode(quint8 command, const QVariantMap &parameters, QByteArra
         // 单字节的高2位是控制方式，低6位是输出掩码；有效范围已保证两部分不重叠。
         bytes.append(char((parameters.value(QStringLiteral("mode")).toUInt() << 6) | parameters.value(QStringLiteral("outputMask")).toUInt())); break;
     case 0xa1: append("devId", 1); append("pwm", 1); break;
+    case 0xc1:
+        append("moduleType", 1); append("moduleIndex", 1);
+        append("xPosition", 3); append("yPosition", 3); append("zPosition", 3);
+        append("xSpeed", 3); append("ySpeed", 3); append("zSpeed", 3); break;
     default: return fail(error, "SDK_DEFERRED", QString::fromUtf8(u8"该接口暂不能组帧"));
     }
     *payload = bytes;

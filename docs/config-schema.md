@@ -46,11 +46,11 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 | operation | 参数关系 | 趋盛发送与状态 |
 |---|---|---|
-| MOTOR_FORWARD | positionUm | 0x11，固定绝对模式4、动作1；速度和电机来自设备默认值 |
-| MOTOR_STOP | 空对象 | 固定绝对模式4、动作2、距离0；停止后查询状态 |
-| MOTOR_BACKWARD | positionUm | 0x11，固定绝对模式4、动作3；速度和电机来自设备默认值 |
-| MOTOR_RESET | 空对象 | 固定绝对模式4、动作4、距离0；复位后确认空闲及有效位置 |
-| ABSOLUTE_MOVE（旧版兼容） | positionUm | 绝对模式4、设备absoluteAction；完成时0x12核对空闲和目标 |
+| MOTOR_FORWARD | positionUm、可选devId | 0x11，固定绝对模式4、动作1；速度沿用默认、电机可按映射设置 |
+| MOTOR_STOP | 可选devId | 固定绝对模式4、动作2、距离0；应答后不自动查询 |
+| MOTOR_BACKWARD | positionUm、可选devId | 0x11，固定绝对模式4、动作3；速度沿用默认、电机可按映射设置 |
+| MOTOR_RESET | 可选devId | 固定绝对模式4、动作4、距离0；应答不表示机械动作完成 |
+| ABSOLUTE_MOVE（旧版兼容） | positionUm | 绝对模式4、设备absoluteAction；应答后不自动查询机械完成 |
 | RELATIVE_FORWARD（旧版兼容） | distanceUm | 先0x12核对当前位置和终点，再0x11，位置模式2、动作1 |
 | RELATIVE_BACKWARD（旧版兼容） | distanceUm | 先0x12核对当前位置和终点，再0x11，位置模式2、动作3 |
 | QUERY_MOTOR | 空对象或devId | 0x12，未映射编号时使用默认值；显示状态、电机位置和独立负反馈位置 |
@@ -58,7 +58,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 目录元数据保存于 `data/qusheng-commands.json`，随程序资源编译，不写入用户的客户协议格式。普通下发项例如 `QUSHENG_81`（风扇控制）可以选择并保存到 `mappings`；数字参数使用SDK定义的稳定英文 `key`。尚未设置的参数不写入 `parameters`，运行时由SDK默认规则补齐，不用零值代替。结构和字节数据本轮只展示说明。待实现映射只保存 `ack` 策略，不表示已实现回告解析或动作完成判断。
 
-0x11新建选项只有四种动作。模式、动作、电机编号、速度均不可加入其parameters映射；前进/后退仅positionUm且必须完整，停止/复位使用空对象。旧停止/复位草稿的positionUm关系兼容读取但不求值，界面载入/保存时清理，不能影响固定零距离。旧QUSHENG_11通用参数关系仍可加载保存，但仅供兼容且不能生成目标帧。软件不静默迁移用户的相对移动配置。
+0x11新建选项只有四种动作。模式、动作、速度不可加入其parameters映射；前进/后退positionUm必须完整，停止/复位距离固定0。四动作与旧ABS/REL均允许可选devId关系：常用界面选择设备默认（不写关系）或0x11–0x1C的固定编号，例如 `"devId":{"kind":"constant","value":18}`。高级JSON可引用整数参数字段，转换时同样检查编号范围。未设置时保留按操作SDK预置、设备默认、SDK初始值的回退顺序。旧停止/复位草稿的positionUm关系兼容读取但不求值，界面载入/保存时清理，不能影响固定零距离。旧QUSHENG_11通用参数关系仍可加载保存，但仅供兼容且不能生成目标帧。软件不静默迁移用户的相对移动配置。
 
 配置校验检查目录身份、方向、参数名和已填写表达式；允许待实现参数草稿未完成。0x17、0x45、0xD9、0xE6 为仅接收报文，不能作为映射目标。未列入目录的操作会拒绝。转换命中目录中未实现执行器的操作时返回中文“发送待实现”，不生成目标帧；JSON添加可执行标志不能绕过此限制。已支持模板继续执行原有严格校验。
 
@@ -93,3 +93,9 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 根对象可选sdkDefaults，以operation为键、各SDK参数数值为值。仅简单接口参与运行；数值类型、枚举、通道和组合关系由SDK校验。参数映射明确设置的值优先，未映射时使用SDK预置、设备参数或SDK软件初始值。参数表的“默认值”不生成field/constant表达式。
 
 四种0x11模板的SDK预置仅devId/speedUmPerS，模式和动作固定；前进/后退位置通过映射提供，停止/复位距离固定0。0x01使能掩码必须明确提供。普通SDK指令不要求填写positionUm，允许只映射百分比、持续时间、电压或PWM。未知参数、固定请求字节覆盖、保留位及不合法通道在组帧前拒绝。详见[SDK架构与使用](qusheng-sdk-design.md)。
+
+## XYZ虚拟模块（0xC1）
+
+`operation: "QUSHENG_C1"` 的 `parameters` 只允许 `moduleIndex`、`xPosition`、`yPosition`、`zPosition` 四个可编辑关系，四项都须明确提供（也可由显式SDK预置提供）。编号0–255，位置0–8388607，允许明确固定0，不隐式补0。三轴可引用同一客户数值字段或分别引用不同整数参数字段，不改变客户顺序字段的读取方式。
+
+SDK固定 `moduleType=1`，拒绝类型2。`xSpeed/ySpeed/zSpeed` 不能作为客户参数映射；各自按 `sdkDefaults.QUSHENG_C1`、`device.speedUmPerS`、软件初始1000补齐，范围0–8388607，显式0保持为0。单位由下位机配置决定。`targetDevice` 使用 `xyz:<moduleIndex>`，不会当作物理电机编号；全部补齐参数进入请求快照。完整布局、回告和示例见[XYZ说明](virtual-module-xyz.md)。
