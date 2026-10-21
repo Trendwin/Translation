@@ -21,6 +21,7 @@ QJsonArray QushengCommandCatalog::commands()
             entry.insert("sdkSupported", definition.support == QushengSdkSupport::Simple);
             entry.insert("layoutPending", definition.support == QushengSdkSupport::LayoutPending);
             if (definition.support == QushengSdkSupport::Simple) {
+                if (code == 0xc1) entry.insert("name", definition.name);
                 // 参数类型、默认值、能力均来自SDK；目录保留名称/章节，不再另存可执行白名单。
                 QJsonArray parameters;
                 for (const QushengParameterDefinition &spec : definition.parameters) {
@@ -31,6 +32,8 @@ QJsonArray QushengCommandCatalog::commands()
                          .arg(spec.label).arg(spec.minimum).arg(spec.maximum)}};
                     if (!spec.deviceKey.isEmpty()) parameter.insert("defaultSource", "device." + spec.deviceKey);
                     if (spec.defaultValue.isValid()) parameter.insert("default", QJsonValue::fromVariant(spec.defaultValue));
+                    if (code == 0xc1 && (spec.key == "moduleType" || spec.key.endsWith("Speed")))
+                        parameter.insert("editable", false);
                     QJsonArray allowed; for (qint64 value : spec.allowedValues) allowed.append(double(value));
                     if (!allowed.isEmpty()) parameter.insert("allowedValues", allowed);
                     parameters.append(parameter);
@@ -39,6 +42,10 @@ QJsonArray QushengCommandCatalog::commands()
                 const QString oldNote = entry.value("note").toString();
                 if (oldNote.isEmpty() || oldNote.contains(QString::fromUtf8(u8"尚未实现")))
                     entry.insert("note", QString::fromUtf8(u8"单条SDK接口；未映射参数使用预置、设备参数或软件初始值。"));
+                if (code == 0xc1) {
+                    entry.insert("description", QString::fromUtf8(u8"仅 XYZ 模块：设置虚拟模块编号与三轴位置，速度沿用设备页面默认运动速度；单位由下位机配置决定，不自动换算。"));
+                    entry.insert("note", QString::fromUtf8(u8"只开放模块类型1；阀泵类型2及C2/C3尚未开放。物理电机绑定须在下位机预先配置；应答不表示机械动作完成。"));
+                }
             }
             entries[i] = entry;
         }
@@ -59,14 +66,14 @@ static QJsonArray legacyOptions()
     // 不能将通用条目的 mode/action 参数偷偷交给绝对位置执行器，否则停止/复位可能被误发成运动。
     absolute.insert("operation", "ABSOLUTE_MOVE");
     absolute.insert("name", QString::fromUtf8(u8"绝对位置运动"));
-    absolute.insert("description", QString::fromUtf8(u8"已验证的绝对位置预设；使用设备页面确认的电机编号、速度和方向，客户映射提供目标位置。"));
-    absolute.insert("note", QString::fromUtf8(u8"仅用于兼容旧绝对映射；新建请选前进、停止、后退或复位。新前进/后退固定绝对模式，停止/复位发送待实现。"));
+    absolute.insert("description", QString::fromUtf8(u8"旧绝对位置预设；电机可按本条映射设置，未设置时沿用默认；速度和方向仍由设备默认提供，客户映射提供目标位置。"));
+    absolute.insert("note", QString::fromUtf8(u8"仅用于兼容旧绝对映射；新建请选前进、停止、后退或复位，四动作均已开放发送。"));
     QJsonArray presetParameters;
     for (const QJsonValue &value : absolute.value("parameters").toArray()) {
         QJsonObject parameter = value.toObject();
         const QString key = parameter.value("key").toString();
         if (key == "mode" || key == "action") continue;
-        if (key == "devId") parameter.insert("editable", false);
+        if (key == "devId") parameter.insert("editable", true);
         else if (key == "speed") {
             parameter.insert("key", "speedUmPerS");
             parameter.insert("editable", false);
@@ -133,7 +140,7 @@ QJsonArray QushengCommandCatalog::options()
         for (const QJsonValue &value : motor.value("parameters").toArray()) {
             QJsonObject parameter = value.toObject();
             const QString key = parameter.value("key").toString();
-            if (key == "devId" || key == "speedUmPerS" || key == "mode" || key == "action") parameter.insert("editable", false);
+            if (key == "speedUmPerS" || key == "mode" || key == "action") parameter.insert("editable", false);
             if (key == "positionUm") {
                 parameter.insert("max", 0xfffffe);
                 if (index == 1 || index == 3) {
@@ -150,11 +157,11 @@ QJsonArray QushengCommandCatalog::options()
         }
         variant.insert("parameters", parameters);
         variant.insert("description", index == 1 || index == 3
-                       ? QString::fromUtf8(u8"固定绝对位置模式和零距离；电机编号与速度来自设备参数或SDK预置，无需客户距离参数。")
-                       : QString::fromUtf8(u8"固定绝对位置模式；电机编号与速度来自设备参数或SDK预置，只映射绝对目标位置。"));
+                       ? QString::fromUtf8(u8"固定绝对位置模式和零距离；电机可按本条映射设置，未设置时沿用默认；速度来自设备参数或SDK预置，无需客户距离参数。")
+                       : QString::fromUtf8(u8"固定绝对位置模式；本条映射可选择电机并映射绝对目标位置，速度沿用默认。"));
         variant.insert("note", index == 0 || index == 2
-                       ? QString::fromUtf8(u8"移动距离按绝对目标位置解释，不是当前位置加减距离；收到应答后继续查询空闲状态与目标位置。")
-                       : QString::fromUtf8(u8"距离固定为0；停止后确认空闲，复位后确认空闲且位置有效，不要求客户距离字段。"));
+                       ? QString::fromUtf8(u8"移动距离按绝对目标位置解释，不是当前位置加减距离；有效应答结束本地等待，机械动作完成未确认，不自动查询。")
+                       : QString::fromUtf8(u8"距离固定为0，不要求客户距离字段；有效应答结束本地等待，机械动作完成未确认，需要时手动查询。"));
         result.append(variant);
     }
     return result;

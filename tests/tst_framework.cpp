@@ -73,6 +73,10 @@ private slots:
     void sdkOrdinaryRequestLifecycle();
     void sdkQueryDoesNotUnlockOtherMotor();
     void fixedMotorActionTemplates();
+    void perMappingMotorSelection();
+    void mappedMotorRelativePreflight();
+    void xyzModuleMappingAndSnapshots();
+    void xyzModuleLifecycleAndMotorIsolation();
     void stopAndResetLifecycle_data();
     void stopAndResetLifecycle();
     void stopInterruptsMotionAndCancelsQueue();
@@ -200,10 +204,10 @@ void FrameworkTest::completeCommandCatalogMatchesProtocol()
     QVERIFY(!QushengCommandCatalog::isExecutable("QUSHENG_11"));
     for (const QJsonValue &entry : QushengCommandCatalog::options())
         executableOptions += QushengCommandCatalog::isExecutable(entry.toObject().value("operation").toString()) ? 1 : 0;
-    QCOMPARE(executableOptions, 33);
+    QCOMPARE(executableOptions, 34);
     QVERIFY(QushengCommandCatalog::find("NOT_IN_PROTOCOL").isEmpty());
     QVERIFY(!QushengCommandCatalog::isExecutable("NOT_IN_PROTOCOL"));
-    QVERIFY(QushengCommandCatalog::find("QUSHENG_C1").value("note").toString().contains(QString::fromUtf8(u8"重叠")));
+    QVERIFY(QushengCommandCatalog::isExecutable("QUSHENG_C1"));
     QVERIFY(QushengCommandCatalog::find("QUSHENG_92").value("note").toString().contains("D4～D6"));
 }
 
@@ -1126,14 +1130,19 @@ void FrameworkTest::fixedMotorActionTemplates()
         for (const QJsonValue &parameter : entry.value("parameters").toArray()) {
             const QJsonObject spec = parameter.toObject();
             if (spec.value("editable").toBool()) {
-                ++editable; QCOMPARE(spec.value("key").toString(), QString("positionUm"));
-                QCOMPARE(spec.value("min").toInt(), 0); QCOMPARE(spec.value("max").toInt(), 0xfffffe);
+                ++editable;
+                if (spec.value("key").toString() == "devId") {
+                    QCOMPARE(spec.value("min").toInt(), 0x11); QCOMPARE(spec.value("max").toInt(), 0x1c);
+                } else {
+                    QCOMPARE(spec.value("key").toString(), QString("positionUm"));
+                    QCOMPARE(spec.value("min").toInt(), 0); QCOMPARE(spec.value("max").toInt(), 0xfffffe);
+                }
             }
             if (spec.value("key").toString() == "mode") QCOMPARE(spec.value("fixedValue").toInt(), 4);
             if (spec.value("key").toString() == "action") QCOMPARE(spec.value("fixedValue").toInt(), expected.indexOf(operation) + 1);
             if (spec.value("key").toString() == "speedUmPerS") QCOMPARE(spec.value("defaultSource").toString(), QString("device.speedUmPerS"));
         }
-        QCOMPARE(editable, QushengCommandCatalog::isStopOrReset(operation) ? 0 : 1);
+        QCOMPARE(editable, QushengCommandCatalog::isStopOrReset(operation) ? 1 : 2);
     }
     QCOMPARE(found, expected);
     for (const QString &operation : {QString("ABSOLUTE_MOVE"), QString("RELATIVE_FORWARD"), QString("RELATIVE_BACKWARD"), QString("QUSHENG_11")}) {
@@ -1493,6 +1502,174 @@ void FrameworkTest::cancellingQueuedStopKeepsOriginalActive()
     QVERIFY(manager.hasPendingRequests()); QVERIFY(manager.canInterruptWithStop(stop));
     transport.sendFinished(1, true, QString()); QTest::qWait(30); QCOMPARE(transport.sent.size(), 1);
     manager.cancel(1); QVERIFY(!manager.hasPendingRequests()); QVERIFY(manager.deviceBusy());
+}
+
+
+void FrameworkTest::perMappingMotorSelection()
+{
+    ProtocolConfig base;
+    TranslationError error;
+    QVERIFY(ProtocolConfig::load(example("dt-preview.json"), &base, &error));
+    const QStringList operations{"MOTOR_FORWARD", "MOTOR_BACKWARD", "MOTOR_STOP", "MOTOR_RESET",
+                                 "ABSOLUTE_MOVE", "RELATIVE_FORWARD", "RELATIVE_BACKWARD"};
+    for (const QString &operation : operations) {
+        ProtocolConfig config = base;
+        QJsonObject mapping = base.root.value("mappings").toArray().first().toObject();
+        mapping.insert("operation", operation);
+        const QString position = operation.startsWith("RELATIVE_") ? "distanceUm" : "positionUm";
+        QJsonObject parameters{{position, QJsonObject{{"kind", "constant"}, {"value", 1000}}},
+                               {"devId", QJsonObject{{"kind", "constant"}, {"value", 0x1c}}}};
+        mapping.insert("parameters", parameters);
+        config.root.insert("mappings", QJsonArray{mapping});
+        config.root.insert("sdkDefaults", QJsonObject{{operation, QJsonObject{{"devId", 0x12}}}});
+        QVERIFY2(config.validate(&error), qPrintable(error.message));
+        ConversionPreview preview;
+        QVERIFY2(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error), qPrintable(error.message));
+        QCOMPARE(preview.command.targetDevice, QString("28"));
+        QCOMPARE(quint8(preview.targetFrame.at(8)), quint8(0x1c));
+        UnifiedCommand snapshot = preview.command;
+        parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x13}});
+        mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+        QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
+        QVERIFY(codec.encodeCommand(snapshot, &frame, &error));
+        QCOMPARE(quint8(frame.at(8)), quint8(0x1c));
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QCOMPARE(preview.command.targetDevice, QString("19"));
+        // Omitted selection retains operation presets, then device defaults.
+        parameters.remove("devId"); mapping.insert("parameters", parameters);
+        config.root.insert("mappings", QJsonArray{mapping});
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QCOMPARE(preview.command.targetDevice, QString("18"));
+        config.root.remove("sdkDefaults");
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QCOMPARE(preview.command.targetDevice, QString("17"));
+        for (int invalid : {0x10, 0x1d}) {
+            parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", invalid}});
+            mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+            QVERIFY(!config.validate(&error));
+        }
+        // Dynamic expressions follow the same SDK range checks at conversion.
+        parameters.insert("devId", QJsonObject{{"kind", "field"}, {"field", QString::fromUtf8(u8"位置")}});
+        mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+        QVERIFY2(config.validate(&error), qPrintable(error.message));
+        QVERIFY(ConversionEngine(config).convert("/1A28R\r", false, &preview, &error));
+        QCOMPARE(preview.command.targetDevice, QString("28"));
+        QVERIFY(!ConversionEngine(config).convert("/1A29R\r", false, &preview, &error));
+        QVERIFY(preview.targetFrame.isEmpty());
+    }
+}
+
+void FrameworkTest::mappedMotorRelativePreflight()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
+    QJsonArray mappings = config.root.value("mappings").toArray();
+    for (int i = 0; i < mappings.size(); ++i) {
+        QJsonObject mapping = mappings.at(i).toObject();
+        if (mapping.value("operation").toString() != "RELATIVE_FORWARD") continue;
+        QJsonObject parameters = mapping.value("parameters").toObject();
+        parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x1a}});
+        mapping.insert("parameters", parameters); mappings[i] = mapping;
+    }
+    config.root.insert("mappings", mappings);
+    QVERIFY2(ConversionEngine(config).convert("/1p500R\r", false, &preview, &error), qPrintable(error.message));
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+    preview.command.requestId = 1; manager.enqueue(preview.command);
+    QTRY_COMPARE(transport.sent.size(), 1);
+    QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x12));
+    QCOMPARE(quint8(transport.sent.first().at(8)), quint8(0x1a));
+    transport.receive(motorReply(0, 1, 1000)); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(quint8(transport.sent.last().at(7)), quint8(0x11));
+    QCOMPARE(quint8(transport.sent.last().at(8)), quint8(0x1a));
+}
+
+
+void FrameworkTest::xyzModuleMappingAndSnapshots()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY2(ProtocolConfig::load(example("xyz-module-and-motors.json"), &config, &error), qPrintable(error.message));
+    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\r", false, &preview, &error));
+    QCOMPARE(preview.targetFrame.mid(8, 20), QByteArray::fromHex("0123123456000000010203001234001234001234"));
+    QCOMPARE(preview.command.targetDevice, QString("xyz:35"));
+    const UnifiedCommand snapshot = preview.command;
+    config.root.insert("sdkDefaults", QJsonObject{{"QUSHENG_C1", QJsonObject{{"xSpeed", 99}}}});
+    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\r", false, &preview, &error));
+    QCOMPARE(preview.command.parameters.value("xSpeed").toInt(), 99);
+    QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
+    QVERIFY(codec.encodeCommand(snapshot, &frame, &error));
+    QCOMPARE(frame.mid(8, 20), QByteArray::fromHex("0123123456000000010203001234001234001234"));
+    QVERIFY(ConversionEngine(config).convert("!ALL255\r", false, &preview, &error));
+    QCOMPARE(preview.command.targetDevice, QString("xyz:36"));
+    for (const QString &key : {QString("xPosition"), QString("yPosition"), QString("zPosition")})
+        QCOMPARE(preview.command.parameters.value(key).toInt(), 255);
+    QTemporaryDir dir; QVERIFY(config.save(dir.filePath("xyz.json"), &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(dir.filePath("xyz.json"), &restored, &error));
+    QCOMPARE(restored.root, config.root);
+    const QJsonObject mapping = config.root.value("mappings").toArray().first().toObject();
+    const QJsonObject original = mapping.value("parameters").toObject();
+    for (const QString &key : {QString("moduleIndex"), QString("xPosition"), QString("yPosition"), QString("zPosition")}) {
+        QJsonObject changed = mapping, parameters = original; parameters.remove(key);
+        changed.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{changed});
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_SDK_PARAMETER"));
+        for (double invalid : {-1.0, 8388608.0, 0.5}) {
+            parameters = original; parameters.insert(key, QJsonObject{{"kind", "constant"}, {"value", invalid}});
+            changed.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{changed});
+            QVERIFY(!config.validate(&error));
+        }
+    }
+    for (const QString &key : {QString("moduleType"), QString("xSpeed"), QString("xyzMotion"), QString("devId")}) {
+        QJsonObject changed = mapping, parameters = original;
+        parameters.insert(key, QJsonObject{{"kind", "constant"}, {"value", 1}});
+        changed.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{changed});
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER"));
+    }
+    config = restored;
+    QVERIFY(!ConversionEngine(config).convert("!XYZ8388608\r", false, &preview, &error));
+    QVERIFY(preview.targetFrame.isEmpty());
+    QVERIFY(!ConversionEngine(config).convert("!XYZ1.5\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("!XYZ-1\r", false, &preview, &error));
+}
+
+void FrameworkTest::xyzModuleLifecycleAndMotorIsolation()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY(ProtocolConfig::load(example("xyz-module-and-motors.json"), &config, &error));
+    QVERIFY(ConversionEngine(config).convert("!XYZ1000\r", false, &preview, &error));
+    UnifiedCommand xyz = preview.command; xyz.parameters.insert("moduleIndex", 17); xyz.targetDevice = "xyz:17"; xyz.requestId = 1;
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+    manager.setTimeouts(1000, 2000);
+    QSignalSpy completed(&manager, &RequestManager::completed), states(&manager, &RequestManager::stateChanged);
+    manager.enqueue(xyz); QTRY_COMPARE(transport.sent.size(), 1);
+    UnifiedCommand next = xyz; next.requestId = 2; next.parameters.insert("moduleIndex", 18); next.targetDevice = "17"; // Even direct callers with a numeric target are not physical motor requests.
+    manager.enqueue(next);
+    UnifiedCommand stop = motorRequest(3, "MOTOR_STOP");
+    QVERIFY(!manager.canInterruptWithStop(stop)); manager.enqueue(stop);
+    QTest::qWait(20); QCOMPARE(transport.sent.size(), 1); QCOMPARE(completed.size(), 0);
+    const auto receive = [&transport](int destination, int source, int sequence, int code, const QByteArray &data) {
+        transport.receive(QushengProtocol::makeFrame(quint8(destination), quint8(source), quint8(sequence), quint8(code), data));
+    };
+    const QByteArray ack = QByteArray::fromHex("00123456");
+    receive(1, 2, 1, 0xc1, ack); // Wrong sequence.
+    receive(2, 1, 0, 0xc1, ack); // Wrong addresses.
+    receive(1, 2, 0, 0x11, ack); // Wrong command.
+    receive(1, 2, 0, 0xc1, ack.left(3)); receive(1, 2, 0, 0xc1, ack + char(0));
+    QByteArray badCrc = QushengProtocol::makeFrame(1, 2, 0, 0xc1, ack); badCrc[badCrc.size()-1] = char(badCrc.at(badCrc.size()-1) ^ 1);
+    transport.receive(badCrc);
+    receive(1, 2, 0, 0x17, QByteArray::fromHex("11300004d2000000"));
+    QVERIFY(!manager.deviceBusy()); QCOMPARE(completed.size(), 0); QCOMPARE(transport.sent.size(), 1);
+    receive(1, 2, 0, 0xc1, ack); QTRY_COMPARE(completed.size(), 1); QTRY_COMPARE(transport.sent.size(), 2);
+    QVERIFY(qvariant_cast<UnifiedResult>(completed.at(0).at(0)).success);
+    QCOMPARE(quint8(transport.sent.at(1).at(7)), quint8(0x11)); // Physical stop waits for C1; queued C1 survives.
+    transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(completed.size(), 2); QTRY_COMPARE(transport.sent.size(), 3);
+    QCOMPARE(quint8(transport.sent.last().at(7)), quint8(0xc1)); QCOMPARE(quint8(transport.sent.last().at(9)), quint8(18));
+    receive(1, 2, 2, 0xc1, QByteArray::fromHex("04000000")); QTRY_COMPARE(completed.size(), 3);
+    QVERIFY(!qvariant_cast<UnifiedResult>(completed.at(2).at(0)).success);
+    QCOMPARE(qvariant_cast<UnifiedResult>(completed.at(2).at(0)).error.code, QString("QUSHENG_REJECTED"));
+    QTRY_VERIFY(!manager.hasPendingRequests()); QTest::qWait(250); QCOMPARE(transport.sent.size(), 3);
+    for (const auto &state : states) {
+        QVERIFY(qvariant_cast<RequestState>(state.at(1)) != RequestState::Cancelled);
+        QVERIFY(qvariant_cast<RequestState>(state.at(1)) != RequestState::Succeeded);
+    }
 }
 
 QTEST_GUILESS_MAIN(FrameworkTest)

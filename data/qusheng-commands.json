@@ -1318,50 +1318,94 @@
     {
       "operation": "QUSHENG_C1",
       "code": "0xC1",
-      "name": "虚拟模块控制",
+      "name": "虚拟模块控制（XYZ）",
       "category": "虚拟模块",
       "direction": "tx",
-      "description": "控制XYZ模块或阀泵模块，参数随模块类型变化。",
+      "description": "只开放XYZ模块类型1；模块编号及三轴位置可映射，速度沿用设备默认值。",
       "section": "3.2.40",
       "parameters": [
         {
           "key": "moduleType",
           "label": "模块类型",
           "type": "uint8",
-          "description": "D0；1为XYZ、2为阀泵。",
-          "editable": true,
-          "optional": false,
+          "description": "D0固定1（XYZ），阀泵类型2未开放。",
+          "editable": false,
+          "optional": true,
           "min": 1,
-          "max": 2
+          "max": 1
         },
         {
           "key": "moduleIndex",
-          "label": "模块编号",
+          "label": "虚拟模块编号",
           "type": "uint8",
-          "description": "D1；同类模块编号。",
+          "description": "D1；虚拟模块编号，不是物理电机编号。",
           "editable": true,
           "optional": false,
           "min": 0,
           "max": 255
         },
         {
-          "key": "xyzMotion",
-          "label": "XYZ运动参数",
-          "type": "structure",
-          "description": "XYZ：D2～D4 X位置、D5～D7 Y位置、D8～D10 Z位置；D11～D13 X速度、D14～D16 Y速度、D17～D19 Z速度。",
-          "editable": false,
-          "optional": true
+          "key": "xPosition",
+          "label": "X位置",
+          "type": "uint24",
+          "description": "D2～D4；单位由下位机配置决定。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 8388607
         },
         {
-          "key": "valvePumpMotion",
-          "label": "阀泵动作参数",
-          "type": "structure",
-          "description": "阀泵：D2液路；D3动作1初始化、2绝对位置、3相对抽取、4相对分配、5暂停、6继续、7停止；D4～D6速度；原文另写D6～D8距离。",
+          "key": "yPosition",
+          "label": "Y位置",
+          "type": "uint24",
+          "description": "D5～D7；单位由下位机配置决定。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 8388607
+        },
+        {
+          "key": "zPosition",
+          "label": "Z位置",
+          "type": "uint24",
+          "description": "D8～D10；单位由下位机配置决定。",
+          "editable": true,
+          "optional": false,
+          "min": 0,
+          "max": 8388607
+        },
+        {
+          "key": "xSpeed",
+          "label": "X速度",
+          "type": "uint24",
+          "description": "D11～D13；沿用默认速度。",
           "editable": false,
-          "optional": true
+          "optional": true,
+          "min": 0,
+          "max": 8388607
+        },
+        {
+          "key": "ySpeed",
+          "label": "Y速度",
+          "type": "uint24",
+          "description": "D14～D16；沿用默认速度。",
+          "editable": false,
+          "optional": true,
+          "min": 0,
+          "max": 8388607
+        },
+        {
+          "key": "zSpeed",
+          "label": "Z速度",
+          "type": "uint24",
+          "description": "D17～D19；沿用默认速度。",
+          "editable": false,
+          "optional": true,
+          "min": 0,
+          "max": 8388607
         }
       ],
-      "note": "阀泵速度与距离的D6重叠，原文布局有冲突；保留说明，不猜测组帧。"
+      "note": "XYZ位置与速度各占3字节大端；物理电机绑定须预先配置。阀泵类型2布局存在冲突，仍不开放。"
     },
     {
       "operation": "QUSHENG_C2",

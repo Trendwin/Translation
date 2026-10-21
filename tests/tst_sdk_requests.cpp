@@ -15,6 +15,7 @@ private slots:
     void rejectedParameters();
     void integerBoundaries();
     void deferredInterfaces();
+    void xyzModuleControls();
     void resolvedSnapshotsAndStrictEncode();
 };
 
@@ -22,7 +23,7 @@ void SdkRequestTest::coverage()
 {
     const auto codes = QushengSdk::commandCodes();
     QCOMPARE(codes.size(), 56);
-    const QList<quint8> expected = {0x01,0x03,0x04,0x05,0x08,0x09,0x0c,0x11,0x12,0x14,0x16,0x1a,0x21,0x22,0x23,0x24,0x25,0x44,0x46,0x54,0x63,0x64,0x65,0x81,0x82,0x83,0x84,0x91,0x92,0xa1};
+    const QList<quint8> expected = {0x01,0x03,0x04,0x05,0x08,0x09,0x0c,0x11,0x12,0x14,0x16,0x1a,0x21,0x22,0x23,0x24,0x25,0x44,0x46,0x54,0x63,0x64,0x65,0x81,0x82,0x83,0x84,0x91,0x92,0xa1,0xc1};
     QList<quint8> supported;
     for (auto code : codes) {
         const auto command = QushengSdk::definition(code);
@@ -248,7 +249,7 @@ void SdkRequestTest::deferredInterfaces()
     }
     QVERIFY(!QushengSdk::buildRequest(0xff, {}, {}, {}, &request, &error)); QCOMPARE(error.code,QStringLiteral("SDK_UNKNOWN_COMMAND"));
     QCOMPARE(QushengSdk::definition(0x72).parameters.size(),2);
-    QCOMPARE(QushengSdk::definition(0xc1).parameters.size(),4);
+    QCOMPARE(QushengSdk::definition(0xc1).parameters.size(),8);
 }
 
 void SdkRequestTest::resolvedSnapshotsAndStrictEncode()
@@ -265,6 +266,46 @@ void SdkRequestTest::resolvedSnapshotsAndStrictEncode()
     QVERIFY(!QushengSdk::buildRequest(0x44, {}, {{"devId",0x11}}, {}, &request,&error));
     QVERIFY(!QushengSdk::buildRequest(0x03, {}, {}, {}, nullptr, &error)); QCOMPARE(error.code,QStringLiteral("SDK_OUTPUT_REQUIRED"));
     QVERIFY(!QushengSdk::encode(0x03, {}, nullptr, &error));
+}
+
+
+void SdkRequestTest::xyzModuleControls()
+{
+    const QVariantMap supplied{{"moduleIndex", 0x23}, {"xPosition", 0x123456},
+                               {"yPosition", 0x010203}, {"zPosition", 0x7fffff}};
+    QushengSdkRequest request; TranslationError error;
+    QVERIFY(QushengSdk::buildRequest(0xc1, supplied, {}, {}, &request, &error));
+    QCOMPARE(request.payload, QByteArray::fromHex("01231234560102037fffff0003e80003e80003e8"));
+    QVERIFY(QushengSdk::buildRequest(0xc1, supplied, {{"xSpeed", 0x234567}},
+                                    {{"speedUmPerS", 0x1234}}, &request, &error));
+    QCOMPARE(request.payload, QByteArray::fromHex("01231234560102037fffff234567001234001234"));
+    QVariantMap snapshot = request.parameters;
+    QByteArray encoded;
+    QVERIFY(QushengSdk::encode(0xc1, snapshot, &encoded, &error)); QCOMPARE(encoded, request.payload);
+    for (const QString &key : {QString("moduleIndex"), QString("xPosition"), QString("yPosition"), QString("zPosition")}) {
+        QVariantMap missing = supplied; missing.remove(key);
+        QVERIFY(!QushengSdk::buildRequest(0xc1, missing, {}, {}, &request, &error));
+        QCOMPARE(error.code, QString("SDK_PARAMETER_REQUIRED")); QVERIFY(request.payload.isEmpty());
+    }
+    for (const QString &key : {QString("xPosition"), QString("yPosition"), QString("zPosition"),
+                              QString("xSpeed"), QString("ySpeed"), QString("zSpeed")}) {
+        for (const QVariant &bad : {QVariant(-1), QVariant(0x800000), QVariant(0.5), QVariant("1.5")}) {
+            QVariantMap invalid = supplied; invalid.insert(key, bad);
+            QVERIFY(!QushengSdk::buildRequest(0xc1, invalid, {}, {}, &request, &error));
+            QVERIFY(request.payload.isEmpty());
+        }
+        QVariantMap zero = supplied; zero.insert(key, 0);
+        QVERIFY(QushengSdk::buildRequest(0xc1, zero, {}, {}, &request, &error));
+    }
+    for (int invalid : {-1, 256}) {
+        QVariantMap value = supplied; value.insert("moduleIndex", invalid);
+        QVERIFY(!QushengSdk::buildRequest(0xc1, value, {}, {}, &request, &error));
+    }
+    QVariantMap valvePump = supplied; valvePump.insert("moduleType", 2);
+    QVERIFY(!QushengSdk::buildRequest(0xc1, valvePump, {}, {}, &request, &error));
+    QVERIFY(request.payload.isEmpty());
+    QVERIFY(!QushengSdk::encode(0xc1, valvePump, &encoded, &error)); QVERIFY(encoded.isEmpty());
+    QVERIFY(!QushengSdk::isSupported(0xc2)); QVERIFY(!QushengSdk::isSupported(0xc3));
 }
 
 QTEST_APPLESS_MAIN(SdkRequestTest)

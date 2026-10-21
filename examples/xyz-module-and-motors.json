@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "name": "XYZ module and per-mapping motor example",
+  "external": {
+    "encoding": "ascii",
+    "header": "!",
+    "footer": "\\r",
+    "byteOrder": "big",
+    "fields": [
+      {
+        "name": "command",
+        "role": "command",
+        "type": "ascii",
+        "lengthMode": "mappedCommand"
+      },
+      {
+        "name": "value",
+        "role": "parameter",
+        "type": "uint",
+        "lengthMode": "toFooter",
+        "min": 0,
+        "max": 8388607
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "XYZ",
+      "operation": "QUSHENG_C1",
+      "parameters": {
+        "moduleIndex": {
+          "kind": "constant",
+          "value": 35
+        },
+        "xPosition": {
+          "kind": "field",
+          "field": "value"
+        },
+        "yPosition": {
+          "kind": "constant",
+          "value": 0
+        },
+        "zPosition": {
+          "kind": "constant",
+          "value": 66051
+        }
+      }
+    },
+    {
+      "commandCode": "ALL",
+      "operation": "QUSHENG_C1",
+      "parameters": {
+        "moduleIndex": {
+          "kind": "constant",
+          "value": 36
+        },
+        "xPosition": {
+          "kind": "field",
+          "field": "value"
+        },
+        "yPosition": {
+          "kind": "field",
+          "field": "value"
+        },
+        "zPosition": {
+          "kind": "field",
+          "field": "value"
+        }
+      }
+    },
+    {
+      "commandCode": "M1",
+      "operation": "MOTOR_FORWARD",
+      "parameters": {
+        "devId": {
+          "kind": "constant",
+          "value": 18
+        },
+        "positionUm": {
+          "kind": "field",
+          "field": "value"
+        }
+      }
+    },
+    {
+      "commandCode": "M2",
+      "operation": "MOTOR_FORWARD",
+      "parameters": {
+        "devId": {
+          "kind": "constant",
+          "value": 19
+        },
+        "positionUm": {
+          "kind": "field",
+          "field": "value"
+        }
+      }
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "speedUmPerS": 4660,
+    "minPositionUm": 0,
+    "maxPositionUm": 60000
+  }
+}

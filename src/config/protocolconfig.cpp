@@ -324,8 +324,9 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"参数关系必须为对象；查询使用空对象"));
         const QJsonObject parameters = mapping.value("parameters").toObject();
         if (QushengCommandCatalog::usesMotionEditor(operation)
-                && (parameters.size() != 1 || !parameters.contains(relative ? "distanceUm" : "positionUm")))
-            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离；查询无参数且收到回告后返回"));
+                && (parameters.size() != (parameters.contains("devId") ? 2 : 1)
+                    || !parameters.contains(relative ? "distanceUm" : "positionUm")))
+            return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离及可选电机编号"));
         // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
@@ -403,7 +404,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
             if (QushengCommandCatalog::isStopOrReset(operation) && it.key() == "positionUm") continue;
             qint64 minimum = 0, maximum = 0xfffffe;
             QString parameterName = relative ? QString::fromUtf8(u8"移动距离") : QString::fromUtf8(u8"目标位置");
-            if (!QushengCommandCatalog::usesMotionEditor(operation)) {
+            if (!QushengCommandCatalog::usesMotionEditor(operation) || it.key() == "devId") {
                 QJsonObject parameterSpec;
                 for (const QJsonValue &parameter : catalogEntry.value("parameters").toArray())
                     if (parameter.toObject().value("key").toString() == it.key()) {

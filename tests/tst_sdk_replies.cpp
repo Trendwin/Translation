@@ -48,7 +48,7 @@ void SdkRepliesTest::replyLayouts_data()
         {0x11,4},{0x12,11},{0x14,36},{0x16,60},{0x1a,4},
         {0x21,4},{0x22,4},{0x23,8},{0x24,4},{0x25,16},
         {0x44,7},{0x46,4},{0x54,4},{0x63,4},{0x64,20},{0x65,4},
-        {0x81,4},{0x82,13},{0x83,5},{0x84,4},{0x91,4},{0x92,7},{0xa1,4}
+        {0x81,4},{0x82,13},{0x83,5},{0x84,4},{0x91,4},{0x92,7},{0xa1,4},{0xc1,4}
     };
     for (const auto &layout : layouts)
         QTest::newRow(qPrintable(QString::number(layout.code, 16))) << layout.code << QByteArray(layout.length, '\0');
@@ -259,7 +259,7 @@ void SdkRepliesTest::deferredAndReset()
     const QByteArray raw = QByteArray::fromHex("abcdef");
     QVERIFY(!QushengSdk::decodeReply(0x72, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_LAYOUT_PENDING"));
     QCOMPARE(reply.rawPayload, raw); QVERIFY(!reply.success); QVERIFY(reply.values.isEmpty()); QVERIFY(reply.basicStatus.isEmpty());
-    QVERIFY(!QushengSdk::decodeReply(0xc1, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_LAYOUT_PENDING"));
+    QVERIFY(!QushengSdk::decodeReply(0xc1, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_REPLY_LENGTH"));
     QVERIFY(!QushengSdk::decodeReply(0xd1, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_DEFERRED"));
     QVERIFY(!QushengSdk::decodeReply(0x17, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_RECEIVE_ONLY"));
     QVERIFY(!QushengSdk::decodeReply(0x02, raw, &reply, &error)); QCOMPARE(error.code, QStringLiteral("SDK_UNKNOWN_COMMAND"));

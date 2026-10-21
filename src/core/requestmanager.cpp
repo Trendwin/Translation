@@ -9,9 +9,10 @@ bool isRelative(const UnifiedCommand &command)
 { return command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD"; }
 bool isMotion(const UnifiedCommand &command)
 { return QushengCommandCatalog::isAbsoluteMotion(command.operation) || isRelative(command)
-      || QushengCommandCatalog::isStopOrReset(command.operation); }
+      || QushengCommandCatalog::isStopOrReset(command.operation) || command.operation == "QUSHENG_C1"; }
 bool sameMotor(const UnifiedCommand &left, const UnifiedCommand &right)
 {
+    if (left.operation == "QUSHENG_C1" || right.operation == "QUSHENG_C1") return false;
     bool leftOk = false, rightOk = false;
     const uint leftId = left.targetDevice.toUInt(&leftOk), rightId = right.targetDevice.toUInt(&rightOk);
     return leftOk && rightOk && leftId == rightId;
@@ -98,6 +99,8 @@ void RequestManager::startNext()
     if (m_current.operation == "QUERY_MOTOR" && m_current.parameters.contains("devId"))
         target = m_current.parameters.value("devId").toUInt(&targetOk);
     if (targetOk) m_current.targetDevice = QString::number(target);
+    if (m_current.operation == "QUSHENG_C1")
+        m_current.targetDevice = QStringLiteral("xyz:%1").arg(m_current.parameters.value("moduleIndex").toString());
     if(!m_transport->isConnected()) { failCurrent(RequestState::Failed,"DISCONNECTED",QString::fromUtf8(u8"下游串口未连接")); return; }
     // 设备忙闲仅用于显示；不以之前的运动或未知状态阻止用户再次发送。
     if (isRelative(m_current) && !m_current.packetDebug) {
@@ -150,7 +153,8 @@ void RequestManager::onBytesReceived(const QByteArray &data)
         // 0x17 是主动状态上报，序号可能与当前请求无关。首版只用它更新忙状态，
         // 不能让它直接完成新请求，避免迟到上报误配。
         if(message.messageType==0x17 && message.payload.size()>=2
-                && m_active && quint8(message.payload.at(0))==m_current.targetDevice.toUInt()) {
+                && m_active && m_current.operation != "QUSHENG_C1"
+                && quint8(message.payload.at(0))==m_current.targetDevice.toUInt()) {
             const int state=(quint8(message.payload.at(1))>>4)&0x0f;
             if(state==3 || state==2 || state==4) setBusy(true);
             emit unsolicitedMessage(message); continue;

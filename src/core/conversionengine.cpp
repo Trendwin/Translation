@@ -315,14 +315,23 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         // 停止/回物理零点不是“移动到客户给定位置”，不能读取旧草稿中的距离表达式。
         // 仅电机和速度允许预置，模式/动作/距离由选中的模板固定。
         QushengSdkRequest control;
-        const QVariantMap supplied{{"mode", 4}, {"action", QushengCommandCatalog::fixedAction(command->operation)}, {"positionUm", 0}};
+        QVariantMap supplied{{"mode", 4}, {"action", QushengCommandCatalog::fixedAction(command->operation)}, {"positionUm", 0}};
+        const QJsonObject motor = matched.value("parameters").toObject().value("devId").toObject();
+        if (!motor.isEmpty()) {
+            QVariant value;
+            QString trace;
+            if (!evaluate(motor, fields, &value, &trace, error)) return false;
+            supplied.insert("devId", value);
+            preview->parameterTrace.insert("devId", trace);
+        }
         const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
         if (!QushengSdk::buildRequest(0x11, supplied, defaults, device.toVariantMap(), &control, error)) return false;
         command->parameters = control.parameters;
         command->targetDevice = control.parameters.value("devId").toString();
         for (auto it = control.parameterSources.begin(); it != control.parameterSources.end(); ++it) {
             const QString source = it.key() == "devId" || it.key() == "speedUmPerS" ? it.value() : QString::fromUtf8(u8"模板固定");
-            preview->parameterTrace.insert(it.key(), QString::fromUtf8(u8"%1（%2）").arg(control.parameters.value(it.key()).toString(), source));
+            if (!preview->parameterTrace.contains(it.key()))
+                preview->parameterTrace.insert(it.key(), QString::fromUtf8(u8"%1（%2）").arg(control.parameters.value(it.key()).toString(), source));
         }
         return true;
     }
@@ -345,6 +354,8 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         if (!QushengSdk::buildRequest(quint8(code), command->parameters, defaults, device.toVariantMap(), &sdkRequest, error)) return false;
         command->parameters = sdkRequest.parameters;
         if (command->parameters.contains("devId")) command->targetDevice = command->parameters.value("devId").toString();
+        if (code == 0xc1)
+            command->targetDevice = QStringLiteral("xyz:%1").arg(command->parameters.value("moduleIndex").toString());
         for (auto it = sdkRequest.parameterSources.begin(); it != sdkRequest.parameterSources.end(); ++it) {
             QString label = it.key();
             for (const auto &spec : QushengSdk::definition(quint8(code)).parameters)
@@ -373,8 +384,9 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
                                                         : device.value("absoluteAction").toInt();
     QushengSdkRequest motion;
     // 运动保留旧应用字段及行程元数据，SDK只接收标准的mode/action/position参数。
-    // 电机和速度由SDK补齐后写回快照，完成轮询仍由请求层按本次运动目标判断。
-    const QVariantMap supplied{{"positionUm", positionUm}, {"mode", relative ? 2 : 4}, {"action", action}};
+    // 电机和速度由SDK补齐后写回快照；应答结束本地等待，不主动查询机械完成。
+    QVariantMap supplied{{"positionUm", positionUm}, {"mode", relative ? 2 : 4}, {"action", action}};
+    if (command->parameters.contains("devId")) supplied.insert("devId", command->parameters.value("devId"));
     const QVariantMap defaults = m_config.root.value("sdkDefaults").toObject().value(command->operation).toObject().toVariantMap();
     if (!QushengSdk::buildRequest(0x11, supplied, defaults, device.toVariantMap(), &motion, error)) return false;
     command->targetDevice = motion.parameters.value("devId").toString();

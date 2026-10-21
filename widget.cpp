@@ -88,6 +88,10 @@ QString displayName(const QString &key)
         {"firmwareVersion", QString::fromUtf8(u8"固件版本")}, {"deviceIdentifier", QString::fromUtf8(u8"设备标识")},
         {"boardType", QString::fromUtf8(u8"控制板类型")},
         {"deviceBusy", QString::fromUtf8(u8"设备忙闲状态")}, {"devId", QString::fromUtf8(u8"设备编号")},
+        {"moduleType", QString::fromUtf8(u8"模块类型")}, {"moduleIndex", QString::fromUtf8(u8"虚拟模块编号")},
+        {"xPosition", QString::fromUtf8(u8"X位置（下位机数值）")}, {"yPosition", QString::fromUtf8(u8"Y位置（下位机数值）")},
+        {"zPosition", QString::fromUtf8(u8"Z位置（下位机数值）")}, {"xSpeed", QString::fromUtf8(u8"X速度（下位机数值）")},
+        {"ySpeed", QString::fromUtf8(u8"Y速度（下位机数值）")}, {"zSpeed", QString::fromUtf8(u8"Z速度（下位机数值）")},
         {"heartbeat", QString::fromUtf8(u8"心跳")}, {"errors", QString::fromUtf8(u8"故障记录")},
         {"voltageMv", QString::fromUtf8(u8"电压")},
         {"faultCode", QString::fromUtf8(u8"故障代码")}, {"raw", QString::fromUtf8(u8"原始数据")},
@@ -368,6 +372,11 @@ void Widget::buildUi()
     connect(m_mappingSearch, &QLineEdit::textChanged, this, &Widget::filterMappingCommands);
     m_mappingSource = new QComboBox(this); m_mappingSource->setObjectName("mappingSource");
     m_mappingSource->setToolTip(QString::fromUtf8(u8"选择客户字段、固定值，或无参数报文。"));
+    m_mappingMotor = new QComboBox(this); m_mappingMotor->setObjectName("mappingMotor");
+    m_mappingMotor->addItem(QString::fromUtf8(u8"设备默认"), 0);
+    for (int id = 0x11; id <= 0x1c; ++id)
+        m_mappingMotor->addItem(QStringLiteral("0x%1").arg(QString::number(id, 16).toUpper()), id);
+    m_mappingMotor->setToolTip(QString::fromUtf8(u8"仅设置本条映射的电机。设备默认沿用 SDK 预置、设备参数或软件初始值。"));
     m_mappingValue = new QLineEdit(this); m_mappingValue->setObjectName("mappingValue");
     m_mappingValue->setToolTip(QString::fromUtf8(u8"固定整数。"));
     m_mappingMultiplier = new QLineEdit(this); m_mappingMultiplier->setObjectName("mappingMultiplier");
@@ -375,11 +384,16 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"客户命令"), m_mappingCode);
     editorForm->addRow(QString::fromUtf8(u8"查找"), searchLine);
     editorForm->addRow(QString::fromUtf8(u8"趋盛指令"), m_mappingOperation);
+    editorForm->addRow(QString::fromUtf8(u8"电机编号"), m_mappingMotor);
     editorForm->addRow(QString::fromUtf8(u8"取值来源"), m_mappingSource);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
     editorLayout->addLayout(editorForm);
     editorLayout->addWidget(m_mappingParameters);
+    m_mappingHint = new QLabel(QString::fromUtf8(u8"模块编号不是物理电机编号。三个位置都须设置，固定0表示位置0；三轴速度沿用设备页默认运动速度，单位由下位机配置决定。"), this);
+    m_mappingHint->setObjectName("mappingHint");
+    m_mappingHint->setWordWrap(true);
+    editorLayout->addWidget(m_mappingHint);
     mappingLayout->addWidget(m_mappingEditor);
     auto *mappingButtons = new QHBoxLayout;
     auto *addMapping = new QPushButton(QString::fromUtf8(u8"添加命令映射"), this);
@@ -627,6 +641,7 @@ void Widget::connectSignals()
             }
             // 新增表单独立于表格；切换目标只改变新表单，不保存或改写已有行。
             const bool previousMotion = isMotionEditor(m_editorOperation);
+            m_mappingMotor->setCurrentIndex(0);
             // 新动作重新选择取值方式；已有表格内容不受影响。
             updateMappingSources();
             if (!isMotionEditor(operation)) {
@@ -868,6 +883,7 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
         QStringList references; const QJsonObject parameters = mapping.value("parameters").toObject();
         for (const QJsonValue &value : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
             const QJsonObject definition = value.toObject(); if (!definition.value("editable").toBool()) continue;
+            if (definition.value("key").toString() == "devId" && QushengCommandCatalog::isStopOrReset(operation)) continue;
             const QJsonObject relation = parameters.value(definition.value("key").toString()).toObject();
             const QString source = relation.isEmpty() ? parameterDefaultText(definition, operation)
                 : relation.value("kind").toString() == "constant" ? relation.value("value").toVariant().toString()
@@ -876,6 +892,15 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
             references << definition.value("label").toString() + " = " + source;
         }
         if (!references.isEmpty()) summary = references.join(QString::fromUtf8(u8"；"));
+    }
+    if (isMotionEditor(operation) || QushengCommandCatalog::isStopOrReset(operation)) {
+        const QJsonObject motor = mapping.value("parameters").toObject().value("devId").toObject();
+        const QString selected = motor.isEmpty() ? QString::fromUtf8(u8"设备默认")
+            : motor.value("kind").toString() == "constant"
+              ? QStringLiteral("0x%1").arg(motor.value("value").toInt(), 2, 16, QLatin1Char('0'))
+              : motor.value("field").toString();
+        // 停止和复位也显示本条实际选择，不用全局电机标签代替。
+        summary.prepend(QString::fromUtf8(u8"电机 %1；").arg(selected));
     }
     const QString issue = mappingFieldIssue(mapping);
     m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
@@ -902,6 +927,7 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
     for (const QJsonValue &value : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
         const QJsonObject parameter = value.toObject(); if (!parameter.value("editable").toBool()) continue;
         const QString key = parameter.value("key").toString(); const QJsonObject expression = parameters.value(key).toObject();
+        if (key == "devId" && QushengCommandCatalog::isStopOrReset(operation)) continue;
         const int row = m_mappingParameters->rowCount(); m_mappingParameters->insertRow(row);
         auto *label = new QTableWidgetItem(parameter.value("label").toString()); label->setFlags(label->flags() & ~Qt::ItemIsEditable);
         const QString parameterTip = parameter.value("label").toString();
@@ -996,6 +1022,7 @@ void Widget::resetMappingForm()
     m_mappingCode->clear(); m_mappingSearch->clear();
     selectData(m_mappingOperation,"MOTOR_FORWARD"); m_editorOperation="MOTOR_FORWARD";
     m_mappingValue->clear(); m_mappingMultiplier->setText("1");
+    m_mappingMotor->setCurrentIndex(0);
     updateMappingSources(); selectData(m_mappingSource,"");
     loadCatalogParameters(QJsonObject()); updateMappingControls();
     m_loadingMapping=false;
@@ -1163,6 +1190,12 @@ void Widget::updateMappingControls()
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     m_mappingParameters->setVisible(!motion && m_mappingParameters->rowCount() > 0);
+    m_mappingHint->setVisible(operation == "QUSHENG_C1");
+    const bool motor = motion || QushengCommandCatalog::isStopOrReset(operation);
+    m_mappingMotor->setVisible(motor);
+    for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
+        if (auto *form = qobject_cast<QFormLayout *>(m_mappingEditor->layout()->itemAt(i)->layout()))
+            if (QWidget *label = form->labelForField(m_mappingMotor)) label->setVisible(motor);
     const bool constant = m_mappingSource->currentData().toString() == "@constant";
     const bool noParameters = m_mappingSource->currentData().toString() == "@none";
     auto visibility = [](QWidget *control, bool show) {
@@ -1230,6 +1263,9 @@ bool Widget::readNewMapping(QJsonObject *result)
         QString reason;
         if (!catalogParameters(&parameters,&reason)) return fail(reason);
     }
+    if ((isMotionEditor(operation) || QushengCommandCatalog::isStopOrReset(operation))
+            && m_mappingMotor->currentData().toInt() != 0)
+        parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", m_mappingMotor->currentData().toInt()}});
     QJsonObject mapping{{"commandCode",code},{"operation",operation},{"parameters",parameters}};
     const QJsonArray omitted = mappingOmittedFields();
     for (const QJsonValue &value : parameters) {
@@ -1734,6 +1770,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
         lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
     const QString device = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
+        || preview.command.operation == "QUSHENG_C1"
         ? preview.command.targetDevice : QStringLiteral("-");
     lines << QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3")
              .arg(operationName(preview.command.operation), device,

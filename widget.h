@@ -108,7 +108,9 @@ private:
     QComboBox *m_mappingOperation = nullptr;
     QLineEdit *m_mappingSearch = nullptr;
     QTableWidget *m_mappingParameters = nullptr;
+    QLabel *m_mappingHint = nullptr;
     QComboBox *m_mappingSource = nullptr;
+    QComboBox *m_mappingMotor = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
     bool m_loadingMapping = false;
