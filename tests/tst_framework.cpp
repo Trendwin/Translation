@@ -34,6 +34,11 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void groupedConversionAndSchema();
+    void groupedAckAndWriteOrdering();
+    void groupedFailureStopsRemaining_data();
+    void groupedFailureStopsRemaining();
+    void groupedCancellationAndStops();
     void sixMotorConfigurationAndConversion();
     void integerListMixedMappings();
     void integerListStrictValidation();
@@ -723,9 +728,9 @@ void FrameworkTest::managerStalledWriteAndRejection()
     manager.enqueue(query);
     QTRY_COMPARE(completed, 1);
     QCOMPARE(last.error.code, QStringLiteral("SEND_TIMEOUT"));
+    query.requestId = 2; manager.enqueue(query); QTest::qWait(20); QCOMPARE(transport.sent.size(), 1);
+    transport.sendFinished(1, true, QString()); // The timed-out write must release the serial port first.
     transport.stall = false;
-    query.requestId = 2;
-    manager.enqueue(query);
     QTRY_COMPARE(transport.sent.size(), 2);
     transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x12,
                                                   QByteArray::fromHex("0400000010004e20ffffff")));
@@ -1710,10 +1715,13 @@ void FrameworkTest::mappedMotorRelativePreflight()
     QVERIFY2(ConversionEngine(config).convert("/1p500R\r", false, &preview, &error), qPrintable(error.message));
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
     preview.command.requestId = 1; manager.enqueue(preview.command);
+    codec.setAddresses(9, 8); // A later configuration cannot change the queued preflight or motion addresses.
     QTRY_COMPARE(transport.sent.size(), 1);
+    QCOMPARE(quint8(transport.sent.first().at(2)), quint8(2)); QCOMPARE(quint8(transport.sent.first().at(3)), quint8(1));
     QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x12));
     QCOMPARE(quint8(transport.sent.first().at(8)), quint8(0x16));
     transport.receive(motorReply(0, 1, 1000)); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(quint8(transport.sent.last().at(2)), quint8(2)); QCOMPARE(quint8(transport.sent.last().at(3)), quint8(1));
     QCOMPARE(quint8(transport.sent.last().at(7)), quint8(0x11));
     QCOMPARE(quint8(transport.sent.last().at(8)), quint8(0x16));
 }
@@ -1804,6 +1812,141 @@ void FrameworkTest::xyzModuleLifecycleAndMotorIsolation()
     for (const auto &state : states) {
         QVERIFY(qvariant_cast<RequestState>(state.at(1)) != RequestState::Cancelled);
         QVERIFY(qvariant_cast<RequestState>(state.at(1)) != RequestState::Succeeded);
+    }
+}
+
+
+static UnifiedCommandGroup testGroup(quint64 id, const QStringList &operations)
+{
+    UnifiedCommandGroup group; group.groupId = id;
+    for (int i = 0; i < operations.size(); ++i) group.steps.append(motorRequest(id + i + 1, operations[i]));
+    return group;
+}
+
+void FrameworkTest::groupedConversionAndSchema()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY2(ProtocolConfig::load(example("one-to-many-mappings.json"), &config, &error), qPrintable(error.message));
+    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error));
+    QCOMPARE(preview.steps.size(), 3); QVERIFY(preview.targetFrame.isEmpty()); QVERIFY(preview.command.operation.isEmpty());
+    QCOMPARE(quint8(preview.steps[0].targetFrame[6]), quint8(0)); QCOMPARE(quint8(preview.steps[1].targetFrame[6]), quint8(1));
+    QCOMPARE(preview.steps[0].targetFrame.mid(8, 8), preview.steps[2].targetFrame.mid(8, 8));
+    QCOMPARE(preview.steps[1].targetFrame.mid(8, 11), QByteArray::fromHex("012300001400001e000028"));
+    QCOMPARE(preview.steps[0].command.destinationAddress, quint8(2));
+    QVERIFY(!ConversionEngine(config).convert("!TRIPLE=20,30,40\r", false, &preview, &error));
+    QCOMPARE(error.code, QString("MULTI_STEP_REQUIRES_BATCH")); QVERIFY(preview.steps.isEmpty());
+    QVERIFY(ConversionEngine(config).convert("!ONE=50\r", false, &preview, &error)); QCOMPARE(preview.steps.size(), 1);
+    const auto original = config;
+    for (int kind = 0; kind < 8; ++kind) {
+        config = original; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject(); auto steps = mapping.value("steps").toArray();
+        if (kind == 0) mapping.insert("parameters", QJsonObject());
+        if (kind == 1) steps = QJsonArray();
+        if (kind == 2) { while (steps.size() < 65) steps.append(steps[0]); }
+        if (kind >= 3) {
+            auto step = steps[1].toObject();
+            if (kind == 3) step.insert("input", QJsonObject());
+            if (kind == 4) step.insert("commandCode", "other");
+            if (kind == 5) step.insert("steps", QJsonArray());
+            if (kind == 6) { auto params = step.value("parameters").toObject(); params.insert("xPosition", QJsonObject{{"kind", "field"}, {"field", "missing"}, {"itemIndex", 1}}); step.insert("parameters", params); }
+            if (kind == 7) step.insert("operation", "QUSHENG_C2");
+            steps[1] = step;
+        }
+        mapping.insert("steps", steps); mappings[0] = mapping; config.root.insert("mappings", mappings);
+        QVERIFY(!ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.fields.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
+    }
+    config = original; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject(); auto steps = mapping.value("steps").toArray();
+    auto step = steps[0].toObject(); auto parameters = step.value("parameters").toObject();
+    parameters.insert("positionUm", QJsonObject{{"kind", "linear"}, {"field", "values"}, {"itemIndex", 2}, {"numerator", 3}, {"denominator", 2}, {"offset", 1}, {"round", "floor"}, {"extension", "keep"}});
+    step.insert("parameters", parameters); step.insert("stepExtension", "retained"); steps[0] = step; mapping.insert("steps", steps); mappings[0] = mapping; config.root.insert("mappings", mappings);
+    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error)); QCOMPARE(preview.steps[0].command.parameters.value("positionUm").toInt(), 46);
+    QTemporaryDir dir; QVERIFY(config.save(dir.filePath("group.json"), &error)); ProtocolConfig restored;
+    QVERIFY(ProtocolConfig::load(dir.filePath("group.json"), &restored, &error)); QCOMPARE(restored.root, config.root);
+}
+
+void FrameworkTest::groupedAckAndWriteOrdering()
+{
+    qRegisterMetaType<UnifiedGroupResult>();
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&codec, &transport); QSignalSpy groups(&manager, &RequestManager::groupCompleted);
+    auto group = testGroup(100, {"MOTOR_FORWARD", "MOTOR_BACKWARD", "MOTOR_FORWARD"}); manager.enqueueGroup(group);
+    auto following = motorRequest(200, "MOTOR_FORWARD"); following.targetDevice = "18"; manager.enqueue(following);
+    QTRY_COMPARE(transport.sent.size(), 1);
+    transport.receive(QushengProtocol::makeReply(0, 0)); QTest::qWait(10); QCOMPARE(transport.sent.size(), 1); QCOMPARE(groups.size(), 0);
+    transport.sendFinished(101, true, QString()); QTRY_COMPARE(transport.sent.size(), 2);
+    transport.receive(QushengProtocol::makeReply(0, 0)); // late previous ACK
+    QByteArray bad = QushengProtocol::makeReply(1, 0); bad[bad.size() - 1] = char(bad.at(bad.size() - 1) ^ 1); transport.receive(bad);
+    transport.receive(QushengProtocol::makeFrame(1, 2, 1, 0x17, QByteArray::fromHex("1110000001000001")));
+    QTest::qWait(10); QCOMPARE(transport.sent.size(), 2);
+    transport.sendFinished(102, true, QString()); transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
+    transport.receive(QushengProtocol::makeReply(2, 0)); QCOMPARE(groups.size(), 0);
+    transport.sendFinished(103, true, QString()); QTRY_COMPARE(groups.size(), 1);
+    const auto result = qvariant_cast<UnifiedGroupResult>(groups[0][0]); QVERIFY(result.success); QCOMPARE(result.acceptedSteps, 3);
+    QTRY_COMPARE(transport.sent.size(), 4); QCOMPARE(quint8(transport.sent[3][8]), quint8(18));
+    transport.sendFinished(200, true, QString()); transport.receive(QushengProtocol::makeReply(3, 0)); QTRY_COMPARE(groups.size(), 2);
+    QVERIFY(!manager.hasPendingRequests());
+}
+
+void FrameworkTest::groupedFailureStopsRemaining_data()
+{
+    QTest::addColumn<QString>("failure");
+    for (const QString &failure : {QString("reject"), QString("timeout"), QString("write"), QString("early-ack-write"), QString("disconnect")})
+        QTest::newRow(qPrintable(failure)) << failure;
+}
+void FrameworkTest::groupedFailureStopsRemaining()
+{
+    QFETCH(QString, failure); qRegisterMetaType<UnifiedGroupResult>();
+    QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport); manager.setTimeouts(150, 40);
+    QSignalSpy groups(&manager, &RequestManager::groupCompleted);
+    manager.enqueueGroup(testGroup(100, {"MOTOR_FORWARD", "MOTOR_BACKWARD", "MOTOR_FORWARD"}));
+    QTRY_COMPARE(transport.sent.size(), 1); QCoreApplication::processEvents();
+    transport.stall = failure == "write" || failure == "early-ack-write" || failure == "disconnect";
+    transport.receive(QushengProtocol::makeReply(0, 0)); QTRY_COMPARE(transport.sent.size(), 2);
+    if (failure == "reject") transport.receive(QushengProtocol::makeReply(1, 4));
+    if (failure == "early-ack-write") transport.receive(QushengProtocol::makeReply(1, 0));
+    if (failure == "write" || failure == "early-ack-write") transport.sendFinished(102, false, "failed write");
+    if (failure == "disconnect") transport.disconnectNow();
+    QTRY_COMPARE(groups.size(), 1); const auto result = qvariant_cast<UnifiedGroupResult>(groups[0][0]);
+    QVERIFY(!result.success); QCOMPARE(result.failedStep, 2); QCOMPARE(result.remainingSteps, 1); QCOMPARE(result.acceptedSteps, failure == "early-ack-write" ? 2 : 1);
+    QTest::qWait(10); QCOMPARE(transport.sent.size(), 2); QCOMPARE(groups.size(), 1);
+    transport.connected = true; transport.stall = false; manager.enqueue(motorRequest(200, "MOTOR_FORWARD"));
+    QTRY_COMPARE(transport.sent.size(), 3); QCOMPARE(quint8(transport.sent.last()[6]), quint8(2));
+    transport.receive(QushengProtocol::makeReply(2, 0)); QTRY_COMPARE(groups.size(), 2);
+}
+
+void FrameworkTest::groupedCancellationAndStops()
+{
+    qRegisterMetaType<UnifiedGroupResult>();
+    {
+        QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
+        QSignalSpy groups(&manager, &RequestManager::groupCompleted);
+        manager.enqueueGroup(testGroup(100, {"MOTOR_FORWARD", "MOTOR_BACKWARD", "MOTOR_FORWARD"}));
+        QTRY_COMPARE(transport.sent.size(), 1); QCoreApplication::processEvents();
+        transport.receive(QushengProtocol::makeReply(0, 0)); manager.cancel(100); // No event pump between steps.
+        QCOMPARE(groups.size(), 1); const auto result = qvariant_cast<UnifiedGroupResult>(groups[0][0]);
+        QCOMPARE(result.acceptedSteps, 1); QCOMPARE(result.remainingSteps, 2); QTest::qWait(10); QCOMPARE(transport.sent.size(), 1);
+    }
+    {
+        QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; transport.stall = true; RequestManager manager(&codec, &transport);
+        QSignalSpy groups(&manager, &RequestManager::groupCompleted);
+        manager.enqueueGroup(testGroup(100, {"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD"}));
+        auto other = testGroup(200, {"MOTOR_FORWARD", "MOTOR_BACKWARD"}); for (auto &step : other.steps) step.targetDevice = "18";
+        manager.enqueueGroup(other); QTRY_COMPARE(transport.sent.size(), 1);
+        manager.enqueue(motorRequest(300, "MOTOR_STOP")); manager.cancel(300); // Cancelling a pending stop preserves the active group.
+        transport.sendFinished(101, true, QString()); transport.receive(QushengProtocol::makeReply(0, 0)); QTRY_COMPARE(transport.sent.size(), 2);
+        QCOMPARE(quint8(transport.sent[1][9]), quint8(0x42)); // Planned stop remains the second step.
+        transport.sendFinished(102, true, QString()); transport.receive(QushengProtocol::makeReply(1, 0)); QTRY_COMPARE(transport.sent.size(), 3);
+        manager.enqueue(motorRequest(400, "MOTOR_STOP")); // Actual external stop aborts the remaining active group.
+        QCOMPARE(transport.sent.size(), 3); transport.sendFinished(103, true, QString()); QTRY_COMPARE(transport.sent.size(), 4);
+        QCOMPARE(quint8(transport.sent.last()[9]), quint8(0x42));
+        transport.sendFinished(400, true, QString()); transport.receive(QushengProtocol::makeReply(3, 0)); QTRY_COMPARE(transport.sent.size(), 5);
+        QCOMPARE(quint8(transport.sent.last()[8]), quint8(18)); // Unrelated group was retained.
+        manager.cancel(200); transport.sendFinished(201, true, QString()); QTRY_VERIFY(!manager.hasPendingRequests());
+    }
+    {
+        QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport); QSignalSpy groups(&manager, &RequestManager::groupCompleted);
+        auto invalid = testGroup(100, {"MOTOR_FORWARD", "MOTOR_BACKWARD"}); invalid.steps[1].parameters.insert("positionUm", -1);
+        manager.enqueueGroup(invalid); QCOMPARE(transport.sent.size(), 0); QCOMPARE(groups.size(), 1);
+        QVERIFY(qvariant_cast<UnifiedGroupResult>(groups[0][0]).error.message.contains(QString::fromUtf8(u8"第2条")));
     }
 }
 

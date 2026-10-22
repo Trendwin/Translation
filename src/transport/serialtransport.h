@@ -15,6 +15,7 @@ public:
     void close();
     QString errorString() const { return m_port.errorString(); }
 private:
+    friend class WidgetTest;
     QSerialPort m_port;
     quint64 m_pendingRequest = 0;
     qint64 m_pendingBytes = 0;

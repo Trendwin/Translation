@@ -286,7 +286,7 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
 }
 
 bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand *command,
-                           ConversionPreview *preview, TranslationError *error) const
+                           ConversionPreview *preview, TranslationError *error, const QJsonObject &matched) const
 {
     QString commandField;
     for (const QJsonValue &value : m_config.root.value("external").toObject().value("fields").toArray()) {
@@ -302,23 +302,6 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
 
     // 读取到的客户命令码与配置精确匹配；最长前缀仅用于前面定位命令字段长度。
     // operation代表趋盛目标模板，不能将客户命令字符直接当成趋盛CMD。
-    QJsonObject matched;
-    for (const QJsonValue &value : m_config.root.value("mappings").toArray()) {
-        const QJsonObject candidate = value.toObject();
-        if (candidate.value("commandCode").toVariant().toString() != incomingCode) continue;
-        if (!matched.isEmpty())
-            return fail(error, "MAPPING_AMBIGUOUS", QString::fromUtf8(u8"同一客户命令码命中了多条映射"));
-        matched = candidate;
-    }
-    if (matched.isEmpty())
-        return fail(error, "COMMAND_UNSUPPORTED",
-                    QString::fromUtf8(u8"客户命令码“%1”没有匹配的命令映射").arg(incomingCode));
-    const QJsonObject counts = matched.value("input").toObject().value("parameterCounts").toObject();
-    for (auto it = counts.begin(); it != counts.end(); ++it) {
-        const int actual = fields.value(it.key()).toList().size();
-        if (actual != it.value().toInt())
-            return fail(error, "PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表“%2”需要%3项，实际%4项").arg(incomingCode, it.key()).arg(it.value().toInt()).arg(actual));
-    }
 
     // 目录完整不等于执行完整。按命中的单条映射阻止待实现指令，避免把其参数误套成运动位置；
     // 同一配置中的已验证运动/查询仍可正常使用。拒绝点必须在组帧之前，不能生成可误发的HEX。
@@ -455,6 +438,22 @@ bool ConversionEngine::parsePreview(const QByteArray &input, ConversionPreview *
 bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPreview *out,
                                TranslationError *error) const
 {
+    ConversionPreview result;
+    if (!convertBatch(input, live, &result, error)) {
+        if (out) *out = ConversionPreview();
+        return false;
+    }
+    if (result.steps.size() > 1) {
+        if (out) *out = ConversionPreview();
+        return fail(error, "MULTI_STEP_REQUIRES_BATCH", QString::fromUtf8(u8"此客户命令包含多条趋盛指令，请使用整组转换与发送入口"));
+    }
+    if (out) *out = result;
+    return true;
+}
+
+bool ConversionEngine::convertBatch(const QByteArray &input, bool live, ConversionPreview *out,
+                                    TranslationError *error) const
+{
     Q_UNUSED(live);
     // 失败必须清空旧结果。调用方不能误把上一条合法报文的目标帧当成本次转换结果。
     if (out) *out = ConversionPreview();
@@ -469,15 +468,46 @@ bool ConversionEngine::convert(const QByteArray &input, bool live, ConversionPre
         if (field.value("role").toString() == "execution" && result.fields.contains(field.value("name").toString()))
             return fail(error, "EXECUTION_SEMANTICS", QString::fromUtf8(u8"字段“%1”要求执行控制，本版本仅解析，不能忽略后转换发送").arg(field.value("name").toString()));
     }
-    if (!map(result.fields, &result.command, &result, error)) return false;
-
+    QString incomingCode;
+    for (const auto &v : external.value("fields").toArray()) {
+        const auto field = v.toObject();
+        if (field.value("role").toString() == "command") incomingCode = result.fields.value(field.value("name").toString()).toString();
+    }
+    QJsonObject matched;
+    for (const auto &v : m_config.root.value("mappings").toArray())
+        if (v.toObject().value("commandCode").toVariant().toString() == incomingCode) matched = v.toObject();
+    if (matched.isEmpty()) return fail(error, "COMMAND_UNSUPPORTED", QString::fromUtf8(u8"客户命令码“%1”没有匹配的命令映射").arg(incomingCode));
+    const auto counts = matched.value("input").toObject().value("parameterCounts").toObject();
+    for (auto it = counts.begin(); it != counts.end(); ++it) {
+        const int actual = result.fields.value(it.key()).toList().size();
+        if (actual != it.value().toInt())
+            return fail(error, "PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表“%2”需要%3项，实际%4项").arg(incomingCode, it.key()).arg(it.value().toInt()).arg(actual));
+    }
     const QJsonObject device = m_config.root.value("device").toObject();
     QushengProtocol codec;
-    // 预览使用临时会话，不消耗真实串口会话的线上序号；发送时会按真实会话重新组帧。
-    // 因此预览能核查参数和布局，但最终线上序号及CRC以实际发送帧为准。
-    codec.setAddresses(quint8(device.value("destination").toInt()),
-                       quint8(device.value("source").toInt()));
-    if (!codec.encodeCommand(result.command, &result.targetFrame, error)) return false;
+    codec.setAddresses(quint8(device.value("destination").toInt()), quint8(device.value("source").toInt()));
+    const auto steps = ProtocolConfig::mappingSteps(matched);
+    for (int i = 0; i < steps.size(); ++i) {
+        ConversionPreview stepPreview;
+        if (!map(result.fields, &stepPreview.command, &stepPreview, error, steps[i].toObject())) {
+            if (error) error->message = QString::fromUtf8(u8"第%1条：%2").arg(i + 1).arg(error->message);
+            return false;
+        }
+        stepPreview.command.destinationAddress = quint8(device.value("destination").toInt());
+        stepPreview.command.sourceAddress = quint8(device.value("source").toInt());
+        if (!codec.encodeCommand(stepPreview.command, &stepPreview.targetFrame, error)) {
+            if (error) error->message = QString::fromUtf8(u8"第%1条：%2").arg(i + 1).arg(error->message);
+            return false;
+        }
+        ConversionStepPreview step;
+        step.command = stepPreview.command; step.parameterTrace = stepPreview.parameterTrace; step.targetFrame = stepPreview.targetFrame;
+        result.steps.append(step);
+    }
+    if (result.steps.size() == 1) {
+        result.command = result.steps.first().command;
+        result.parameterTrace = result.steps.first().parameterTrace;
+        result.targetFrame = result.steps.first().targetFrame;
+    }
     if (out) *out = result;
     return true;
 }

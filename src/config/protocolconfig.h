@@ -16,6 +16,7 @@ public:
     bool validate(TranslationError *error) const;
     bool validateFormat(TranslationError *error) const;
     bool validateMotorIds(TranslationError *error) const;
+    static QJsonArray mappingSteps(const QJsonObject &mapping);
     static bool retiredFormat(const QJsonObject &root);
     bool liveReady(TranslationError *error) const;
     // 共用帧头帧尾及字段顺序；无参数命令只显式省略指定字段，不能按操作名称猜客户格式。

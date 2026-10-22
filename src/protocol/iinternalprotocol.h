@@ -13,6 +13,7 @@ public:
     ~IInternalProtocol() override = default;
     virtual bool encodeCommand(const UnifiedCommand &command, QByteArray *frame,
                                TranslationError *error) const = 0;
+    virtual bool validateCommand(const UnifiedCommand &, TranslationError *) const { return true; }
     // 可多次输入半包，也可一次输入多个粘连帧；返回本次新解析出的消息。
     virtual QList<ProtocolMessage> feedReceivedData(const QByteArray &data,
                                                      QList<TranslationError> *errors) = 0;

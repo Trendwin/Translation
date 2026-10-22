@@ -1,4 +1,5 @@
 #include "serialtransport.h"
+#include <QSignalBlocker>
 
 namespace {
 QString serialReason(QSerialPort &port)
@@ -36,8 +37,19 @@ SerialTransport::SerialTransport(QObject *parent) : ITransport(parent)
     connect(&m_port, &QSerialPort::errorOccurred, this, [this](QSerialPort::SerialPortError value) {
         if (value == QSerialPort::NoError) return;
         if (m_pendingRequest) {
-            const quint64 id = m_pendingRequest; m_pendingRequest = 0;
-            emit sendFinished(id, false, serialReason(m_port));
+            const quint64 id = m_pendingRequest;
+            const QString reason = serialReason(m_port);
+            m_pendingRequest = 0;
+            m_pendingBytes = 0;
+            // 失败通知可能立即触发下一请求，必须先释放驱动中的旧写操作。
+            // close 若再次报告错误，不应重入并重复通知完成或断连。
+            {
+                const QSignalBlocker blocker(&m_port);
+                m_port.close();
+            }
+            emit sendFinished(id, false, reason);
+            emit connectionChanged(false, reason);
+            return;
         }
         if (value == QSerialPort::ResourceError) {
             const QString reason = serialReason(m_port);

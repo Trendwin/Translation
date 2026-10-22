@@ -11,6 +11,8 @@ TranslationService::TranslationService(RequestManager *requests, QObject *parent
     connect(requests, &RequestManager::protocolError, this,
             [this](const TranslationError &e) { emit errorOccurred(0, e); });
     connect(requests, &RequestManager::completed, this, &TranslationService::completed);
+    connect(requests, &RequestManager::groupCompleted, this, &TranslationService::groupCompleted);
+    connect(requests, &RequestManager::groupProgress, this, &TranslationService::groupProgress);
 }
 
 quint64 TranslationService::submitUnifiedCommand(UnifiedCommand command)
@@ -19,4 +21,17 @@ quint64 TranslationService::submitUnifiedCommand(UnifiedCommand command)
     command.requestId = m_nextRequestId++;
     m_requests->enqueue(command);
     return command.requestId;
+}
+
+quint64 TranslationService::submitUnifiedGroup(QList<UnifiedCommand> commands)
+{
+    if (commands.size() == 1) return submitUnifiedCommand(commands.first());
+    UnifiedCommandGroup group;
+    group.groupId = m_nextRequestId++;
+    for (UnifiedCommand command : commands) {
+        command.requestId = m_nextRequestId++;
+        group.steps.append(command);
+    }
+    m_requests->enqueueGroup(group);
+    return group.groupId;
 }

@@ -278,12 +278,23 @@ bool ProtocolConfig::validateMotorIds(TranslationError *error) const
     }
     for (const auto &v : root.value("mappings").toArray()) {
         const auto mapping = v.toObject();
-        const int maximum = maximumFor(mapping.value("operation").toString());
-        const auto expression = mapping.value("parameters").toObject().value("devId").toObject();
-        if (maximum && expression.value("kind").toString() == "constant"
-                && !check(expression.value("value"), maximum, mapping.value("commandCode").toString())) return false;
+        const auto steps = mappingSteps(mapping);
+        for (int i = 0; i < steps.size(); ++i) {
+            const auto step = steps[i].toObject();
+            const int maximum = maximumFor(step.value("operation").toString());
+            const auto expression = step.value("parameters").toObject().value("devId").toObject();
+            const QString label = mapping.value("commandCode").toString() + QString::fromUtf8(u8"第%1条").arg(i + 1);
+            if (maximum && expression.value("kind").toString() == "constant"
+                    && !check(expression.value("value"), maximum, label)) return false;
+        }
     }
     return true;
+}
+
+QJsonArray ProtocolConfig::mappingSteps(const QJsonObject &mapping)
+{
+    if (mapping.contains("steps")) return mapping.value("steps").toArray();
+    return QJsonArray{QJsonObject{{"operation", mapping.value("operation")}, {"parameters", mapping.value("parameters")}}};
 }
 
 bool ProtocolConfig::validate(TranslationError *error) const
@@ -302,6 +313,36 @@ bool ProtocolConfig::validate(TranslationError *error) const
         return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"命令映射必须为列表"));
     const QJsonArray mappings = root.value("mappings").toArray();
     if (mappings.isEmpty()) return true;
+    bool grouped = false;
+    for (const auto &v : mappings) grouped |= v.toObject().contains("steps");
+    if (grouped) {
+        QSet<QString> codes;
+        for (const auto &v : mappings) {
+            const auto mapping = v.toObject();
+            const QString code = mapping.value("commandCode").toVariant().toString();
+            if (code.isEmpty() || codes.contains(code))
+                return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码不能为空或重复"));
+            codes.insert(code);
+            if (mapping.contains("steps") && (!mapping.value("steps").isArray() || mapping.contains("operation") || mapping.contains("parameters")))
+                return fail(error, "CONFIG_STEPS", QString::fromUtf8(u8"命令“%1”的steps必须为数组，且不能与operation/parameters混用").arg(code));
+            const auto steps = mappingSteps(mapping);
+            if (steps.isEmpty() || steps.size() > 64)
+                return fail(error, "CONFIG_STEPS", QString::fromUtf8(u8"命令“%1”需配置1～64条趋盛指令").arg(code));
+            for (int i = 0; i < steps.size(); ++i) {
+                const auto step = steps[i].toObject();
+                if (!steps[i].isObject() || step.contains("input") || step.contains("commandCode") || step.contains("steps"))
+                    return fail(error, "CONFIG_STEPS", QString::fromUtf8(u8"命令“%1”第%2条无效：步骤不能覆盖客户命令或共用输入格式").arg(code).arg(i + 1));
+                QJsonObject flat = mapping;
+                flat.remove("steps"); flat.insert("operation", step.value("operation")); flat.insert("parameters", step.value("parameters"));
+                ProtocolConfig single = *this; single.root.insert("mappings", QJsonArray{flat});
+                if (!single.validate(error)) {
+                    if (error) error->message = QString::fromUtf8(u8"命令“%1”第%2条：%3").arg(code).arg(i + 1).arg(error->message);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
     QSet<QString> commandCodes;
     // SDK预置按操作保存。校验的是被声明的默认参数，不要求提前填写其它业务必填项。
     if (root.contains("sdkDefaults") && !root.value("sdkDefaults").isObject())
