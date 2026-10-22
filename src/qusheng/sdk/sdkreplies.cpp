@@ -246,7 +246,7 @@ bool QushengSdk::decodeReport(quint8 command, const QByteArray &payload,
         // 与12应答不同，上报从D0直接开始编号，不含4字节执行结果头。
         if (payload.size() != 8) return fail(error, "SDK_REPORT_LENGTH", QString::fromUtf8(u8"电机主动上报应为八字节"));
         const int id = quint8(payload.at(0)), state = quint8(payload.at(1)) >> 4;
-        if (id < 0x11 || id > 0x1c) return fail(error, "SDK_REPORT_DEVICE", QString::fromUtf8(u8"电机主动上报编号无效"));
+        if (id < 0x11 || id > 0x16) return fail(error, "SDK_REPORT_DEVICE", QString::fromUtf8(u8"电机主动上报编号无效"));
         if (state > 4) return fail(error, "SDK_MOTOR_STATE", QString::fromUtf8(u8"未知电机状态"));
         reply->values.insert("devId", id); reply->values.insert("motorState", state);
         reply->values.insert("positionUm", be(payload, 2, 3)); reply->values.insert("feedbackPositionUm", be(payload, 5, 3));

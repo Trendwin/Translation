@@ -254,9 +254,42 @@ bool ProtocolConfig::validateFormat(TranslationError *error) const
     return true;
 }
 
+bool ProtocolConfig::validateMotorIds(TranslationError *error) const
+{
+    const auto check = [error](const QJsonValue &value, int maximum, const QString &where) {
+        return integer(value, 0x11, maximum) || fail(error, "CONFIG_MOTOR_ID",
+            QString::fromUtf8(u8"%1的物理电机编号无效；仅有六路0x11～0x16，需重新选择（0x1A速度指令仅0x11～0x13）").arg(where));
+    };
+    const auto maximumFor = [](const QString &operation) {
+        for (const auto &v : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
+            const auto spec = v.toObject();
+            if (spec.value("key").toString() == "devId" && spec.value("min").toInt() == 0x11)
+                return spec.value("max").toInt();
+        }
+        return 0;
+    };
+    const auto device = root.value("device").toObject();
+    if (device.contains("devId") && !check(device.value("devId"), 0x16, QString::fromUtf8(u8"设备默认"))) return false;
+    const auto defaults = root.value("sdkDefaults").toObject();
+    for (auto it = defaults.begin(); it != defaults.end(); ++it) {
+        const int maximum = maximumFor(it.key());
+        const auto preset = it.value().toObject();
+        if (maximum && preset.contains("devId") && !check(preset.value("devId"), maximum, it.key())) return false;
+    }
+    for (const auto &v : root.value("mappings").toArray()) {
+        const auto mapping = v.toObject();
+        const int maximum = maximumFor(mapping.value("operation").toString());
+        const auto expression = mapping.value("parameters").toObject().value("devId").toObject();
+        if (maximum && expression.value("kind").toString() == "constant"
+                && !check(expression.value("value"), maximum, mapping.value("commandCode").toString())) return false;
+    }
+    return true;
+}
+
 bool ProtocolConfig::validate(TranslationError *error) const
 {
     if (!validateFormat(error)) return false;
+    if (!validateMotorIds(error)) return false;
     const QJsonObject external = root.value("external").toObject();
     const QString encoding = external.value("encoding").toString();
     QByteArray headerBytes, footerBytes;
@@ -495,7 +528,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
     if (!integer(device.value("destination"), 1, 255)
             || !integer(device.value("source"), 1, 255)
             || device.value("destination").toInt() == device.value("source").toInt()
-            || !integer(device.value("devId"), 0x11, 0x1c)
+            || !integer(device.value("devId"), 0x11, 0x16)
             || !integer(device.value("speedUmPerS"), 1, 0xfffffe)
             || !integer(device.value("minPositionUm"), 0, 0xfffffe)
             || !integer(device.value("maxPositionUm"), 0, 0xfffffe)

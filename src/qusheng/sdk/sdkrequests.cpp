@@ -23,9 +23,9 @@ QushengParameterDefinition p(const char *key, const char *label, const char *typ
     return result;
 }
 
-QushengParameterDefinition motor(int maximum = 0x1c)
+QushengParameterDefinition motor(int maximum = 0x16)
 {
-    // 普通步进范围11～1C；0x1A仅支持11～13，通过maximum收窄而非编码时截断。
+    // 普通步进范围11～16；0x1A仅支持11～13，通过maximum收窄而非编码时截断。
     return p("devId", u8"电机编号", "uint8", 0x11, maximum, 0x11, QStringLiteral("devId"));
 }
 
@@ -289,7 +289,7 @@ bool QushengSdk::isSupported(quint8 command) { return registry().contains(comman
 bool QushengSdk::isDeviceId(quint8 id)
 {
     // 物理模块编号用于设备参数与故障上报；0xFF是广播操作，不能作为上报模块。
-    return (id >= 0x11 && id <= 0x1c) || (id >= 0x21 && id <= 0x26) || id == 0x2e ||
+    return (id >= 0x11 && id <= 0x16) || (id >= 0x21 && id <= 0x26) || id == 0x2e ||
         (id >= 0x31 && id <= 0x4e) || (id >= 0x61 && id <= 0x68) || (id >= 0x71 && id <= 0x78) ||
         (id >= 0x80 && id <= 0x9f) || (id >= 0xc0 && id <= 0xdf) || (id >= 0xe0 && id <= 0xe2);
 }

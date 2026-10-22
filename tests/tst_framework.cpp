@@ -34,6 +34,7 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void sixMotorConfigurationAndConversion();
     void integerListMixedMappings();
     void integerListStrictValidation();
     void integerListLayoutAndBudget();
@@ -113,6 +114,31 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+void FrameworkTest::sixMotorConfigurationAndConversion()
+{
+    const auto base = integerListConfig(); TranslationError error; ConversionPreview preview;
+    for (int id : {0x17, 0x1c}) {
+        auto config = base; auto device = config.root.value("device").toObject(); device.insert("devId", id); config.root.insert("device", device);
+        QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_MOTOR_ID"));
+        QVERIFY(!ConversionEngine(config).convert("!ONE=50\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
+        config = base; config.root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"devId", id}}}});
+        QVERIFY(!config.validate(&error)); // An explicit valid mapping must not hide a stale invalid preset.
+        config = base; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject();
+        auto params = mapping.value("parameters").toObject(); params.insert("devId", QJsonObject{{"kind", "constant"}, {"value", id}});
+        mapping.insert("parameters", params); config.root.insert("mappings", QJsonArray{mapping});
+        QVERIFY(!config.validate(&error));
+        params.insert("devId", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}});
+        mapping.insert("parameters", params); config.root.insert("mappings", QJsonArray{mapping});
+        QVERIFY(config.validate(&error));
+        QVERIFY(!ConversionEngine(config).convert("!ONE=" + QByteArray::number(id) + "\r", false, &preview, &error));
+        QVERIFY(preview.targetFrame.isEmpty());
+    }
+    QVERIFY(ConversionEngine(base).convert("!ONE=50\r", false, &preview, &error));
+    preview.command.targetDevice = QString::number(0x1c);
+    QushengProtocol protocol; protocol.setAddresses(2, 1); QByteArray frame;
+    QVERIFY(!protocol.encodeCommand(preview.command, &frame, &error)); QCOMPARE(error.code, QString("QUSHENG_DEVID"));
 }
 
 void FrameworkTest::integerListMixedMappings()
@@ -1241,7 +1267,7 @@ void FrameworkTest::fixedMotorActionTemplates()
             if (spec.value("editable").toBool()) {
                 ++editable;
                 if (spec.value("key").toString() == "devId") {
-                    QCOMPARE(spec.value("min").toInt(), 0x11); QCOMPARE(spec.value("max").toInt(), 0x1c);
+                    QCOMPARE(spec.value("min").toInt(), 0x11); QCOMPARE(spec.value("max").toInt(), 0x16);
                 } else {
                     QCOMPARE(spec.value("key").toString(), QString("positionUm"));
                     QCOMPARE(spec.value("min").toInt(), 0); QCOMPARE(spec.value("max").toInt(), 0xfffffe);
@@ -1627,21 +1653,21 @@ void FrameworkTest::perMappingMotorSelection()
         mapping.insert("operation", operation);
         const QString position = operation.startsWith("RELATIVE_") ? "distanceUm" : "positionUm";
         QJsonObject parameters{{position, QJsonObject{{"kind", "constant"}, {"value", 1000}}},
-                               {"devId", QJsonObject{{"kind", "constant"}, {"value", 0x1c}}}};
+                               {"devId", QJsonObject{{"kind", "constant"}, {"value", 0x16}}}};
         mapping.insert("parameters", parameters);
         config.root.insert("mappings", QJsonArray{mapping});
         config.root.insert("sdkDefaults", QJsonObject{{operation, QJsonObject{{"devId", 0x12}}}});
         QVERIFY2(config.validate(&error), qPrintable(error.message));
         ConversionPreview preview;
         QVERIFY2(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error), qPrintable(error.message));
-        QCOMPARE(preview.command.targetDevice, QString("28"));
-        QCOMPARE(quint8(preview.targetFrame.at(8)), quint8(0x1c));
+        QCOMPARE(preview.command.targetDevice, QString("22"));
+        QCOMPARE(quint8(preview.targetFrame.at(8)), quint8(0x16));
         UnifiedCommand snapshot = preview.command;
         parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x13}});
         mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
         QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
         QVERIFY(codec.encodeCommand(snapshot, &frame, &error));
-        QCOMPARE(quint8(frame.at(8)), quint8(0x1c));
+        QCOMPARE(quint8(frame.at(8)), quint8(0x16));
         QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
         QCOMPARE(preview.command.targetDevice, QString("19"));
         // Omitted selection retains operation presets, then device defaults.
@@ -1661,9 +1687,9 @@ void FrameworkTest::perMappingMotorSelection()
         parameters.insert("devId", QJsonObject{{"kind", "field"}, {"field", QString::fromUtf8(u8"位置")}});
         mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
         QVERIFY2(config.validate(&error), qPrintable(error.message));
-        QVERIFY(ConversionEngine(config).convert("/1A28R\r", false, &preview, &error));
-        QCOMPARE(preview.command.targetDevice, QString("28"));
-        QVERIFY(!ConversionEngine(config).convert("/1A29R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A22R\r", false, &preview, &error));
+        QCOMPARE(preview.command.targetDevice, QString("22"));
+        QVERIFY(!ConversionEngine(config).convert("/1A23R\r", false, &preview, &error));
         QVERIFY(preview.targetFrame.isEmpty());
     }
 }
@@ -1677,7 +1703,7 @@ void FrameworkTest::mappedMotorRelativePreflight()
         QJsonObject mapping = mappings.at(i).toObject();
         if (mapping.value("operation").toString() != "RELATIVE_FORWARD") continue;
         QJsonObject parameters = mapping.value("parameters").toObject();
-        parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x1a}});
+        parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x16}});
         mapping.insert("parameters", parameters); mappings[i] = mapping;
     }
     config.root.insert("mappings", mappings);
@@ -1686,10 +1712,10 @@ void FrameworkTest::mappedMotorRelativePreflight()
     preview.command.requestId = 1; manager.enqueue(preview.command);
     QTRY_COMPARE(transport.sent.size(), 1);
     QCOMPARE(quint8(transport.sent.first().at(7)), quint8(0x12));
-    QCOMPARE(quint8(transport.sent.first().at(8)), quint8(0x1a));
+    QCOMPARE(quint8(transport.sent.first().at(8)), quint8(0x16));
     transport.receive(motorReply(0, 1, 1000)); QTRY_COMPARE(transport.sent.size(), 2);
     QCOMPARE(quint8(transport.sent.last().at(7)), quint8(0x11));
-    QCOMPARE(quint8(transport.sent.last().at(8)), quint8(0x1a));
+    QCOMPARE(quint8(transport.sent.last().at(8)), quint8(0x16));
 }
 
 

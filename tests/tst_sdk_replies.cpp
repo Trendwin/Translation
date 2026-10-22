@@ -4,6 +4,7 @@
 class SdkRepliesTest : public QObject {
     Q_OBJECT
 private slots:
+    void sixMotorReports();
     void frameSample();
     void frameLimits();
     void replyLayouts_data();
@@ -28,6 +29,22 @@ void SdkRepliesTest::frameSample()
     QCOMPARE(QushengSdk::makeFrame(2, 1, 0, 0x11, QByteArray::fromHex("11410003e8004e20")), listed);
     QCOMPARE(QushengSdk::crc16(listed.left(listed.size() - 2)), quint16(0x27f8));
     QCOMPARE(QushengSdk::crc16(QByteArray("123456789")), quint16(0x29b1));
+}
+
+void SdkRepliesTest::sixMotorReports()
+{
+    QushengSdkReply reply; TranslationError error;
+    for (int id : {0x11, 0x16, 0x17, 0x1c}) {
+        QByteArray position = QByteArray::fromHex("11100004d2ffffff"); position[0] = char(id);
+        QByteArray fault = QByteArray::fromHex("11010203"); fault[0] = char(id);
+        const bool valid = id <= 0x16;
+        QCOMPARE(QushengSdk::decodeReport(0x17, position, &reply, &error), valid);
+        if (!valid) { QCOMPARE(error.code, QString("SDK_REPORT_DEVICE")); QVERIFY(reply.values.isEmpty()); }
+        QCOMPARE(QushengSdk::decodeReport(0x09, fault, &reply, &error), valid);
+        if (!valid) { QCOMPARE(error.code, QString("SDK_REPORT_DEVICE")); QVERIFY(reply.values.isEmpty()); }
+    }
+    // Other device families still have their own ranges.
+    QVERIFY(QushengSdk::decodeReport(0x09, QByteArray::fromHex("e0010203"), &reply, &error));
 }
 
 void SdkRepliesTest::frameLimits()
@@ -235,8 +252,8 @@ void SdkRepliesTest::reports()
     QCOMPARE(reply.values.value("errors").toList().at(0).toMap().value("faultCode").toUInt(), quint32(0x010203));
     QVERIFY(!QushengSdk::decodeReport(0x09, QByteArray(5, '\0'), &reply, &error));
     QVERIFY(!QushengSdk::decodeReport(0x09, QByteArray(), &reply, &error));
-    QVERIFY(QushengSdk::decodeReport(0x17, QByteArray::fromHex("1c100004d2ffffff"), &reply, &error));
-    QCOMPARE(reply.values.value("devId").toInt(), 0x1c); QCOMPARE(reply.values.value("motorState").toInt(), 1);
+    QVERIFY(QushengSdk::decodeReport(0x17, QByteArray::fromHex("16100004d2ffffff"), &reply, &error));
+    QCOMPARE(reply.values.value("devId").toInt(), 0x16); QCOMPARE(reply.values.value("motorState").toInt(), 1);
     QCOMPARE(reply.values.value("positionUm").toUInt(), quint32(1234));
     QCOMPARE(reply.values.value("feedbackPositionUm").toUInt(), quint32(0xffffff)); QVERIFY(reply.basicStatus.isEmpty());
     QVERIFY(!QushengSdk::decodeReport(0x17, QByteArray::fromHex("21100004d2ffffff"), &reply, &error));
