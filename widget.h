@@ -66,11 +66,10 @@ private:
     void resetMappingForm();
     bool readNewMapping(QJsonObject *mapping);
     void updateMappingSummary(int row, const QJsonObject &mapping);
-    void updateMappingSources();
+    void updateMappingSources(bool rebuildCounts = true);
     void updateMappingCounts();
     void updateListGuidance();
     void addNumericSources(QComboBox *box, const QJsonArray &omitted);
-    void updateItemSelector(QComboBox *source, QSpinBox *index);
     QJsonArray mappingOmittedFields() const;
     void fieldFormatChanged();
     bool synchronizeFieldNames();
@@ -119,7 +118,6 @@ private:
     QTableWidget *m_mappingCounts = nullptr;
     QMap<QString, int> m_listCounts;
     QComboBox *m_mappingSource = nullptr;
-    QSpinBox *m_mappingItemIndex = nullptr;
     QComboBox *m_mappingMotor = nullptr;
     QLineEdit *m_mappingValue = nullptr;
     QLineEdit *m_mappingMultiplier = nullptr;
