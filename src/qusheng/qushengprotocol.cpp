@@ -21,6 +21,14 @@ quint16 readBe16(const QByteArray &data, int at)
 quint16 QushengProtocol::crc16(const QByteArray &data)
 { return QushengSdk::crc16(data); }
 
+bool QushengProtocol::validateCommand(const UnifiedCommand &command, TranslationError *error) const
+{
+    QushengProtocol verifier;
+    verifier.setAddresses(m_destination, m_source);
+    QByteArray frame;
+    return verifier.encodeCommand(command, &frame, error);
+}
+
 QByteArray QushengProtocol::makeFrame(quint8 destination, quint8 source, quint8 sequence,
                                      quint8 command, const QByteArray &data)
 { return QushengSdk::makeFrame(destination, source, sequence, command, data); }

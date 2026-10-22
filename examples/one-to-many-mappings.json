@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "name": "Ordered one-to-many mapping example",
+  "external": {
+    "encoding": "ascii",
+    "header": "!",
+    "footer": "\\r",
+    "byteOrder": "big",
+    "fields": [
+      {
+        "name": "command",
+        "role": "command",
+        "type": "ascii",
+        "lengthMode": "delimited",
+        "delimiter": "="
+      },
+      {
+        "name": "values",
+        "role": "parameter",
+        "type": "integerList",
+        "lengthMode": "toFooter",
+        "min": 0,
+        "max": 8388607
+      }
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "TRIPLE",
+      "input": {
+        "parameterCounts": {
+          "values": 3
+        }
+      },
+      "steps": [
+        {
+          "operation": "MOTOR_FORWARD",
+          "parameters": {
+            "devId": {
+              "kind": "constant",
+              "value": 17
+            },
+            "positionUm": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 1
+            }
+          }
+        },
+        {
+          "operation": "QUSHENG_C1",
+          "parameters": {
+            "moduleIndex": {
+              "kind": "constant",
+              "value": 35
+            },
+            "xPosition": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 1
+            },
+            "yPosition": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 2
+            },
+            "zPosition": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 3
+            }
+          }
+        },
+        {
+          "operation": "MOTOR_FORWARD",
+          "parameters": {
+            "devId": {
+              "kind": "constant",
+              "value": 17
+            },
+            "positionUm": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      "commandCode": "SEQUENCE",
+      "input": {
+        "parameterCounts": {
+          "values": 3
+        }
+      },
+      "steps": [
+        {
+          "operation": "MOTOR_FORWARD",
+          "parameters": {
+            "devId": {
+              "kind": "constant",
+              "value": 18
+            },
+            "positionUm": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 2
+            }
+          }
+        },
+        {
+          "operation": "MOTOR_STOP",
+          "parameters": {
+            "devId": {
+              "kind": "constant",
+              "value": 18
+            }
+          }
+        },
+        {
+          "operation": "MOTOR_BACKWARD",
+          "parameters": {
+            "devId": {
+              "kind": "constant",
+              "value": 18
+            },
+            "positionUm": {
+              "kind": "field",
+              "field": "values",
+              "itemIndex": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "commandCode": "ONE",
+      "operation": "MOTOR_FORWARD",
+      "parameters": {
+        "positionUm": {
+          "kind": "field",
+          "field": "values",
+          "itemIndex": 1
+        },
+        "devId": {
+          "kind": "constant",
+          "value": 18
+        }
+      },
+      "input": {
+        "parameterCounts": {
+          "values": 1
+        }
+      }
+    }
+  ],
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "speedUmPerS": 4660,
+    "minPositionUm": 0,
+    "maxPositionUm": 60000
+  }
+}

@@ -12,6 +12,7 @@ class RequestManager : public QObject
 public:
     RequestManager(IInternalProtocol *protocol,ITransport *transport,QObject *parent=nullptr);
     void enqueue(const UnifiedCommand &command);
+    void enqueueGroup(const UnifiedCommandGroup &group);
     void cancel(quint64 requestId);
     void setTimeoutMs(int milliseconds) { m_ackTimeoutMs=milliseconds; }
     void setTimeouts(int sendMs,int ackMs);
@@ -19,7 +20,7 @@ public:
     bool deviceBusy() const { return m_deviceBusy; }
     // 只允许停止替代同一电机的运动等待；不能把不同目标或普通控制误当作可中断运动。
     bool canInterruptWithStop(const UnifiedCommand &command) const;
-    bool hasPendingRequests() const { return m_active || !m_queue.isEmpty(); }
+    bool hasPendingRequests() const { return m_active || m_groupActive || !m_queue.isEmpty(); }
 signals:
     void stateChanged(quint64 requestId,RequestState state,const QString &detail);
     void frameReady(quint64 requestId,const QByteArray &frame);
@@ -27,6 +28,8 @@ signals:
     // 每个匹配且已解码的回告立即交给界面；显示结果与释放运动请求是两件事。
     void replyReceived(const UnifiedResult &result);
     void completed(const UnifiedResult &result);
+    void groupCompleted(const UnifiedGroupResult &result);
+    void groupProgress(quint64 groupId,int stepNumber,int totalSteps,const QString &detail);
     void unsolicitedMessage(const ProtocolMessage &message);
     void protocolError(const TranslationError &error);
     void deviceBusyChanged(bool busy);
@@ -42,9 +45,16 @@ private:
     void startProbe();
     void setBusy(bool busy);
     bool interruptForStop();
+    void enqueueGroupInternal(const UnifiedCommandGroup &group, bool urgentStop);
+    void cancelQueuedGroup(const UnifiedCommandGroup &group, const TranslationError &error);
+    void finishGroup(const TranslationError &error = TranslationError());
     IInternalProtocol *m_protocol;
     ITransport *m_transport;
-    QQueue<UnifiedCommand> m_queue;
+    QQueue<UnifiedCommandGroup> m_queue;
+    UnifiedCommandGroup m_group;
+    int m_stepIndex = 0, m_acceptedSteps = 0;
+    bool m_groupActive = false, m_groupAborted = false, m_groupFinalEmitted = false, m_stepSucceeded = false;
+    TranslationError m_groupAbortError;
     UnifiedCommand m_current,m_probe;
     // completionEmitted 只表示结果信号是否已经发出；设备忙闲状态仍由手动 0x12 查询独立维护。
     bool m_active=false,m_probeActive=false,m_acked=false,m_completionEmitted=false,m_deviceBusy=false;

@@ -65,6 +65,11 @@ private:
     void addMappingRow(const QJsonObject &mapping = QJsonObject());
     void resetMappingForm();
     bool readNewMapping(QJsonObject *mapping);
+    bool readGroupMapping(QJsonObject *mapping);
+    bool commitMappingStep();
+    void loadMappingStep(int row);
+    void refreshMappingSteps();
+    void selectMappingStep(int row);
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources(bool rebuildCounts = true);
     void updateMappingCounts();
@@ -108,6 +113,13 @@ private:
     QTableWidget *m_fieldTable = nullptr;
     QTableWidget *m_mappingTable = nullptr;
     QGroupBox *m_mappingEditor = nullptr;
+    QTableWidget *m_mappingSteps = nullptr;
+    QComboBox *m_groupInputMode = nullptr;
+    QJsonArray m_stepDrafts;
+    QJsonObject m_groupInput;
+    QJsonObject m_stepOriginal;
+    int m_selectedStep = -1;
+    bool m_stepDirty = false, m_loadingStep = false, m_switchingStep = false;
     QLineEdit *m_mappingCode = nullptr;
     QComboBox *m_mappingOperation = nullptr;
     QLineEdit *m_mappingSearch = nullptr;

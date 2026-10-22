@@ -3,6 +3,7 @@
 
 #include <QByteArray>
 #include <QMap>
+#include <QList>
 #include <QString>
 #include <QVariant>
 
@@ -42,6 +43,23 @@ struct UnifiedResult
     TranslationError error;
 };
 
+struct UnifiedCommandGroup
+{
+    quint64 groupId = 0;
+    QList<UnifiedCommand> steps;
+};
+
+struct UnifiedGroupResult
+{
+    quint64 groupId = 0;
+    bool success = false;
+    int totalSteps = 0;
+    int acceptedSteps = 0;
+    int failedStep = 0;
+    int remainingSteps = 0;
+    TranslationError error;
+};
+
 // 编解码器解析出的协议消息。wireData 仅供诊断；是否匹配请求必须由协议实现判断。
 struct ProtocolMessage
 {
@@ -52,6 +70,7 @@ struct ProtocolMessage
 
 Q_DECLARE_METATYPE(RequestState)
 Q_DECLARE_METATYPE(UnifiedResult)
+Q_DECLARE_METATYPE(UnifiedGroupResult)
 Q_DECLARE_METATYPE(ProtocolMessage)
 
 #endif

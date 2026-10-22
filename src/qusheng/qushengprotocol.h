@@ -11,6 +11,7 @@ public:
     void setAddresses(quint8 destination, quint8 source) { m_destination=destination; m_source=source; }
     void resetSession() { m_nextSequence=0; m_hasPendingSequence=false; m_buffer.clear(); }
     bool encodeCommand(const UnifiedCommand &, QByteArray *, TranslationError *) const override;
+    bool validateCommand(const UnifiedCommand &, TranslationError *) const override;
     QList<ProtocolMessage> feedReceivedData(const QByteArray &, QList<TranslationError> *) override;
     bool matchesReply(const UnifiedCommand &, const ProtocolMessage &) const override;
     bool decodeReply(const UnifiedCommand &, const ProtocolMessage &, UnifiedResult *, TranslationError *) const override;

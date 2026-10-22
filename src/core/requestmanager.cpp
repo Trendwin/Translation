@@ -39,6 +39,10 @@ RequestManager::RequestManager(IInternalProtocol *protocol,ITransport *transport
     connect(m_transport,&ITransport::sendFinished,this,&RequestManager::onSendFinished);
     connect(m_transport,&ITransport::bytesReceived,this,&RequestManager::onBytesReceived);
     connect(m_transport,&ITransport::connectionChanged,this,&RequestManager::onConnectionChanged);
+    connect(this, &RequestManager::stateChanged, this, [this](quint64 id, RequestState, const QString &detail) {
+        if (m_active && id == m_current.requestId)
+            emit groupProgress(m_group.groupId, m_stepIndex + 1, m_group.steps.size(), detail);
+    });
 }
 
 void RequestManager::setTimeouts(int sendMs,int ackMs)
@@ -55,22 +59,61 @@ void RequestManager::setBusy(bool busy)
 
 void RequestManager::enqueue(const UnifiedCommand &command)
 {
-    // 按值入队保存本次命令快照，不在排到队首时重新读取用户正在编辑的配置。
-    if (command.operation == "MOTOR_STOP") {
-        // 停止后不应自动恢复同一电机已排队的运动；其他模块的控制/查询仍保留顺序。
-        for (int i = m_queue.size() - 1; i >= 0; --i) {
-            if (!sameMotor(m_queue.at(i), command) || !isMotion(m_queue.at(i)) || m_queue.at(i).operation == "MOTOR_STOP") continue;
-            const quint64 id = m_queue.takeAt(i).requestId;
-            UnifiedResult cancelled; cancelled.requestId = id;
-            cancelled.error = {"QUEUED_MOTION_STOPPED", QString::fromUtf8(u8"停止请求已取消同一电机尚未发送的运动")};
-            emit stateChanged(id, RequestState::Cancelled, cancelled.error.message); emit completed(cancelled);
+    UnifiedCommandGroup group; group.groupId = command.requestId; group.steps.append(command);
+    enqueueGroupInternal(group, command.operation == "MOTOR_STOP");
+}
+
+void RequestManager::enqueueGroup(const UnifiedCommandGroup &group)
+{
+    enqueueGroupInternal(group, group.steps.size() == 1 && group.steps.first().operation == "MOTOR_STOP");
+}
+
+void RequestManager::cancelQueuedGroup(const UnifiedCommandGroup &group, const TranslationError &error)
+{
+    for (const auto &command : group.steps) {
+        UnifiedResult result; result.requestId = command.requestId; result.error = error;
+        emit stateChanged(command.requestId, RequestState::Cancelled, error.message);
+        emit completed(result);
+    }
+    UnifiedGroupResult result; result.groupId = group.groupId; result.totalSteps = group.steps.size();
+    result.remainingSteps = group.steps.size(); result.error = error;
+    emit groupCompleted(result);
+}
+
+void RequestManager::enqueueGroupInternal(const UnifiedCommandGroup &group, bool urgentStop)
+{
+    if (group.steps.isEmpty() || group.steps.size() > 64) {
+        cancelQueuedGroup(group, {"GROUP_SIZE", QString::fromUtf8(u8"指令组必须包含1～64条指令")}); return;
+    }
+    for (int i = 0; i < group.steps.size(); ++i) {
+        TranslationError error;
+        if (!m_protocol->validateCommand(group.steps[i], &error)) {
+            error.message = QString::fromUtf8(u8"第%1条校验失败，整组未发送：%2").arg(i + 1).arg(error.message);
+            cancelQueuedGroup(group, error); return;
         }
-        m_queue.prepend(command);
+    }
+    if (urgentStop) {
+        const auto stop = group.steps.first();
+        const auto affected = [&stop](const UnifiedCommandGroup &candidate) {
+            for (const auto &command : candidate.steps)
+                if (command.operation != "MOTOR_STOP" && isMotion(command) && sameMotor(command, stop)) return true;
+            return false;
+        };
+        for (int i = m_queue.size() - 1; i >= 0; --i)
+            if (affected(m_queue[i])) cancelQueuedGroup(m_queue.takeAt(i),
+                {"QUEUED_MOTION_STOPPED", QString::fromUtf8(u8"停止请求已取消涉及同一电机的整组剩余指令")});
+        if (m_groupActive && affected(m_group)) {
+            m_groupAborted = true;
+            m_groupAbortError = {"MOTION_INTERRUPTED_BY_STOP", QString::fromUtf8(u8"外部停止请求已终止本组剩余指令；已发动作不回滚")};
+        }
+        m_queue.prepend(group);
         interruptForStop();
-    } else m_queue.enqueue(command);
-    emit stateChanged(command.requestId,RequestState::Queued,QString::fromUtf8(u8"请求已进入发送队列"));
+    } else m_queue.enqueue(group);
+    for (const auto &command : group.steps)
+        emit stateChanged(command.requestId, RequestState::Queued, QString::fromUtf8(u8"请求已进入发送队列"));
+    emit groupProgress(group.groupId, 0, group.steps.size(), QString::fromUtf8(u8"指令组已排队"));
     emit activityChanged();
-    QTimer::singleShot(0,this,&RequestManager::startNext);
+    QTimer::singleShot(0, this, &RequestManager::startNext);
 }
 
 bool RequestManager::canInterruptWithStop(const UnifiedCommand &command) const
@@ -81,19 +124,26 @@ bool RequestManager::canInterruptWithStop(const UnifiedCommand &command) const
 
 bool RequestManager::interruptForStop()
 {
-    if (m_writePending || m_queue.isEmpty() || !canInterruptWithStop(m_queue.head())) return false;
+    if (m_writePending || m_queue.isEmpty() || !canInterruptWithStop(m_queue.head().steps.first())) return false;
     // 只终止原运动的本地完成跟踪；此时设备可能仍在运动，不能清除占用或宣告原目标已完成。
     setBusy(true);
     failCurrent(RequestState::Cancelled, "MOTION_INTERRUPTED_BY_STOP", QString::fromUtf8(u8"原运动等待已被停止请求替代；原目标未确认完成"));
     // 在旧请求终止信号后恢复新停止请求的排队状态，界面仍显示存在待执行请求。
-    emit stateChanged(m_queue.head().requestId, RequestState::Queued, QString::fromUtf8(u8"即将发送停止命令"));
+    if (!m_queue.isEmpty()) emit stateChanged(m_queue.head().steps.first().requestId, RequestState::Queued, QString::fromUtf8(u8"即将发送停止命令"));
     return true;
 }
 
 void RequestManager::startNext()
 {
-    if(m_active || m_queue.isEmpty()) return;
-    m_current=m_queue.dequeue(); m_active=true; m_acked=false; m_probeActive=false; m_completionEmitted=false; m_preflight=false;
+    if (m_active || (!m_groupActive && m_queue.isEmpty())) return;
+    if (m_groupActive && m_groupAborted) { finishGroup(m_groupAbortError); m_groupActive = false; }
+    if (!m_groupActive && m_queue.isEmpty()) { emit activityChanged(); return; }
+    if (!m_groupActive) {
+        m_group = m_queue.dequeue(); m_groupActive = true; m_stepIndex = 0; m_acceptedSteps = 0;
+        m_groupAborted = false; m_groupFinalEmitted = false; m_groupAbortError = TranslationError();
+    }
+    m_current = m_group.steps[m_stepIndex];
+    m_active=true; m_acked=false; m_probeActive=false; m_completionEmitted=false; m_preflight=false; m_stepSucceeded=false;
     // 统一编号表示；显式SDK电机查询参数是本次实际查询对象，必须与忙状态归属一致。
     bool targetOk = false; uint target = m_current.targetDevice.toUInt(&targetOk);
     if (m_current.operation == "QUERY_MOTOR" && m_current.parameters.contains("devId"))
@@ -207,7 +257,8 @@ void RequestManager::onBytesReceived(const QByteArray &data)
             continue;
         }
         if(!result.success) { failCurrent(RequestState::Failed,result.error.code,result.error.message); continue; }
-        m_acked=true;
+        if (!m_acked) ++m_acceptedSteps;
+        m_acked=true; m_stepSucceeded=true;
         // 0x11 成功回告仅表示命令被接纳，不能合并为“动作完成”。
         emit stateChanged(m_current.requestId,RequestState::Acknowledged,QString::fromUtf8(u8"设备已接纳命令，但这不表示动作已完成"));
         if (!isMotion(m_current) && m_current.operation != "QUERY_MOTOR") {
@@ -242,6 +293,8 @@ void RequestManager::startProbe()
     // 内部查询只携带当前目标编号；地址/序号由同一适配器生成，不复用上次查询帧。
     if(!m_active || m_finishAfterWrite || !m_preflight || m_probeActive || m_writePending || !m_transport->isConnected()) return;
     m_probe=UnifiedCommand(); m_probe.requestId=m_current.requestId;
+    m_probe.destinationAddress = m_current.destinationAddress;
+    m_probe.sourceAddress = m_current.sourceAddress;
     m_probe.targetDevice=m_current.targetDevice; m_probe.operation="QUERY_MOTOR";
     m_probe.action=ActionType::Query;
     QByteArray frame; TranslationError error;
@@ -252,26 +305,52 @@ void RequestManager::startProbe()
     m_transport->sendBytes(m_current.requestId,frame);
 }
 
+void RequestManager::finishGroup(const TranslationError &error)
+{
+    if (m_groupFinalEmitted) return;
+    m_groupFinalEmitted = true;
+    UnifiedGroupResult result;
+    result.groupId = m_group.groupId; result.totalSteps = m_group.steps.size();
+    result.acceptedSteps = m_acceptedSteps; result.success = !error.isValid(); result.error = error;
+    result.failedStep = error.isValid() && m_active ? m_stepIndex + 1 : 0;
+    result.remainingSteps = error.isValid() ? qMax(0, m_group.steps.size() - m_stepIndex - (m_active ? 1 : 0)) : 0;
+    emit groupCompleted(result);
+}
+
 void RequestManager::finishCurrent(bool waitForWrite)
 {
-    // 结束本地请求不等于设备空闲，因此只清定时器/等待标志，保留未知运动占用。
-    // 延后启动下一请求，避免当前回告处理尚未退出就递归进入另一轮发送。
+    Q_UNUSED(waitForWrite);
     m_ackTimer.stop();
-    if (waitForWrite && m_writePending) { m_finishAfterWrite = true; return; }
+    // A failed/cancelled group stops immediately, but its pending write still owns the serial port.
+    if (m_writePending) {
+        m_finishAfterWrite = true;
+        if (m_groupAborted) emit groupProgress(m_group.groupId, m_stepIndex + 1, m_group.steps.size(),
+            QString::fromUtf8(u8"本组已停止，等待当前写出结束；若无响应请断开串口恢复，禁止抢写下一帧"));
+        return;
+    }
     m_sendTimer.stop();
-    m_active=false; m_probeActive=false; m_acked=false; m_preflight=false; m_writePending=false; m_sendAfterProbe=false; m_finishAfterWrite=false;
+    if (m_groupAborted) {
+        finishGroup(m_groupAbortError); m_groupActive = false;
+    } else if (m_stepSucceeded && m_stepIndex + 1 < m_group.steps.size()) {
+        ++m_stepIndex;
+    } else {
+        finishGroup(); m_groupActive = false;
+    }
+    m_active=false; m_probeActive=false; m_acked=false; m_preflight=false; m_sendAfterProbe=false; m_finishAfterWrite=false;
     emit activityChanged();
-    QTimer::singleShot(0,this,&RequestManager::startNext);
+    QTimer::singleShot(0, this, &RequestManager::startNext);
 }
 
 void RequestManager::failCurrent(RequestState state,const QString &code,const QString &detail)
 {
     if(!m_active) return;
     m_protocol->clearReceiveBuffer();
+    m_stepSucceeded = false; m_groupAborted = true; m_groupAbortError = {code, detail};
+    finishGroup(m_groupAbortError);
     UnifiedResult result; result.requestId=m_current.requestId; result.error={code,detail};
     emit stateChanged(result.requestId,state,detail);
     // 回告先于写出完成时仍可能发生本地写出失败；不重复业务结果，但保留错误。
-    if(!m_completionEmitted) emit completed(result);
+    if(!m_completionEmitted) { m_completionEmitted = true; emit completed(result); }
     else emit protocolError(result.error);
     finishCurrent();
 }
@@ -279,20 +358,40 @@ void RequestManager::failCurrent(RequestState state,const QString &code,const QS
 void RequestManager::cancel(quint64 requestId)
 {
     // 已发送运动的取消只停止本地等待，保留未知占用；排队请求则尚未产生设备效果。
-    if(m_active && m_current.requestId==requestId) {
+    bool activeMatches = m_group.groupId == requestId;
+    if (m_groupActive) for (const auto &step : m_group.steps) activeMatches |= step.requestId == requestId;
+    if (m_groupActive && activeMatches && !m_active) {
+        m_groupAborted = true; m_groupAbortError = {"CANCELLED", QString::fromUtf8(u8"整组已在步骤之间取消，剩余指令未发送")};
+        finishGroup(m_groupAbortError); m_groupActive = false; emit activityChanged();
+        QTimer::singleShot(0, this, &RequestManager::startNext); return;
+    }
+    if(m_active && activeMatches) {
         if(isMotion(m_current) && (m_acked || m_sendTimer.isActive() || m_ackTimer.isActive())) setBusy(true);
         failCurrent(RequestState::Cancelled,"LOCAL_WAIT_CANCELLED",QString::fromUtf8(u8"已取消本地等待；未向设备发送停止命令")); return;
     }
-    for(int i=0;i<m_queue.size();++i) if(m_queue.at(i).requestId==requestId) {
-        m_queue.removeAt(i); UnifiedResult result; result.requestId=requestId;
-        result.error={"CANCELLED",QString::fromUtf8(u8"排队请求已在发送前取消")};
-        emit stateChanged(requestId,RequestState::Cancelled,result.error.message); emit completed(result); emit activityChanged(); return;
+    for (int i = 0; i < m_queue.size(); ++i) {
+        bool matches = m_queue[i].groupId == requestId;
+        for (const auto &step : m_queue[i].steps) matches |= step.requestId == requestId;
+        if (matches) {
+            cancelQueuedGroup(m_queue.takeAt(i), {"CANCELLED", QString::fromUtf8(u8"整组已在发送前取消")});
+            if (m_groupActive && !m_groupFinalEmitted && m_groupAbortError.code == "MOTION_INTERRUPTED_BY_STOP") {
+                bool stopped = false;
+                for (const auto &queued : m_queue) {
+                    if (queued.steps.size() != 1 || queued.steps.first().operation != "MOTOR_STOP") continue;
+                    for (const auto &step : m_group.steps)
+                        stopped |= step.operation != "MOTOR_STOP" && isMotion(step) && sameMotor(step, queued.steps.first());
+                }
+                if (!stopped) { m_groupAborted = false; m_groupAbortError = TranslationError(); }
+            }
+            emit activityChanged(); return;
+        }
     }
 }
 
 void RequestManager::onConnectionChanged(bool connected,const QString &reason)
 {
     if(!connected && m_active) {
+        m_writePending = false;
         if(isMotion(m_current)) setBusy(true);
         failCurrent(RequestState::Failed,"DISCONNECTED",reason);
     }

@@ -9,6 +9,7 @@ class TranslationService : public QObject
 public:
     TranslationService(RequestManager *requests, QObject *parent = nullptr);
     quint64 submitUnifiedCommand(UnifiedCommand command);
+    quint64 submitUnifiedGroup(QList<UnifiedCommand> commands);
     void cancelRequest(quint64 requestId) { m_requests->cancel(requestId); }
 signals:
     void requestStateChanged(quint64 requestId, RequestState state, const QString &detail);
@@ -16,6 +17,8 @@ signals:
     void rawDataReceived(const QByteArray &data);
     void replyReceived(const UnifiedResult &result);
     void completed(const UnifiedResult &result);
+    void groupCompleted(const UnifiedGroupResult &result);
+    void groupProgress(quint64 groupId,int stepNumber,int totalSteps,const QString &detail);
     void errorOccurred(quint64 requestId, const TranslationError &error);
     void unsolicitedMessage(const ProtocolMessage &message);
 private:
