@@ -195,7 +195,7 @@
           "editable": false,
           "optional": false,
           "min": 17,
-          "max": 28,
+          "max": 22,
           "defaultSource": "device.devId"
         },
         {
@@ -265,11 +265,11 @@
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "description": "D0；步进电机设备编号 0x11～0x16。",
           "editable": false,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 22
         }
       ],
       "note": "电机编号使用设备与连接页面的确认值。"
@@ -287,11 +287,11 @@
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "description": "D0；步进电机设备编号 0x11～0x16。",
           "editable": true,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 22
         },
         {
           "key": "hardwareFlags",
@@ -407,11 +407,11 @@
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "description": "D0；步进电机设备编号 0x11～0x16。",
           "editable": true,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 22
         }
       ],
       "note": ""
@@ -429,11 +429,11 @@
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "description": "D0；步进电机设备编号 0x11～0x16。",
           "editable": true,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 22
         },
         {
           "key": "persistent",
@@ -601,11 +601,11 @@
           "key": "devId",
           "label": "电机编号",
           "type": "uint8",
-          "description": "D0；步进电机设备编号 0x11～0x1C。",
+          "description": "D0；步进电机设备编号 0x11～0x16。",
           "editable": true,
           "optional": false,
           "min": 17,
-          "max": 28
+          "max": 22
         }
       ],
       "note": ""
@@ -1902,11 +1902,11 @@
         "key": "devId",
         "label": "电机编号",
         "type": "uint8",
-        "description": "D0；步进电机设备编号 0x11～0x1C。",
+        "description": "D0；步进电机设备编号 0x11～0x16。",
         "editable": true,
         "optional": false,
         "min": 17,
-        "max": 28
+        "max": 22
       },
       {
         "key": "mode",

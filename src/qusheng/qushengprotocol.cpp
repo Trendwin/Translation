@@ -51,7 +51,7 @@ bool QushengProtocol::encodeCommand(const UnifiedCommand &command, QByteArray *f
     if (QushengCommandCatalog::usesMotionEditor(command.operation) || control) {
         const bool relative = command.operation == "RELATIVE_FORWARD" || command.operation == "RELATIVE_BACKWARD";
         bool idOk = false; const uint id = command.targetDevice.toUInt(&idOk);
-        if (!idOk || id < 0x11 || id > 0x1c) {
+        if (!idOk || id < 0x11 || id > 0x16) {
             *error = {"QUSHENG_DEVID", QString::fromUtf8(u8"电机DevID无效")}; return false;
         }
         const QString positionKey = relative ? QStringLiteral("distanceUm") : QStringLiteral("positionUm");

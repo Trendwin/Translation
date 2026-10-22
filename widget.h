@@ -68,6 +68,7 @@ private:
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources();
     void updateMappingCounts();
+    void updateListGuidance();
     void addNumericSources(QComboBox *box, const QJsonArray &omitted);
     void updateItemSelector(QComboBox *source, QSpinBox *index);
     QJsonArray mappingOmittedFields() const;
@@ -114,6 +115,7 @@ private:
     QTableWidget *m_mappingParameters = nullptr;
     QLabel *m_mappingHint = nullptr;
     QGroupBox *m_mappingCountsGroup = nullptr;
+    QLabel *m_mappingListGuidance = nullptr;
     QTableWidget *m_mappingCounts = nullptr;
     QMap<QString, int> m_listCounts;
     QComboBox *m_mappingSource = nullptr;
@@ -129,6 +131,7 @@ private:
     QSpinBox *m_destination = nullptr;
     QSpinBox *m_source = nullptr;
     QSpinBox *m_devId = nullptr;
+    bool m_unresolvedMotorId = false;
     QSpinBox *m_action = nullptr;
     QSpinBox *m_speed = nullptr;
     QSpinBox *m_minPosition = nullptr;

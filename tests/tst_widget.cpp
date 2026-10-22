@@ -43,6 +43,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void sixMotorDraftRecoveryAndImport();
+    void newMappingListGuidance();
     void integerListMappingLifecycle();
     void integerListFieldAdaptationAndDebugSend();
     void initTestCase();
@@ -1082,6 +1084,93 @@ static QJsonObject listExample()
     return QJsonDocument::fromJson(file.readAll()).object();
 }
 
+void WidgetTest::sixMotorDraftRecoveryAndImport()
+{
+    const QString path = freshDraftPath(); auto original = listExample();
+    auto device = original.value("device").toObject(); device.insert("devId", 0x1c); original.insert("device", device);
+    QFile old(path); QVERIFY(old.open(QIODevice::WriteOnly)); old.write(QJsonDocument(original).toJson()); old.close();
+    const auto bytes = draftBytes(path); Widget widget(nullptr, path);
+    QCOMPARE(draftBytes(path), bytes); QCOMPARE(draftRoot(widget), original);
+    auto *id = widget.findChild<QSpinBox *>("defaultMotorId"); QVERIFY(id); QCOMPARE(id->maximum(), 0x16);
+    QVERIFY(id->text().contains(QString::fromUtf8(u8"需重选"))); QVERIFY(id->text().contains("0x1C"));
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"重新选择")));
+    auto *input = widget.findChild<QLineEdit *>("customerInput"); input->setText("!XYZ=20,30,40\\r");
+    widget.findChild<QTableWidget *>("fieldTable")->item(1, 7)->setText("0"); // Force the unsaved-form path too.
+    button(widget, "parseFormatButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("values = [20, 30, 40]"));
+    button(widget, "saveConfig")->click(); QCOMPARE(draftBytes(path), bytes);
+    for (const char *name : {"previewButton", "sendButton", "queryButton"}) {
+        button(widget, name)->click();
+        QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+        QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"物理电机编号无效")));
+        QCOMPARE(draftBytes(path), bytes);
+    }
+    id->setValue(0x16); button(widget, "saveConfig")->click();
+    QCOMPARE(draftRoot(widget).value("device").toObject().value("devId").toInt(), 0x16);
+    QVERIFY(!id->text().contains(QString::fromUtf8(u8"需重选"))); QCOMPARE(id->minimum(), 0x11);
+    const auto saved = draftRoot(widget);
+    const auto savedBytes = draftBytes(path);
+    for (int kind = 0; kind < 3; ++kind) {
+        auto invalid = listExample();
+        if (kind == 0) invalid.insert("device", device);
+        if (kind == 1) invalid.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"devId", 0x17}}}});
+        if (kind == 2) {
+            auto maps = invalid.value("mappings").toArray(); auto mapping = maps[0].toObject(); auto params = mapping.value("parameters").toObject();
+            params.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 0x1c}}); mapping.insert("parameters", params); maps[0] = mapping; invalid.insert("mappings", maps);
+        }
+        const QString sourcePath = freshDraftPath(); QFile source(sourcePath); QVERIFY(source.open(QIODevice::WriteOnly)); source.write(QJsonDocument(invalid).toJson()); source.close();
+        const auto sourceBytes = draftBytes(sourcePath); bool seen = false;
+        QTimer::singleShot(0, &widget, [&widget, &seen, sourcePath]() {
+            auto *dialog = widget.findChild<QFileDialog *>(); if (!dialog) return;
+            seen = true; dialog->selectFile(sourcePath); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(widget, "importConfig")->click(); QVERIFY(seen);
+        QCOMPARE(draftRoot(widget), saved); QCOMPARE(draftBytes(path), savedBytes); QCOMPARE(draftBytes(sourcePath), sourceBytes);
+        QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"导入失败")));
+    }
+}
+
+void WidgetTest::newMappingListGuidance()
+{
+    Widget widget(nullptr, freshDraftPath()); applyRoot(widget, listExample()); widget.resize(1100, 740); widget.show();
+    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource"); source->setCurrentIndex(0);
+    auto *index = widget.findChild<QSpinBox *>("mappingItemIndex");
+    auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts");
+    qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
+    auto *guidance = widget.findChild<QLabel *>("mappingListGuidance"); QVERIFY(guidance);
+    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"values需3项")));
+    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"解析格式")));
+    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"先选列表来源")));
+    QVERIFY(!index->isHidden()); QVERIFY(!index->isEnabled());
+    QVERIFY(widget.findChild<QLabel *>("newMappingHint")->text().contains(QString::fromUtf8(u8"不会更新上方")));
+    auto *motors = widget.findChild<QComboBox *>("mappingMotor"); QCOMPARE(motors->count(), 7);
+    QCOMPARE(motors->findData(0x17), -1); QCOMPARE(motors->findData(0x1c), -1); QVERIFY(motors->findData(0x16) >= 0);
+    const auto existing = mappingRows(widget);
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("list-three-no-source.png")));
+    }
+    source->setCurrentIndex(source->findData("values")); index->setValue(2);
+    QVERIFY(index->isEnabled()); QVERIFY(guidance->text().contains(QString::fromUtf8(u8"目标位置取values第2项")));
+    if (!render.isEmpty()) {
+        QCoreApplication::processEvents(); QVERIFY(widget.grab().save(QDir(render).filePath("list-three-second-item.png")));
+    }
+    qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(1);
+    QCOMPARE(index->value(), 2); QVERIFY(guidance->text().contains(QString::fromUtf8(u8"超出输入项数")));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("NEW"); button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget), existing);
+    qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
+    button(widget, "saveConfig")->click(); QCOMPARE(mappingRows(widget), existing); // A new form never edits existing mappings.
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), existing.size() + 1);
+    button(widget, "saveConfig")->click(); widget.findChild<QLineEdit *>("customerInput")->setText("!NEW=20,30,40\\r");
+    button(widget, "previewButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"第 2 项")));
+    const auto frame = QByteArray::fromHex(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().toLatin1());
+    QCOMPARE(frame.mid(13, 3), QByteArray::fromHex("00001e"));
+}
+
 void WidgetTest::integerListMappingLifecycle()
 {
     const QString path = freshDraftPath(), exported = freshDraftPath();
@@ -1243,7 +1332,7 @@ void WidgetTest::perMappingMotorLifecycle()
     const QJsonArray original = mappingRows(widget);
     auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *motor = widget.findChild<QComboBox *>("mappingMotor");
-    QVERIFY(motor); QCOMPARE(motor->count(), 13); QCOMPARE(motor->currentData().toInt(), 0);
+    QVERIFY(motor); QCOMPARE(motor->count(), 7); QCOMPARE(motor->currentData().toInt(), 0);
     const QStringList actions{"MOTOR_FORWARD", "MOTOR_STOP", "MOTOR_BACKWARD", "MOTOR_RESET"};
     for (int index = 0; index < actions.size(); ++index) {
         operation->setCurrentIndex(operation->findData(actions.at(index)));
@@ -1286,7 +1375,7 @@ void WidgetTest::perMappingMotorLifecycle()
     if (!renderDir.isEmpty()) {
         widget.resize(1100, 740); widget.show();
         widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
-        motor->setCurrentIndex(motor->findData(0x1c));
+        motor->setCurrentIndex(motor->findData(0x16));
         QCoreApplication::processEvents(); QDir().mkpath(renderDir);
         QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-motor-selection.png")));
     }

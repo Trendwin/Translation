@@ -156,7 +156,7 @@ void selectData(QComboBox *box, const QString &data)
 
 
 bool isListSource(const QComboBox *box)
-{ return box->currentData(Qt::UserRole + 1).toBool(); }
+{ return box && box->currentData(Qt::UserRole + 1).toBool(); }
 
 void restoreSource(QComboBox *box, const QString &name, bool list)
 {
@@ -373,6 +373,10 @@ void Widget::buildUi()
     m_mappingEditor = new QGroupBox(QString::fromUtf8(u8"添加新映射"), this);
     m_mappingEditor->setObjectName("mappingEditor");
     auto *editorLayout = new QVBoxLayout(m_mappingEditor);
+    m_mappingEditor->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto *newMappingHint = new QLabel(QString::fromUtf8(u8"仅添加新映射，不会更新上方已有映射；修改原项请删除后重建。"), this);
+    newMappingHint->setObjectName("newMappingHint"); newMappingHint->setWordWrap(true);
+    editorLayout->addWidget(newMappingHint);
     auto *editorForm = new QFormLayout;
     m_mappingCode = new QLineEdit(this); m_mappingCode->setObjectName("mappingCode");
     m_mappingCode->setToolTip(QString::fromUtf8(u8"填写客户命令码本身；不要填写地址、帧头或帧尾。"));
@@ -398,7 +402,7 @@ void Widget::buildUi()
     auto *searchLine = new QHBoxLayout; searchLine->addWidget(m_mappingSearch);
     m_mappingParameters = new QTableWidget(this); m_mappingParameters->setObjectName("mappingParameters");
     m_mappingParameters->setColumnCount(4);
-    m_mappingParameters->setHorizontalHeaderLabels({QString::fromUtf8(u8"趋盛参数"), QString::fromUtf8(u8"取值来源"), QString::fromUtf8(u8"固定值"), QString::fromUtf8(u8"列表项号")});
+    m_mappingParameters->setHorizontalHeaderLabels({QString::fromUtf8(u8"趋盛参数"), QString::fromUtf8(u8"取值来源"), QString::fromUtf8(u8"固定值"), QString::fromUtf8(u8"取第几项")});
     m_mappingParameters->verticalHeader()->hide(); m_mappingParameters->setMinimumHeight(100); m_mappingParameters->setMaximumHeight(190);
     m_mappingParameters->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_mappingParameters->horizontalHeaderItem(0)->setToolTip(QString::fromUtf8(u8"趋盛参数。"));
@@ -412,7 +416,7 @@ void Widget::buildUi()
     m_mappingItemIndex->setToolTip(QString::fromUtf8(u8"从1开始选择列表项，不能超过本条映射设置的输入项数。"));
     m_mappingMotor = new QComboBox(this); m_mappingMotor->setObjectName("mappingMotor");
     m_mappingMotor->addItem(QString::fromUtf8(u8"设备默认"), 0);
-    for (int id = 0x11; id <= 0x1c; ++id)
+    for (int id = 0x11; id <= 0x16; ++id)
         m_mappingMotor->addItem(QStringLiteral("0x%1").arg(QString::number(id, 16).toUpper()), id);
     m_mappingMotor->setToolTip(QString::fromUtf8(u8"仅设置本条映射的电机。设备默认沿用 SDK 预置、设备参数或软件初始值。"));
     m_mappingValue = new QLineEdit(this); m_mappingValue->setObjectName("mappingValue");
@@ -424,11 +428,11 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"趋盛指令"), m_mappingOperation);
     editorForm->addRow(QString::fromUtf8(u8"电机编号"), m_mappingMotor);
     editorForm->addRow(QString::fromUtf8(u8"取值来源"), m_mappingSource);
-    editorForm->addRow(QString::fromUtf8(u8"列表项号"), m_mappingItemIndex);
+    editorForm->addRow(QString::fromUtf8(u8"取第几项"), m_mappingItemIndex);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
     editorLayout->addLayout(editorForm);
-    m_mappingCountsGroup = new QGroupBox(QString::fromUtf8(u8"列表输入项数（本条命令）"), this);
+    m_mappingCountsGroup = new QGroupBox(QString::fromUtf8(u8"新映射接收的参数项数"), this);
     auto *countsLayout = new QVBoxLayout(m_mappingCountsGroup);
     countsLayout->setContentsMargins(4, 4, 4, 4);
     m_mappingCounts = new QTableWidget(this); m_mappingCounts->setObjectName("mappingParameterCounts");
@@ -438,6 +442,11 @@ void Widget::buildUi()
     m_mappingCounts->verticalHeader()->hide();
     m_mappingCounts->setToolTip(QString::fromUtf8(u8"列表用英文逗号分隔，例如50为1项，20,20,20为3项。实际项数必须完全相同，即使部分目标固定或重复引用。"));
     countsLayout->addWidget(m_mappingCounts);
+    m_mappingCountsGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    m_mappingListGuidance = new QLabel(this);
+    m_mappingListGuidance->setObjectName("mappingListGuidance");
+    m_mappingListGuidance->setWordWrap(true);
+    countsLayout->addWidget(m_mappingListGuidance);
     editorLayout->addWidget(m_mappingCountsGroup);
     editorLayout->addWidget(m_mappingParameters);
     m_mappingHint = new QLabel(QString::fromUtf8(u8"模块编号不是物理电机编号。三个位置都须设置，固定0表示位置0；三轴速度沿用设备页默认运动速度，单位由下位机配置决定。"), this);
@@ -445,6 +454,7 @@ void Widget::buildUi()
     m_mappingHint->setWordWrap(true);
     editorLayout->addWidget(m_mappingHint);
     mappingLayout->addWidget(m_mappingEditor);
+    mappingLayout->addStretch();
     auto *mappingButtons = new QHBoxLayout;
     auto *addMapping = new QPushButton(QString::fromUtf8(u8"添加命令映射"), this);
     addMapping->setObjectName("addMapping");
@@ -463,14 +473,14 @@ void Widget::buildUi()
     auto *deviceForm = new QFormLayout(deviceGroup);
     m_destination = new QSpinBox(this); m_destination->setRange(1, 255);
     m_source = new QSpinBox(this); m_source->setRange(1, 255);
-    m_devId = new QSpinBox(this); m_devId->setRange(0x11, 0x1c); m_devId->setDisplayIntegerBase(16);
+    m_devId = new QSpinBox(this); m_devId->setObjectName("defaultMotorId"); m_devId->setRange(0x11, 0x16); m_devId->setDisplayIntegerBase(16);
     m_action = new QSpinBox(this); m_action->setObjectName("legacyAbsoluteAction"); m_action->setRange(1, 3); m_action->setSingleStep(2);
     m_speed = new QSpinBox(this); m_speed->setObjectName("defaultMotorSpeed"); m_speed->setRange(1, 0xfffffe);
     m_minPosition = new QSpinBox(this); m_minPosition->setRange(0, 0xfffffe);
     m_maxPosition = new QSpinBox(this); m_maxPosition->setRange(0, 0xfffffe);
     m_destination->setToolTip(QString::fromUtf8(u8"控制板地址，范围 1–255，必须与软件源地址不同。"));
     m_source->setToolTip(QString::fromUtf8(u8"软件地址，范围 1–255。"));
-    m_devId->setToolTip(QString::fromUtf8(u8"电机编号 0x11–0x1C，按设备资料确认。"));
+    m_devId->setToolTip(QString::fromUtf8(u8"电机编号 0x11–0x16，按设备资料确认。"));
     m_action->setToolTip(QString());
     m_speed->setToolTip(QString());
     m_minPosition->setToolTip(QString::fromUtf8(u8"设备位置数值下限，与目标位置使用同一单位。"));
@@ -717,6 +727,12 @@ void Widget::connectSignals()
         connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
             markDraftDirty();
         });
+    connect(m_devId, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (!m_loadingUi && m_unresolvedMotorId && value >= 0x11) {
+            m_unresolvedMotorId = false;
+            m_devId->setSpecialValueText(QString()); m_devId->setMinimum(0x11);
+        }
+    });
     connect(m_connectButton, &QPushButton::clicked, this, [this]() {
         if (m_transport->isConnected()) m_transport->close();
         else if (!m_port->currentData().toString().isEmpty())
@@ -1265,12 +1281,14 @@ void Widget::updateMappingCounts()
         m_mappingCounts->setCellWidget(row, 1, count);
         connect(count, QOverload<int>::of(&QSpinBox::valueChanged), this, [this, name](int value) {
             m_listCounts.insert(name, value);
+            updateListGuidance();
         });
     }
     m_mappingCounts->setFixedHeight(qMin(126, (m_mappingCounts->rowCount() + 1) * 30 + 6));
     m_mappingCountsGroup->setVisible(m_mappingCounts->rowCount() > 0);
     // Leave room for the list count and all four XYZ parameters in the normal window.
-    m_mappingTable->setMaximumHeight(m_mappingCounts->rowCount() > 0 ? 180 : QWIDGETSIZE_MAX);
+    m_mappingTable->setMinimumHeight(m_mappingCounts->rowCount() > 0 ? 110 : 160);
+    m_mappingTable->setMaximumHeight(m_mappingCounts->rowCount() > 0 ? 120 : QWIDGETSIZE_MAX);
 }
 
 void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
@@ -1285,12 +1303,42 @@ void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
     }
 }
 
+void Widget::updateListGuidance()
+{
+    if (!m_mappingListGuidance) return;
+    QStringList counts;
+    for (int row = 0; row < m_mappingCounts->rowCount(); ++row) {
+        auto *count = qobject_cast<QSpinBox *>(m_mappingCounts->cellWidget(row, 1));
+        counts.append(QString::fromUtf8(u8"%1需%2项").arg(m_mappingCounts->item(row, 0)->text()).arg(count->value()));
+    }
+    QString feedback;
+    if (isMotionEditor(m_mappingOperation->currentData().toString())) {
+        feedback = isListSource(m_mappingSource)
+            ? QString::fromUtf8(u8"目标位置取%1第%2项").arg(m_mappingSource->currentData().toString()).arg(m_mappingItemIndex->value())
+            : m_mappingSource->currentData().toString() == "@constant"
+              ? QString::fromUtf8(u8"目标位置使用固定值")
+              : !m_mappingSource->currentData().toString().isEmpty() && m_mappingSource->currentData().toString() != "@none"
+                ? QString::fromUtf8(u8"目标位置取字段%1").arg(m_mappingSource->currentData().toString())
+              : QString::fromUtf8(u8"先选列表来源，再选“取第几项”");
+        if (isListSource(m_mappingSource) && m_mappingItemIndex->value() > m_listCounts.value(m_mappingSource->currentData().toString()))
+            feedback += QString::fromUtf8(u8"（项号超出输入项数，需修改；未自动改绑）");
+        feedback += QString::fromUtf8(u8"；单电机动作只设置一个目标位置，不会自动生成三电机或XYZ动作。");
+    } else if (m_mappingOperation->currentData().toString() == "QUSHENG_C1") {
+        feedback = QString::fromUtf8(u8"XYZ三轴分别选择列表项或固定值，不会按项数自动分配。");
+    } else {
+        feedback = QString::fromUtf8(u8"各目标参数还需选择列表来源和项号，或固定值。");
+    }
+    m_mappingListGuidance->setText(QString::fromUtf8(u8"20,30,40是3项。%1；仅在转换预览/发送时检查数量，“解析格式”显示实际项数。\n%2")
+        .arg(counts.join(QString::fromUtf8(u8"；")), feedback));
+}
+
 void Widget::updateItemSelector(QComboBox *source, QSpinBox *index)
 {
     const bool list = isListSource(source);
     index->setEnabled(list);
     if (list && !source->currentText().startsWith(QString::fromUtf8(u8"来源不可用")))
         source->setItemText(source->currentIndex(), QString::fromUtf8(u8"%1 · 第 %2 项").arg(source->currentData().toString()).arg(index->value()));
+    updateListGuidance();
 }
 
 void Widget::updateMappingSources()
@@ -1334,12 +1382,13 @@ void Widget::updateMappingControls()
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row)
         listSources |= isListSource(qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)));
     m_mappingParameters->setColumnHidden(3, !listSources);
-    const bool indexedMotion = motion && isListSource(m_mappingSource);
+    const bool indexedMotion = motion && (m_mappingCounts->rowCount() > 0 || isListSource(m_mappingSource));
     m_mappingItemIndex->setVisible(indexedMotion);
     for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
         if (auto *form = qobject_cast<QFormLayout *>(m_mappingEditor->layout()->itemAt(i)->layout()))
             if (QWidget *label = form->labelForField(m_mappingItemIndex)) label->setVisible(indexedMotion);
     m_mappingHint->setVisible(operation == "QUSHENG_C1");
+    updateListGuidance();
     const bool motor = motion || QushengCommandCatalog::isStopOrReset(operation);
     m_mappingMotor->setVisible(motor);
     for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
@@ -1492,7 +1541,15 @@ void Widget::loadUiFromDraft()
     const QJsonObject device = m_draftRoot.value("device").toObject();
     m_destination->setValue(device.value("destination").toInt(2));
     m_source->setValue(device.value("source").toInt(1));
-    m_devId->setValue(device.value("devId").toInt(0x11));
+    const QJsonValue storedId = device.value("devId");
+    m_unresolvedMotorId = device.contains("devId") && (!storedId.isDouble()
+        || storedId.toDouble() != storedId.toInt() || storedId.toInt() < 0x11 || storedId.toInt() > 0x16);
+    m_devId->setMinimum(m_unresolvedMotorId ? 0x10 : 0x11);
+    const QString originalId = storedId.isDouble() && storedId.toDouble() == storedId.toInt() && storedId.toInt() >= 0
+        ? "0x" + QString::number(storedId.toInt(), 16).toUpper() : storedId.toVariant().toString();
+    m_devId->setSpecialValueText(m_unresolvedMotorId
+        ? QString::fromUtf8(u8"需重选（原值%1）").arg(originalId) : QString());
+    m_devId->setValue(m_unresolvedMotorId ? 0x10 : storedId.toInt(0x11));
     m_action->setValue(device.value("absoluteAction").toInt(1));
     m_speed->setValue(device.value("speedUmPerS").toInt(1000));
     m_minPosition->setValue(device.value("minPositionUm").toInt(0));
@@ -1525,6 +1582,10 @@ bool Widget::saveConfiguration()
 
 bool Widget::saveUiToDraft()
 {
+    if (m_unresolvedMotorId) {
+        m_validationState->setText(QString::fromUtf8(u8"旧电机编号无效，原配置已保留；请在设备页重新选择0x11～0x16，再保存或发送。"));
+        return false;
+    }
     if (m_jsonDirty) {
         m_validationState->setText(QString::fromUtf8(u8"保存失败：请先应用 JSON"));
         appendLog(m_validationState->text());
@@ -1608,7 +1669,7 @@ bool Widget::collectUiDraft(QJsonObject *draft)
     QJsonObject device = root.value("device").toObject();
     const QJsonObject deviceValues{
         {"destination", m_destination->value()}, {"source", m_source->value()},
-        {"devId", m_devId->value()}, {"absoluteAction", m_action->value()},
+        {"devId", m_unresolvedMotorId ? device.value("devId") : QJsonValue(m_devId->value())}, {"absoluteAction", m_action->value()},
         {"speedUmPerS", m_speed->value()}, {"minPositionUm", m_minPosition->value()},
         {"maxPositionUm", m_maxPosition->value()}};
     for (auto it = deviceValues.begin(); it != deviceValues.end(); ++it) device.insert(it.key(), it.value());
@@ -1807,6 +1868,11 @@ void Widget::importDraft()
     if (ProtocolConfig::retiredFormat(document.object())) {
         m_validationState->setText(QString::fromUtf8(u8"导入失败：UNSUPPORTED_FORMAT。模板与样例格式已停用；当前草稿和原文件未改变，请导入顺序字段配置。"));
         appendLog(m_validationState->text()); return;
+    }
+    ProtocolConfig candidate; candidate.root = document.object(); TranslationError motorError;
+    if (!candidate.validateMotorIds(&motorError)) {
+        m_validationState->setText(QString::fromUtf8(u8"导入失败：%1；当前草稿与原文件未改变。").arg(motorError.message));
+        appendLog(motorError.code + ": " + motorError.message); return;
     }
     if (!persistDraft(document.object())) return;
     m_draftRoot = document.object();

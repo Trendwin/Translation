@@ -5,6 +5,7 @@
 class SdkRequestTest : public QObject {
     Q_OBJECT
 private slots:
+    void sixPhysicalMotors();
     void coverage();
     void protocolPayloads_data();
     void protocolPayloads();
@@ -42,6 +43,37 @@ void SdkRequestTest::coverage()
     QVERIFY(QushengSdk::definition(0xff).name.isEmpty());
 }
 
+void SdkRequestTest::sixPhysicalMotors()
+{
+    QushengSdkRequest request; TranslationError error;
+    for (int id = 0x11; id <= 0x16; ++id) {
+        for (int code : {0x11, 0x12, 0x14, 0x16}) {
+            const QVariantMap values = code == 0x11 ? QVariantMap{{"positionUm", 50}, {"devId", id}} : QVariantMap{{"devId", id}};
+            QVERIFY2(QushengSdk::buildRequest(quint8(code), values, {}, {}, &request, &error), qPrintable(error.message));
+            QCOMPARE(quint8(request.payload[0]), quint8(id));
+        }
+        QVERIFY(QushengSdk::isDeviceId(quint8(id)));
+        QVERIFY(QushengSdk::buildRequest(0x05, {{"devId", id}}, {}, {}, &request, &error));
+    }
+    for (int id : {0x10, 0x17, 0x1c}) {
+        QVERIFY(!QushengSdk::isDeviceId(quint8(id)));
+        for (int code : {0x11, 0x12, 0x14, 0x16}) {
+            const QVariantMap supplied = code == 0x11 ? QVariantMap{{"positionUm", 50}, {"devId", id}} : QVariantMap{{"devId", id}};
+            QVERIFY(!QushengSdk::buildRequest(quint8(code), supplied, {}, {}, &request, &error));
+            QVERIFY(!QushengSdk::buildRequest(quint8(code), code == 0x11 ? QVariantMap{{"positionUm", 50}} : QVariantMap(), {{"devId", id}}, {}, &request, &error));
+            QVERIFY(!QushengSdk::buildRequest(quint8(code), code == 0x11 ? QVariantMap{{"positionUm", 50}} : QVariantMap(), {}, {{"devId", id}}, &request, &error));
+        }
+        QVERIFY(!QushengSdk::buildRequest(0x05, {{"devId", id}}, {}, {}, &request, &error));
+    }
+    QVERIFY(QushengSdk::buildRequest(0x05, {{"devId", 255}}, {}, {}, &request, &error));
+    QVERIFY(QushengSdk::buildRequest(0x1a, {{"devId", 0x13}}, {}, {}, &request, &error));
+    QVERIFY(!QushengSdk::buildRequest(0x1a, {{"devId", 0x14}}, {}, {}, &request, &error));
+    for (int index : {0x17, 0x1c, 255}) {
+        QVERIFY(QushengSdk::buildRequest(0xc1, {{"moduleIndex", index}, {"xPosition", 0}, {"yPosition", 0}, {"zPosition", 0}}, {}, {}, &request, &error));
+        QCOMPARE(quint8(request.payload[1]), quint8(index));
+    }
+}
+
 // 每条数据都是按协议表手工写出的预期字节，不使用SDK解码器生成期望值。
 // 跨字节数据用不对称数值，便于发现高低字节颠倒、掩码移位和字段遗漏。
 void SdkRequestTest::protocolPayloads_data()
@@ -60,9 +92,9 @@ void SdkRequestTest::protocolPayloads_data()
     row("09-error-reports", 0x09, {{"enabled",1}}, "01");
     row("0C-interface-query", 0x0c, {}, "");
     row("11-motor", 0x11, {{"positionUm",0x654321},{"speedUmPerS",0x123456}}, "1141123456654321");
-    row("12-motor-query", 0x12, {{"devId",0x1c}}, "1C");
-    row("14-hardware-query", 0x14, {{"devId",0x1a}}, "1A");
-    row("16-motion-query", 0x16, {{"devId",0x19}}, "19");
+    row("12-motor-query", 0x12, {{"devId",0x16}}, "16");
+    row("14-hardware-query", 0x14, {{"devId",0x16}}, "16");
+    row("16-motion-query", 0x16, {{"devId",0x16}}, "16");
     row("1A-change-speed", 0x1a, {{"devId",0x13},{"speed",0x123456}}, "13123456");
     row("21-valve-group", 0x21, {{"mode",2},{"valveMask",0x12345678},{"duration",0x01020304}}, "9234567801020304");
     row("22-valve", 0x22, {{"devId",0x4e},{"duration",QVariant::fromValue(4294967295LL)}}, "4EFFFFFFFF");
@@ -154,7 +186,7 @@ void SdkRequestTest::requiredBusinessValues()
 void SdkRequestTest::deviceChannelsAreIndependent()
 {
     QushengSdkRequest request; TranslationError error;
-    const QVariantMap motorDevice = {{"devId",0x1c},{"speedUmPerS",2500}};
+    const QVariantMap motorDevice = {{"devId",0x16},{"speedUmPerS",2500}};
     const QMap<int,int> channels = {{0x22,0x31},{0x44,0x61},{0x46,0x61},{0x54,0x71},{0x64,0xc5},{0x65,0xc5},{0x81,0xe0},{0x82,0xe0},{0x83,0xe0},{0x84,0xe0},{0xa1,0x21}};
     for (auto it = channels.constBegin(); it != channels.constEnd(); ++it) {
         QVERIFY(QushengSdk::buildRequest(quint8(it.key()), {}, {}, motorDevice, &request, &error));
@@ -162,7 +194,7 @@ void SdkRequestTest::deviceChannelsAreIndependent()
         QVERIFY(!QushengSdk::buildRequest(quint8(it.key()), {{"devId",0x11}}, {}, {}, &request, &error));
         QVERIFY(request.payload.isEmpty());
     }
-    // 1A只有协议明确的三个电机通道，设备页选到1C也不能悄悄退回11。
+    // 1A只有协议明确的三个电机通道，设备页选到16也不能悄悄退回11。
     QVERIFY(!QushengSdk::buildRequest(0x1a, {}, {}, motorDevice, &request, &error));
     QVERIFY(QushengSdk::buildRequest(0x1a, {}, {{"devId",0x12}}, motorDevice, &request, &error));
     QCOMPARE(request.payload, QByteArray::fromHex("120009C4"));
