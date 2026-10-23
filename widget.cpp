@@ -502,7 +502,11 @@ void Widget::buildUi()
     for (auto *action : {saveStep, newStep, deleteStep, stepUp, stepDown, discardStep}) stepActions->addWidget(action);
     editorLayout->addLayout(stepActions);
     connect(saveStep, &QPushButton::clicked, this, [this]() { commitMappingStep(); });
-    connect(newStep, &QPushButton::clicked, this, [this]() { if (m_stepDirty && !commitMappingStep()) return; loadMappingStep(-1); });
+    connect(newStep, &QPushButton::clicked, this, [this]() {
+        if (m_stepDirty && !commitMappingStep()) return;
+        loadMappingStep(-1);
+        m_stepDirty = true; // 用户已明确新增，即使复位不需参数，也应在最终添加时纳入。
+    });
     connect(discardStep, &QPushButton::clicked, this, [this]() { loadMappingStep(m_selectedStep); });
     connect(deleteStep, &QPushButton::clicked, this, [this]() {
         if (m_selectedStep < 0) return;
@@ -1260,18 +1264,24 @@ bool Widget::commitMappingStep()
 
 void Widget::loadMappingStep(int row)
 {
+    const QString templateOperation = m_mappingOperation->currentData().toString();
+    const int templateMotor = m_mappingMotor->currentData().toInt();
+    const bool existing = row >= 0 && row < m_stepDrafts.size();
     m_loadingStep = true; m_loadingMapping = true;
     m_selectedStep = row;
-    m_stepOriginal = row >= 0 && row < m_stepDrafts.size() ? m_stepDrafts[row].toObject() : QJsonObject();
-    const QString operation = m_stepOriginal.value("operation").toString("MOTOR_FORWARD");
+    m_stepOriginal = existing ? m_stepDrafts[row].toObject() : QJsonObject();
+    const QString operation = existing ? m_stepOriginal.value("operation").toString() : templateOperation;
     if (m_mappingOperation->findData(operation) < 0) m_mappingOperation->addItem(operationName(operation), operation);
     selectData(m_mappingOperation, operation); m_editorOperation = operation;
-    m_mappingValue->clear(); m_mappingMultiplier->setText("1"); m_mappingMotor->setCurrentIndex(0);
+    m_mappingValue->clear(); m_mappingMultiplier->setText("1");
+    m_mappingMotor->setCurrentIndex(existing ? 0 : m_mappingMotor->findData(templateMotor));
     updateMappingSources();
     const auto parameters = m_stepOriginal.value("parameters").toObject();
     if (isMotionEditor(operation)) {
         const auto expression = parameters.value(mappingParameterKey(operation)).toObject();
-        const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
+        const bool fixedInput = !m_stepDrafts.isEmpty() && m_groupInputMode->currentData().toString() == "none";
+        const QString selected = expression.value("kind").toString() == "constant" || (expression.isEmpty() && fixedInput)
+            ? "@constant" : expression.value("field").toString();
         restoreSource(m_mappingSource, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt());
         m_mappingValue->setText(expression.value("value").toVariant().toString());
         m_mappingMultiplier->setText(expression.value("kind").toString() == "linear" ? multiplierText(expression) : QStringLiteral("1"));
@@ -1571,19 +1581,28 @@ void Widget::updateMappingSources(bool rebuildCounts)
 {
     const QSignalBlocker blocker(m_mappingSource);
     const bool motion = isMotionEditor(m_mappingOperation->currentData().toString());
+    const bool grouped = !m_stepDrafts.isEmpty();
+    const bool groupWithoutParameters = grouped && m_groupInputMode->currentData().toString() == "none";
     QString selected = m_mappingSource->currentData().toString();
     const bool selectedList = isListSource(m_mappingSource);
     const int selectedIndex = sourceItemIndex(m_mappingSource);
     if (rebuildCounts) updateMappingCounts();
     if (!motion && selected != "@none") selected = "@fields";
     else if (motion && selected == "@fields") selected.clear();
+    if (motion && grouped && (selected == "@none" || (groupWithoutParameters && selected.isEmpty())))
+        selected = "@constant";
     m_mappingSource->clear();
     m_mappingSource->addItem(motion ? QString::fromUtf8(u8"请选择来源") : QString::fromUtf8(u8"客户参数"), motion ? "" : "@fields");
     if (motion) {
-        addNumericSources(m_mappingSource, {});
+        if (!groupWithoutParameters) addNumericSources(m_mappingSource, {});
         m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
     }
-    m_mappingSource->addItem(QString::fromUtf8(u8"无参数"), "@none");
+    if (!motion || !grouped) {
+        const bool relative = mappingParameterKey(m_mappingOperation->currentData().toString()) == "distanceUm";
+        m_mappingSource->addItem(motion ? (relative ? QString::fromUtf8(u8"客户报文无参数（使用固定距离）")
+                                                  : QString::fromUtf8(u8"客户报文无参数（使用固定位置）"))
+                                       : QString::fromUtf8(u8"无参数"), "@none");
+    }
     restoreSource(m_mappingSource, selected, motion && selectedList, motion ? selectedIndex : 0);
     const QJsonArray omitted = mappingOmittedFields();
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
@@ -1631,7 +1650,10 @@ void Widget::updateMappingControls()
         if (auto *form = qobject_cast<QFormLayout *>(m_mappingEditor->layout()->itemAt(i)->layout()))
             if (QWidget *label = form->labelForField(m_mappingMotor)) label->setVisible(motor);
     const bool constant = m_mappingSource->currentData().toString() == "@constant";
-    const bool noParameters = m_mappingSource->currentData().toString() == "@none";
+    const bool noParameters = grouped ? m_groupInputMode->currentData().toString() == "none"
+                                      : m_mappingSource->currentData().toString() == "@none";
+    const QString motionValueName = mappingParameterKey(operation) == "distanceUm" ? QString::fromUtf8(u8"运动距离") : QString::fromUtf8(u8"目标位置");
+    m_mappingValue->setPlaceholderText(QString::fromUtf8(u8"填写%1整数").arg(motionValueName));
     auto visibility = [](QWidget *control, bool show) {
         control->setVisible(show);
         if (auto *form = qobject_cast<QFormLayout *>(control->parentWidget()->layout()))
@@ -1650,6 +1672,8 @@ void Widget::updateMappingControls()
                 label->setVisible(show);
                 if (control == m_mappingSource) if (auto *text = qobject_cast<QLabel *>(label))
                     text->setText(QString::fromUtf8(u8"取值来源"));
+                if (control == m_mappingValue) if (auto *text = qobject_cast<QLabel *>(label))
+                    text->setText(motionValueName + QString::fromUtf8(u8"（必填）"));
             }
     }
     // 方向已固化在新动作中；只有真实存在旧版 ABS 映射时显示其兼容方向，不能让用户在两个地方修改同一动作。
@@ -1678,8 +1702,11 @@ bool Widget::readNewMapping(QJsonObject *result)
         const QString source=m_mappingSource->currentData().toString();
         if (source=="@constant" || source=="@none") {
             bool ok=false; const qlonglong value=m_mappingValue->text().trimmed().toLongLong(&ok);
-            if (!ok || value<0 || value>0xfffffe)
-                return fail(QString::fromUtf8(u8"固定数值必须填写零到 16777214 的整数。"));
+            if (!ok || value<0 || value>0xfffffe) {
+                const QString valueName = mappingParameterKey(operation) == "distanceUm" ? QString::fromUtf8(u8"运动距离") : QString::fromUtf8(u8"目标位置");
+                return fail(QString::fromUtf8(u8"当前指令“%1”需要明确的%2，请填写零到 16777214 的整数；客户报文无参数也不能省略%2。")
+                    .arg(operationName(operation), valueName));
+            }
             expression = m_stepOriginal.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
             expression.insert("kind", "constant"); expression.insert("value", double(value));
             for (const QString &key : {"field", "itemIndex", "numerator", "denominator", "offset", "round"}) expression.remove(key);

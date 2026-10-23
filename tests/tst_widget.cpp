@@ -43,6 +43,7 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void noParameterResetGroupsAndExplicitTargets();
     void serialWriteErrorClosesBeforeNotification();
     void oneToManyMappingEditorLifecycle();
     void oneToManySharedInputAndPendingEdit();
@@ -1797,6 +1798,128 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
 }
 
 
+void WidgetTest::noParameterResetGroupsAndExplicitTargets()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    const auto sourceDirectory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile example(sourceDirectory.filePath("../examples/no-parameter-reset-group.json")); QVERIFY(example.open(QIODevice::ReadOnly));
+    const auto exampleRoot = QJsonDocument::fromJson(example.readAll()).object();
+    applyRoot(widget, exampleRoot);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *motor = widget.findChild<QComboBox *>("mappingMotor");
+    auto *source = widget.findChild<QComboBox *>("mappingSource");
+    auto *value = widget.findChild<QLineEdit *>("mappingValue");
+    auto *steps = widget.findChild<QTableWidget *>("mappingSteps");
+    auto *mode = widget.findChild<QComboBox *>("groupInputMode");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("PAIR");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    motor->setCurrentIndex(motor->findData(0x11));
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    QCOMPARE(mode->currentData().toString(), QString("none"));
+    button(widget, "newMappingStep")->click();
+    QCOMPARE(operation->currentData().toString(), QString("MOTOR_RESET"));
+    QCOMPARE(motor->currentData().toInt(), 0x11);
+    QVERIFY(value->isHidden()); QVERIFY(value->text().isEmpty());
+    motor->setCurrentIndex(motor->findData(0x12));
+    button(widget, "discardMappingStep")->click();
+    QCOMPARE(operation->currentData().toString(), QString("MOTOR_RESET"));
+    QCOMPARE(motor->currentData().toInt(), 0x12);
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
+
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    widget.resize(1100, 740); widget.show();
+    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    if (!render.isEmpty()) {
+        QDir().mkpath(render); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("no-parameter-reset-group.png")));
+    }
+    button(widget, "addMapping")->click(); button(widget, "saveConfig")->click();
+    const auto pair = mappingRows(widget).last().toObject();
+    QCOMPARE(pair.value("steps").toArray().size(), 2);
+    for (int index = 0; index < 2; ++index) {
+        const auto step = pair.value("steps").toArray().at(index).toObject();
+        QCOMPARE(step.value("operation").toString(), QString("MOTOR_RESET"));
+        const auto parameters = step.value("parameters").toObject();
+        QVERIFY(!parameters.contains("positionUm"));
+        QCOMPARE(parameters.value("devId").toObject().value("value").toInt(), 0x11 + index);
+    }
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored).last().toObject(), pair);
+    auto *input = restored.findChild<QLineEdit *>("customerInput");
+    for (const QString &code : {QString("PAIR"), QString("RST")}) {
+        input->setText("!" + code + "\\r"); button(restored, "previewButton")->click();
+        const auto output = restored.findChild<QTextEdit *>("targetOutput")->toPlainText();
+        QVERIFY2(output.contains("11 44 00 03 E8 00 00 00"), qPrintable(output));
+        QVERIFY(output.contains("12 44 00 03 E8 00 00 00"));
+        QVERIFY(output.contains(QString::fromUtf8(u8"第2条预览帧")));
+    }
+    input->setText("!FIXED\\r"); button(restored, "previewButton")->click();
+    QVERIFY(restored.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("12 41 00 03 E8 00 04 D2"));
+
+    widget.findChild<QLineEdit *>("mappingCode")->setText("MIXED");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    button(widget, "saveMappingStep")->click();
+    button(widget, "newMappingStep")->click();
+    operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    QCOMPARE(source->findData("@none"), -1);
+    QCOMPARE(source->currentData().toString(), QString("@constant"));
+    QCOMPARE(source->count(), 2); // 未选择/固定值，不提供已省略的客户字段。
+    QCOMPARE(mode->currentData().toString(), QString("none"));
+    QVERIFY(!value->isHidden()); QVERIFY(value->text().isEmpty());
+    const int mappingCount = mappingRows(widget).size();
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"目标位置")));
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), mappingCount);
+    QCOMPARE(operation->currentData().toString(), QString("MOTOR_FORWARD"));
+    QCOMPARE(steps->rowCount(), 1); QVERIFY(value->text().isEmpty());
+    value->setText("1234");
+    if (!render.isEmpty()) {
+        widget.findChild<QLabel *>("validationState")->clear(); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("no-parameter-fixed-position.png")));
+    }
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), mappingCount + 1);
+    const auto mixed = mappingRows(widget).last().toObject();
+    QCOMPARE(mixed.value("steps").toArray().size(), 2);
+    QCOMPARE(mixed.value("input").toObject().value("omitFields").toArray(), pair.value("input").toObject().value("omitFields").toArray());
+    QCOMPARE(mixed.value("steps").toArray().last().toObject().value("parameters").toObject().value("positionUm").toObject().value("value").toInt(), 1234);
+
+    // 单条入口保留原行为；组输入切换不得自动替换已有字段来源。
+    widget.findChild<QLineEdit *>("mappingCode")->setText("INPUT");
+    QVERIFY(source->itemText(source->findData("@none")).contains(QString::fromUtf8(u8"使用固定位置")));
+    source->setCurrentIndex(source->findData("@none")); value->setText("25");
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    QCOMPARE(source->findData("@none"), -1);
+    mode->setCurrentIndex(mode->findData("parameters"));
+    source->setCurrentIndex(source->findData(QString::fromUtf8(u8"距离")));
+    button(widget, "saveMappingStep")->click();
+    mode->setCurrentIndex(mode->findData("none"));
+    QCOMPARE(source->currentData().toString(), QString::fromUtf8(u8"距离"));
+    QVERIFY(source->currentText().contains(QString::fromUtf8(u8"不可用")));
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), mappingCount + 1);
+    QCOMPARE(source->currentData().toString(), QString::fromUtf8(u8"距离"));
+    mode->setCurrentIndex(mode->findData("parameters"));
+    QVERIFY(!source->currentText().contains(QString::fromUtf8(u8"不可用")));
+    QCOMPARE(source->currentData().toString(), QString::fromUtf8(u8"距离"));
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), mappingCount + 2);
+
+    widget.findChild<QLineEdit *>("mappingCode")->setText("REPEAT");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    motor->setCurrentIndex(motor->findData(0x13));
+    button(widget, "saveMappingStep")->click();
+    button(widget, "newMappingStep")->click();
+    button(widget, "addMapping")->click();
+    const auto repeated = mappingRows(widget).last().toObject().value("steps").toArray();
+    QCOMPARE(repeated.size(), 2); QCOMPARE(repeated.first(), repeated.last());
+
+    widget.findChild<QLineEdit *>("mappingCode")->setText("DISCARD");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    button(widget, "saveMappingStep")->click();
+    button(widget, "newMappingStep")->click(); button(widget, "discardMappingStep")->click();
+    button(widget, "addMapping")->click();
+    QVERIFY(!mappingRows(widget).last().toObject().contains("steps"));
+    QCOMPARE(mappingRows(widget).last().toObject().value("operation").toString(), QString("MOTOR_RESET"));
+}
+
 void WidgetTest::oneToManyMappingEditorLifecycle()
 {
     const QString path = freshDraftPath(), exported = freshDraftPath();
@@ -1817,7 +1940,7 @@ void WidgetTest::oneToManyMappingEditorLifecycle()
     int module = parameterRow(parameters, "moduleIndex"); auto *moduleSource = qobject_cast<QComboBox *>(parameters->cellWidget(module, 1));
     moduleSource->setCurrentIndex(moduleSource->findData("@constant")); qobject_cast<QLineEdit *>(parameters->cellWidget(module, 2))->setText("35");
     button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
-    button(widget, "newMappingStep")->click(); source->setCurrentIndex(parameterChoice(source, "values", 1));
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); source->setCurrentIndex(parameterChoice(source, "values", 1));
     button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 3);
     button(widget, "mappingStepUp")->click(); QCOMPARE(steps->currentRow(), 1); QVERIFY(steps->item(1, 1)->text().contains(QString::fromUtf8(u8"前进")));
     button(widget, "mappingStepDown")->click(); QCOMPARE(steps->currentRow(), 2);
@@ -1832,7 +1955,7 @@ void WidgetTest::oneToManyMappingEditorLifecycle()
     QCOMPARE(steps->currentRow(), 1); QCOMPARE(qobject_cast<QLineEdit *>(parameters->cellWidget(module, 2))->text(), QString("bad"));
     button(widget, "discardMappingStep")->click(); QCOMPARE(qobject_cast<QLineEdit *>(parameters->cellWidget(module, 2))->text(), QString("35"));
     steps->setCurrentCell(2, 0); button(widget, "deleteMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
-    button(widget, "newMappingStep")->click(); source->setCurrentIndex(parameterChoice(source, "values", 1)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 3);
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); source->setCurrentIndex(parameterChoice(source, "values", 1)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 3);
     steps->setCurrentCell(0, 0); source->setCurrentIndex(parameterChoice(source, "values", 2));
     widget.findChild<QComboBox *>("mappingMotor")->setCurrentIndex(widget.findChild<QComboBox *>("mappingMotor")->findData(0x12));
     // Final add must capture the current uncommitted valid edit exactly once.
@@ -1881,7 +2004,7 @@ void WidgetTest::oneToManySharedInputAndPendingEdit()
     auto *mode = widget.findChild<QComboBox *>("groupInputMode"); QCOMPARE(mode->currentData().toString(), QString("none"));
     mode->setCurrentIndex(mode->findData("parameters"));
     auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts"); QCOMPARE(counts->rowCount(), 1); qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
-    button(widget, "newMappingStep")->click(); source->setCurrentIndex(parameterChoice(source, "values", 2)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); source->setCurrentIndex(parameterChoice(source, "values", 2)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
     button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_STOP"));
     QCOMPARE(mode->currentData().toString(), QString("parameters")); QCOMPARE(counts->rowCount(), 1);
     QCOMPARE(qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->value(), 3);

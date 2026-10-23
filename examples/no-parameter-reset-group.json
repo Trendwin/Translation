@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "name": "无参数报文：双电机复位与预设位置示例",
+  "external": {
+    "encoding": "ascii", "header": "!", "footer": "\\r", "byteOrder": "big",
+    "fields": [
+      {"name": "命令码", "role": "command", "type": "ascii", "lengthMode": "mappedCommand"},
+      {"name": "距离", "role": "parameter", "type": "uint", "lengthMode": "toFooter", "min": 0, "max": 6000}
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "RST", "input": {"omitFields": ["距离"]},
+      "steps": [
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 17}}},
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 18}}}
+      ]
+    },
+    {
+      "commandCode": "FIXED", "input": {"omitFields": ["距离"]},
+      "steps": [
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 17}}},
+        {"operation": "MOTOR_FORWARD", "parameters": {
+          "devId": {"kind": "constant", "value": 18},
+          "positionUm": {"kind": "constant", "value": 1234}
+        }}
+      ]
+    }
+  ],
+  "device": {
+    "destination": 2, "source": 1, "devId": 17,
+    "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 6000
+  }
+}
