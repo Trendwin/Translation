@@ -67,6 +67,8 @@ private:
     bool readNewMapping(QJsonObject *mapping);
     bool readGroupMapping(QJsonObject *mapping);
     bool commitMappingStep();
+    bool requireSavedMappingStep();
+    void updateMappingStepState();
     void loadMappingStep(int row);
     void refreshMappingSteps();
     void selectMappingStep(int row);
@@ -114,6 +116,8 @@ private:
     QTableWidget *m_mappingTable = nullptr;
     QGroupBox *m_mappingEditor = nullptr;
     QTableWidget *m_mappingSteps = nullptr;
+    QPushButton *m_saveMappingStep = nullptr;
+    QLabel *m_mappingStepState = nullptr;
     QComboBox *m_groupInputMode = nullptr;
     QJsonArray m_stepDrafts;
     QJsonObject m_groupInput;
