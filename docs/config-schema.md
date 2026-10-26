@@ -40,10 +40,10 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 | commandCode | 配置定义的客户命令码；不可为空、重复或超过128字符 |
 | operation | 趋盛目录中的下发目标；已有模板见下表，其他项为 QUSHENG_XX（XX为大写两位指令码） |
 | parameters | 参数关系对象；查询使用空对象 |
-| input.parameterCounts | 对象：每个有效、未省略的integerList字段必须指定1～2048的输入项数；实际数量必须完全相同，与目标参数个数无关 |
-| input.omitFields | 此命令不读取的共用字段名称，仅允许命令码之后的字段，不能省略地址前缀或命令码 |
+| input.parameterCounts | 对象：每个本映射可用的integerList字段必须指定1～2048的输入项数；声明不使用的列表可不设置。显式指定时实际数量必须完全相同，与目标参数个数无关 |
+| input.omitFields | 本映射不用于取值的字段名称，仅允许命令码之后的字段。普通顺序格式仍完整解析这些字段；只有mappedCommand旧短帧实际省略它们 |
 
-使用字段省略设置必须把命令码长度方式设为mappedCommand或delimited。省略字段仍由名称指定，不按操作猜测报文结构。映射不能引用已经省略的字段。
+普通顺序格式的线布局只由external.fields决定，命令为fixed/delimited等方式时均不受omitFields影响；参数未使用仍严格检查其数据类型、范围和分隔符。映射不能引用自己声明不使用的字段，列表引用仍必须有有效数量和索引。旧配置无需迁移或重建，不会自动修改omitFields。仅命令字段明确使用mappedCommand时保留旧短帧删行兼容，含分隔符的变长前缀仍支持，不做完整/省略两套布局猜测。解析格式不检查映射数量或设备业务配置。
 
 | operation | 参数关系 | 趋盛发送与状态 |
 |---|---|---|
@@ -103,7 +103,7 @@ SDK固定 `moduleType=1`，拒绝类型2。`xSpeed/ySpeed/zSpeed` 不能作为�
 
 ## 整数列表索引
 
-`field`和`linear`表达式引用integerList时必须有从1开始的整数`itemIndex`，不得超过本映射`input.parameterCounts[field]`。标量来源及constant不允许itemIndex。例：`{"kind":"field","field":"values","itemIndex":2}`。列表字段改名时同步来源和数量键；删除、改类型不会静默删除索引或改绑。省略列表不能保留该列表的数量约束。
+`field`和`linear`表达式引用integerList时必须有从1开始的整数`itemIndex`，不得超过本映射`input.parameterCounts[field]`。标量来源及constant不允许itemIndex。例：`{"kind":"field","field":"values","itemIndex":2}`。列表字段改名时同步来源和数量键；删除、改类型不会静默删除索引或改绑。普通格式中未使用但仍在线上的列表可显式保留数量约束，并在转换时严格检查；mappedCommand短帧真正省略的列表不能保留数量约束。
 
 逗号仅是列表内部规则；字段仍按fixed/delimited/toFooter读取。列表不接受空项、空白、正号、小数或64位溢出；负值是否可发送由字段范围和目标SDK范围共同决定。格式独立解析不依赖映射项数；转换和调试实发严格检查数量。完整帧最多4096字节，配置也检查列表及命令码的最短帧预算，实际可容纳项数取决于外层格式。详见[列表使用说明](integer-list-parameters.md)。
 

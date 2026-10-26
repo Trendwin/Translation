@@ -19,7 +19,8 @@ public:
     static QJsonArray mappingSteps(const QJsonObject &mapping);
     static bool retiredFormat(const QJsonObject &root);
     bool liveReady(TranslationError *error) const;
-    // 共用帧头帧尾及字段顺序；无参数命令只显式省略指定字段，不能按操作名称猜客户格式。
+    bool hasMappedCommand() const;
+    // 顺序格式始终完整读取；仅 mappedCommand 兼容按映射省略字段的旧短帧。
     QJsonObject inputFormat(const QJsonObject &mapping) const;
     // 界面和解析器共用严格的字节入口，避免同一转义在配置与输入框中被不同解释。
     static bool decodeBytes(const QString &text, const QString &encoding,

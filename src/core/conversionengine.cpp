@@ -162,9 +162,8 @@ bool ConversionEngine::parse(const QByteArray &input, QMap<QString, QVariant> *f
     fields->clear();
     if (input.size() > 4096)
         return fail(error, "INPUT_OVERFLOW", QString::fromUtf8(u8"完整输入报文超过 4096 字节上限"));
-    const QJsonObject matchedInput = mappingForInput(m_config, input);
-    // 预先识别可变长度命令，是为了选出该映射允许省略的客户字段。
-    // 这里只选配置布局，后续仍完整验证帧边界、字段值和唯一映射。
+    const QJsonObject matchedInput = m_config.hasMappedCommand() ? mappingForInput(m_config, input) : QJsonObject();
+    // 普通顺序格式与映射无关。仅 mappedCommand 需要旧命令长度及短帧布局。
     const QJsonObject external = m_config.inputFormat(matchedInput);
     const QByteArray header = configuredBytes(external, "header");
     const QByteArray footer = configuredBytes(external, "footer");
@@ -538,7 +537,7 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
             break;
         }
         if (start > 0) m_buffer.remove(0, start);
-        const QJsonObject selected = mappingForInput(m_config, m_buffer);
+        const QJsonObject selected = m_config.hasMappedCommand() ? mappingForInput(m_config, m_buffer) : QJsonObject();
         const QJsonObject format = m_config.inputFormat(selected);
         const QByteArray footer = configuredBytes(format, "footer");
         int fixedPayloadLength = 0;

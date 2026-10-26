@@ -78,6 +78,7 @@ private:
     void updateListGuidance();
     void addNumericSources(QComboBox *box, const QJsonArray &omitted);
     QJsonArray mappingOmittedFields() const;
+    bool legacyMappedInput() const;
     void fieldFormatChanged();
     bool synchronizeFieldNames();
     QString mappingFieldIssue(const QJsonObject &mapping) const;
@@ -118,6 +119,7 @@ private:
     QTableWidget *m_mappingSteps = nullptr;
     QPushButton *m_saveMappingStep = nullptr;
     QLabel *m_mappingStepState = nullptr;
+    QLabel *m_mappingInputHint = nullptr;
     QComboBox *m_groupInputMode = nullptr;
     QJsonArray m_stepDrafts;
     QJsonObject m_groupInput;
