@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "name": "通用顺序格式：保留报文字段、不使用客户参数",
+  "external": {
+    "encoding": "ascii", "header": "[", "footer": "]\\r",
+    "fields": [
+      {"name": "源地址", "type": "ascii", "role": "fixed", "lengthMode": "delimited", "delimiter": "|", "fixedValue": "AA"},
+      {"name": "目标地址", "type": "ascii", "role": "fixed", "lengthMode": "delimited", "delimiter": "|", "fixedValue": "BB"},
+      {"name": "报文类型", "type": "ascii", "role": "fixed", "lengthMode": "delimited", "delimiter": "|", "fixedValue": "CTL"},
+      {"name": "序号", "type": "uint", "role": "metadata", "lengthMode": "delimited", "delimiter": "|"},
+      {"name": "等待标志", "type": "uint", "role": "execution", "lengthMode": "delimited", "delimiter": ";"},
+      {"name": "命令码", "type": "ascii", "role": "command", "lengthMode": "delimited", "delimiter": "="},
+      {"name": "数值", "type": "integerList", "role": "parameter", "lengthMode": "delimited", "delimiter": ";", "min": 0, "max": 6000},
+      {"name": "延时", "type": "uint", "role": "execution", "lengthMode": "delimited", "delimiter": "\\n"},
+      {"name": "固定结束文字", "type": "ascii", "role": "fixed", "lengthMode": "fixed", "length": 5, "fixedValue": "DONE|"},
+      {"name": "校验值", "type": "ascii", "role": "checksum", "lengthMode": "delimited", "delimiter": "|"}
+    ]
+  },
+  "mappings": [
+    {
+      "commandCode": "RESET",
+      "input": {"omitFields": ["数值"]},
+      "steps": [
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 17}}},
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 18}}},
+        {"operation": "MOTOR_RESET", "parameters": {"devId": {"kind": "constant", "value": 19}}}
+      ]
+    }
+  ],
+  "device": {"destination": 2, "source": 1, "devId": 17, "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 6000}
+}

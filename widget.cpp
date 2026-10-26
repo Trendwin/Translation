@@ -502,6 +502,10 @@ void Widget::buildUi()
     m_mappingStepState->setObjectName("mappingStepState");
     m_mappingStepState->setWordWrap(true);
     editorLayout->addWidget(m_mappingStepState);
+    m_mappingInputHint = new QLabel(this);
+    m_mappingInputHint->setObjectName("mappingInputHint");
+    m_mappingInputHint->setWordWrap(true);
+    editorLayout->addWidget(m_mappingInputHint);
     editorLayout->addWidget(m_mappingSteps, 1);
     auto *stepActions = new QHBoxLayout;
     auto *saveStep = new QPushButton(QString::fromUtf8(u8"添加到清单"), this); saveStep->setObjectName("saveMappingStep");
@@ -1091,7 +1095,7 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     const QString operation = mapping.value("operation").toString();
     m_mappingTable->item(row, 1)->setText(operationName(operation)
         + (QushengCommandCatalog::isExecutable(operation) ? QString() : QString::fromUtf8(u8"（待实现）")));
-    QString summary = QString::fromUtf8(u8"无参数");
+    QString summary = QString::fromUtf8(u8"无需目标参数");
     if (isMotionEditor(operation)) {
         const QJsonObject expression = mapping.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
         if (expression.value("kind").toString() == "constant") summary = QString::fromUtf8(u8"固定数值 %1").arg(expression.value("value").toVariant().toString());
@@ -1125,6 +1129,8 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     const QJsonObject counts = mapping.value("input").toObject().value("parameterCounts").toObject();
     for (auto it = counts.begin(); it != counts.end(); ++it)
         summary += QString::fromUtf8(u8"；%1 输入%2项").arg(it.key()).arg(it.value().toVariant().toString());
+    if (!mapping.value("input").toObject().value("omitFields").toArray().isEmpty())
+        summary += legacyMappedInput() ? QString::fromUtf8(u8"；旧短报文省略字段") : QString::fromUtf8(u8"；客户参数不用于取值，字段仍解析");
     const QString issue = mappingFieldIssue(mapping);
     m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
     m_mappingTable->item(row, 2)->setToolTip(issue);
@@ -1392,6 +1398,14 @@ void Widget::resetMappingForm()
     m_loadingMapping=false;
 }
 
+bool Widget::legacyMappedInput() const
+{
+    for (int row = 0; row < m_fieldTable->rowCount(); ++row)
+        if (comboData(m_fieldTable, row, 2) == "command")
+            return comboData(m_fieldTable, row, 4) == "mappedCommand";
+    return false;
+}
+
 QJsonArray Widget::mappingOmittedFields() const
 {
     QJsonArray omitted;
@@ -1500,17 +1514,19 @@ QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
         if (role == "parameter" && comboData(m_fieldTable, row, 3) != "ascii") numeric.insert(name);
         if (role == "parameter" && comboData(m_fieldTable, row, 3) == "integerList") lists.insert(name);
     }
+    QSet<QString> wireLists = lists;
     for (const QJsonValue &omitted : mapping.value("input").toObject().value("omitFields").toArray()) {
-        if (!omittable.contains(omitted.toString())) return QString::fromUtf8(u8"省略字段不可用：%1").arg(omitted.toString());
+        if (!omittable.contains(omitted.toString())) return QString::fromUtf8(u8"声明不使用的字段不可用：%1").arg(omitted.toString());
         numeric.remove(omitted.toString());
         lists.remove(omitted.toString());
+        if (legacyMappedInput()) wireLists.remove(omitted.toString());
     }
     const QJsonObject input = mapping.value("input").toObject();
     if (input.contains("parameterCounts") && !input.value("parameterCounts").isObject())
         return QString::fromUtf8(u8"列表输入项数必须为对象");
     const auto counts = input.value("parameterCounts").toObject();
     for (auto it = counts.begin(); it != counts.end(); ++it)
-        if (!lists.contains(it.key()) || !it.value().isDouble() || it.value().toDouble() != it.value().toInt()
+        if (!wireLists.contains(it.key()) || !it.value().isDouble() || it.value().toDouble() != it.value().toInt()
                 || it.value().toInt() < 1 || it.value().toInt() > 2048)
             return QString::fromUtf8(u8"列表输入项数不可用：%1").arg(it.key());
     for (const QString &name : lists)
@@ -1519,7 +1535,7 @@ QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject(); const QString kind = expression.value("kind").toString();
         if ((kind == "field" || kind == "linear") && !numeric.contains(expression.value("field").toString()))
-            return QString::fromUtf8(u8"来源字段不可用：%1").arg(expression.value("field").toString());
+            return QString::fromUtf8(u8"来源字段不可用或已声明不使用：%1").arg(expression.value("field").toString());
         if (kind == "field" || kind == "linear") {
             const QString field = expression.value("field").toString();
             if (lists.contains(field)) {
@@ -1614,7 +1630,7 @@ void Widget::updateListGuidance()
     } else {
         feedback = QString::fromUtf8(u8"各目标参数直接选择“第几个参数”或固定值。");
     }
-    m_mappingListGuidance->setText(QString::fromUtf8(u8"20,30,40是3项。%1；仅在转换预览/发送时检查数量，“解析格式”显示实际项数。\n%2")
+    m_mappingListGuidance->setText(QString::fromUtf8(u8"20,30,40是3项。%1；转换/发送检查映射项数，解析格式始终显示实际项数。未使用的列表仍按格式校验。\n%2")
         .arg(counts.join(QString::fromUtf8(u8"；")), feedback));
 }
 
@@ -1640,9 +1656,9 @@ void Widget::updateMappingSources(bool rebuildCounts)
     }
     if (!motion || !grouped) {
         const bool relative = mappingParameterKey(m_mappingOperation->currentData().toString()) == "distanceUm";
-        m_mappingSource->addItem(motion ? (relative ? QString::fromUtf8(u8"客户报文无参数（使用固定距离）")
-                                                  : QString::fromUtf8(u8"客户报文无参数（使用固定位置）"))
-                                       : QString::fromUtf8(u8"无参数"), "@none");
+        const QString unused = legacyMappedInput() ? QString::fromUtf8(u8"无参数短报文") : QString::fromUtf8(u8"不使用客户参数");
+        m_mappingSource->addItem(motion ? unused + (relative ? QString::fromUtf8(u8"（使用固定距离）") : QString::fromUtf8(u8"（使用固定位置）"))
+                                       : unused + (legacyMappedInput() ? QString::fromUtf8(u8"（省略参数字段）") : QString::fromUtf8(u8"（字段仍解析）")), "@none");
     }
     restoreSource(m_mappingSource, selected, motion && selectedList, motion ? selectedIndex : 0);
     const QJsonArray omitted = mappingOmittedFields();
@@ -1662,6 +1678,17 @@ void Widget::updateMappingSources(bool rebuildCounts)
 void Widget::updateMappingControls()
 {
     updateMappingStepState();
+    const bool legacyInput = legacyMappedInput();
+    m_groupInputMode->setItemText(m_groupInputMode->findData("parameters"), legacyInput
+        ? QString::fromUtf8(u8"读取客户参数") : QString::fromUtf8(u8"使用客户参数取值"));
+    m_groupInputMode->setItemText(m_groupInputMode->findData("none"), legacyInput
+        ? QString::fromUtf8(u8"无参数短报文（省略参数字段）") : QString::fromUtf8(u8"不使用客户参数（字段仍按格式解析）"));
+    m_groupInputMode->setToolTip(legacyInput ? QString::fromUtf8(u8"按命令码识别兼容旧短报文，省略已指定的参数字段。")
+        : QString::fromUtf8(u8"此选项只控制映射是否使用客户参数；不会删除报文中的字段或分隔符。"));
+    m_mappingInputHint->setText(legacyInput ? QString::fromUtf8(u8"按命令码识别兼容旧短报文；无参数短报文会省略指定参数字段。")
+        : QString::fromUtf8(u8"顺序格式始终读取全部字段；不使用客户参数只影响映射取值，报文中的参数0仍会解析。"));
+    m_mappingSource->setToolTip(legacyInput ? QString::fromUtf8(u8"旧短报文可省略指定客户字段；运动仍需要明确的固定位置或距离。")
+        : QString::fromUtf8(u8"仅选择本映射的取值来源，不改变格式表的字段布局；不使用的字段仍会解析。"));
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     const bool grouped = !m_stepDrafts.isEmpty();
@@ -1743,7 +1770,7 @@ bool Widget::readNewMapping(QJsonObject *result)
             bool ok=false; const qlonglong value=m_mappingValue->text().trimmed().toLongLong(&ok);
             if (!ok || value<0 || value>0xfffffe) {
                 const QString valueName = mappingParameterKey(operation) == "distanceUm" ? QString::fromUtf8(u8"运动距离") : QString::fromUtf8(u8"目标位置");
-                return fail(QString::fromUtf8(u8"当前指令“%1”需要明确的%2，请填写零到 16777214 的整数；客户报文无参数也不能省略%2。")
+                return fail(QString::fromUtf8(u8"当前指令“%1”需要明确的%2，请填写零到 16777214 的整数；不使用客户参数也不能省略%2。")
                     .arg(operationName(operation), valueName));
             }
             expression = m_stepOriginal.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
@@ -1783,7 +1810,8 @@ bool Widget::readNewMapping(QJsonObject *result)
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject();
         if (omitted.contains(expression.value("field")))
-            return fail(QString::fromUtf8(u8"无参数报文不能引用被省略的字段，请选择默认值或固定值。"));
+            return fail(legacyMappedInput() ? QString::fromUtf8(u8"无参数短报文不能引用被省略的字段，请选择默认值或固定值。")
+                : QString::fromUtf8(u8"本映射已声明不使用该客户字段；如需引用，请选择读取客户参数。格式表中的字段仍会解析。"));
     }
     // 停止/复位显式选择客户参数时也保存空列表，避免重启时被旧配置兼容逻辑改成无参数。
     if (!omitted.isEmpty() || QushengCommandCatalog::isStopOrReset(operation))

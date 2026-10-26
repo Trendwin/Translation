@@ -34,6 +34,7 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void formatDrivenUnusedFieldsAndCounts();
     void groupedConversionAndSchema();
     void groupedAckAndWriteOrdering();
     void groupedFailureStopsRemaining_data();
@@ -257,6 +258,96 @@ static void addDelimitedMappings(ProtocolConfig *config)
     QJsonArray mappings;for(const QString &code:{QStringLiteral("MFCV"),QStringLiteral("LED"),QStringLiteral("XYZ_PX")})mappings.append(QJsonObject{{"commandCode",code},{"operation","MOTOR_FORWARD"},{"parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","value"}}}}}});
     config->root.insert("mappings",mappings);config->root.insert("device",QJsonObject{{"destination",2},{"source",1},{"devId",17},{"speedUmPerS",1000},{"minPositionUm",0},{"maxPositionUm",6000}});
 }
+
+void FrameworkTest::formatDrivenUnusedFieldsAndCounts()
+{
+    auto config = delimitedConfig(); addDelimitedMappings(&config);
+    auto external = config.root.value("external").toObject(); auto fields = external.value("fields").toArray();
+    auto parameter = fields.at(6).toObject(); parameter.insert("type", "integerList"); parameter.insert("extension", "keep field"); fields[6] = parameter;
+    external.insert("fields", fields); external.insert("extension", "keep format"); config.root.insert("external", external);
+    QJsonArray steps;
+    for (int motor : {0x11, 0x12, 0x13}) steps.append(QJsonObject{{"operation", "MOTOR_RESET"}, {"parameters", QJsonObject{{"devId", QJsonObject{{"kind", "constant"}, {"value", motor}}}}}});
+    QJsonObject mapping{{"commandCode", "RST"}, {"input", QJsonObject{{"omitFields", QJsonArray{"value"}}, {"extension", "keep input"}}}, {"steps", steps}, {"extension", "keep mapping"}};
+    config.root.insert("mappings", QJsonArray{mapping});
+    TranslationError error; ConversionPreview preview;
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QVERIFY(!config.hasMappedCommand());
+    QCOMPARE(config.inputFormat(mapping), external);
+    const QByteArray packet("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    QVERIFY2(ConversionEngine(config).parsePreview(packet, &preview, &error), qPrintable(error.message));
+    const auto expectedFields = preview.fields;
+    QCOMPARE(preview.fields.value("value").toList(), QVariantList{QVariant::fromValue<qint64>(0)});
+    QCOMPARE(preview.fields.value("delay").toInt(), 10); QCOMPARE(preview.fields.size(), 10);
+    for (const QJsonValue &mappings : {QJsonValue(QJsonArray()), QJsonValue(QString("invalid mappings must not affect format preview"))}) {
+        auto independent = config; independent.root.insert("mappings", mappings);
+        QVERIFY(ConversionEngine(independent).parsePreview(packet, &preview, &error)); QCOMPARE(preview.fields, expectedFields);
+    }
+    QVERIFY(!ConversionEngine(config).convertBatch(packet, false, &preview, &error));
+    QCOMPARE(error.code, QString("EXECUTION_SEMANTICS")); QVERIFY(preview.fields.isEmpty()); QVERIFY(preview.steps.isEmpty());
+    auto ignoredExecution = config;
+    auto executionFields = fields; auto wait = executionFields.at(4).toObject(); wait.insert("role", "metadata"); executionFields[4] = wait;
+    auto executionFormat = external; executionFormat.insert("fields", executionFields); ignoredExecution.root.insert("external", executionFormat);
+    auto ignoredMapping = mapping; ignoredMapping.insert("input", QJsonObject{{"omitFields", QJsonArray{"value", "delay"}}});
+    ignoredExecution.root.insert("mappings", QJsonArray{ignoredMapping});
+    QVERIFY(!ConversionEngine(ignoredExecution).convertBatch(packet, false, &preview, &error)); QCOMPARE(error.code, QString("EXECUTION_SEMANTICS"));
+    for (const QByteArray &bad : {QByteArray("@&5A&01&SCT&1&0;RST=;10\nEND&?&\r\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=bad;10\nEND&?&\r\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=0;bad\nEND&?&\r\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=0\nEND&?&\r\n")}) {
+        QVERIFY(!ConversionEngine(config).parsePreview(bad, &preview, &error)); QVERIFY(preview.fields.isEmpty());
+    }
+    QList<TranslationError> errors; ConversionEngine stream(config);
+    QVERIFY(stream.feed(packet.left(20), &errors).isEmpty());
+    QCOMPARE(stream.feed(packet.mid(20) + packet, &errors), QList<QByteArray>({packet, packet})); QVERIFY(errors.isEmpty());
+
+    // 仅测试副本声明为普通元数据，验证映射不用参数不改变解析结果；不实现执行控制。
+    for (int index : {4, 7}) { auto field = fields.at(index).toObject(); field.insert("role", "metadata"); fields[index] = field; }
+    external.insert("fields", fields); config.root.insert("external", external);
+    QVERIFY2(ConversionEngine(config).convertBatch(packet, false, &preview, &error), qPrintable(error.message));
+    QCOMPARE(preview.steps.size(), 3); QCOMPARE(preview.fields, expectedFields);
+    for (int index = 0; index < 3; ++index)
+        QCOMPARE(preview.steps[index].targetFrame.mid(8, 8), QByteArray(1, char(0x11 + index)) + QByteArray::fromHex("440003e8000000"));
+
+    auto input = mapping.value("input").toObject(); input.insert("parameterCounts", QJsonObject{{"value", 1}}); mapping.insert("input", input);
+    config.root.insert("mappings", QJsonArray{mapping}); QVERIFY(config.validate(&error));
+    QVERIFY(ConversionEngine(config).convertBatch(packet, false, &preview, &error));
+    input.insert("parameterCounts", QJsonObject{{"value", 2}}); mapping.insert("input", input); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(config.validate(&error)); QVERIFY(!ConversionEngine(config).convertBatch(packet, false, &preview, &error));
+    QCOMPARE(error.code, QString("PARAMETER_COUNT")); QVERIFY(preview.steps.isEmpty());
+    auto oversized = config; auto oversizedMapping = mapping; auto oversizedInput = input;
+    oversizedInput.insert("parameterCounts", QJsonObject{{"value", 2048}}); oversizedMapping.insert("input", oversizedInput);
+    oversized.root.insert("mappings", QJsonArray{oversizedMapping}); QVERIFY(!oversized.validate(&error));
+    QCOMPARE(error.code, QString("CONFIG_MAPPING_INPUT"));
+
+    auto usedSteps = steps; auto move = usedSteps.first().toObject(); move.insert("operation", "MOTOR_FORWARD");
+    move.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "value"}, {"itemIndex", 2}}}}); usedSteps[0] = move;
+    mapping.insert("steps", usedSteps); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_EXPRESSION"));
+    input.insert("omitFields", QJsonArray()); input.remove("parameterCounts"); mapping.insert("input", input); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER_COUNT"));
+    input.insert("parameterCounts", QJsonObject{{"value", 2}}); mapping.insert("input", input); config.root.insert("mappings", QJsonArray{mapping});
+    auto twoItems = packet; twoItems.replace("RST=0;", "RST=20,30;");
+    QVERIFY2(ConversionEngine(config).convertBatch(twoItems, false, &preview, &error), qPrintable(error.message));
+    QCOMPARE(preview.steps.first().command.parameters.value("positionUm").toInt(), 30);
+    auto relation = move.value("parameters").toObject().value("positionUm").toObject(); relation.insert("itemIndex", 3);
+    move.insert("parameters", QJsonObject{{"positionUm", relation}}); usedSteps[0] = move; mapping.insert("steps", usedSteps); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_ITEM_INDEX"));
+
+    mapping.insert("steps", steps); input.insert("omitFields", QJsonArray{"value"}); input.remove("parameterCounts"); mapping.insert("input", input);
+    config.root.insert("mappings", QJsonArray{mapping});
+    auto command = fields.at(5).toObject(); command.insert("lengthMode", "fixed"); command.insert("length", 3); command.remove("delimiter"); fields[5] = command;
+    external.insert("fields", fields); config.root.insert("external", external);
+    auto fixedCommandPacket = packet; fixedCommandPacket.replace("RST=", "RST");
+    QVERIFY2(ConversionEngine(config).convertBatch(fixedCommandPacket, false, &preview, &error), qPrintable(error.message));
+    QCOMPARE(preview.fields.value("value").toList().size(), 1); QCOMPARE(preview.fields.value("delay").toInt(), 10);
+    QTemporaryDir directory; const auto path = directory.filePath("unused.json"); QVERIFY(config.save(path, &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, config.root);
+
+    ProtocolConfig generic; QVERIFY(ProtocolConfig::load(example("format-driven-unused-parameter.json"), &generic, &error));
+    QVERIFY(ConversionEngine(generic).parsePreview("[AA|BB|CTL|1|0;RESET=0;10\nDONE|?|]\r", &preview, &error));
+    QCOMPARE(preview.fields.value(QString::fromUtf8(u8"数值")).toList().size(), 1);
+}
+
 void FrameworkTest::sequentialDelimitedFieldsAndMapping()
 {
     auto config=delimitedConfig();TranslationError error;ConversionPreview p;
@@ -276,7 +367,10 @@ void FrameworkTest::sequentialDelimitedFieldsAndMapping()
     config.root.insert("external",external);config.root.insert("mappings",QJsonArray{QJsonObject{{"commandCode","MOVE"},{"operation","MOTOR_FORWARD"},{"parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","value"}}}}}},QJsonObject{{"commandCode","Q"},{"operation","QUERY_MOTOR"},{"parameters",QJsonObject()},{"input",QJsonObject{{"omitFields",QJsonArray{"value"}}}}}});
     QVERIFY2(ConversionEngine(config).convert("!255|MOVE234\r",false,&p,&error),qPrintable(error.message));QVERIFY(ConversionEngine(config).convert("!1|Q\r",false,&p,&error));QVERIFY(!p.fields.contains("value"));
     fields=external.value("fields").toArray();auto command=fields.at(1).toObject();command.insert("lengthMode","delimited");command.insert("delimiter","=");fields.replace(1,command);external.insert("fields",fields);config.root.insert("external",external);
-    QVERIFY2(ConversionEngine(config).convert("!12|Q=\r",false,&p,&error),qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("!12|Q=0\r",false,&p,&error),qPrintable(error.message));
+    QCOMPARE(p.fields.value("value").toInt(), 0);
+    QVERIFY(!ConversionEngine(config).convert("!12|Q=\r",false,&p,&error));
+    QCOMPARE(error.code, QString("FIELD_LENGTH"));
 }
 void FrameworkTest::sequentialDelimitedFailureAndStream()
 {

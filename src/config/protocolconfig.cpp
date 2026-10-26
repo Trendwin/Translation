@@ -403,7 +403,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
                 && (parameters.size() != (parameters.contains("devId") ? 2 : 1)
                     || !parameters.contains(relative ? "distanceUm" : "positionUm")))
             return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"运动只填写位置或距离及可选电机编号"));
-        // 每条映射只允许显式省略既有非命令字段，不能引入脚本或隐含的客户协议规则。
+        // 映射可声明不使用命令后的字段，不能改变普通顺序格式的线布局。
         if (mapping.contains("input") && !mapping.value("input").isObject())
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令输入设置必须为对象"));
         const QJsonObject input = mapping.value("input").toObject();
@@ -430,15 +430,6 @@ bool ProtocolConfig::validate(TranslationError *error) const
                     return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"命令码之前的字段不能按映射省略"));
             }
             omitted.insert(omittedName); available.remove(omittedName);
-        }
-        if (!omitted.isEmpty()) {
-            bool mapped = false;
-            for (const QJsonValue &f : fields) {
-                const auto declared = f.toObject();
-                mapped |= declared.value("role").toString() == "command"
-                    && QStringList({"mappedCommand", "delimited"}).contains(declared.value("lengthMode").toString());
-            }
-            if (!mapped) return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"省略字段需要命令码使用“按命令码识别”或“读到分隔符”"));
         }
         if (code.size() > 128) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码超过 128 字符"));
         if (encoding == "ascii") {
@@ -471,6 +462,10 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_MAPPING_INPUT", QString::fromUtf8(u8"此命令的完整报文超过 4096 字节"));
         QSet<QString> numericParameters;
         QSet<QString> listParameters;
+        QSet<QString> wireLists;
+        for (const auto &value : effective.value("fields").toArray())
+            if (value.toObject().value("type").toString() == "integerList")
+                wireLists.insert(value.toObject().value("name").toString());
         for (const QJsonValue &fieldValue : mappingFields) {
             const QJsonObject field = fieldValue.toObject();
             if (available.contains(field.value("name").toString())
@@ -484,7 +479,7 @@ bool ProtocolConfig::validate(TranslationError *error) const
             return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表输入项数必须为对象").arg(code));
         const QJsonObject counts = input.value("parameterCounts").toObject();
         for (auto it = counts.begin(); it != counts.end(); ++it)
-            if (!listParameters.contains(it.key()) || !integer(it.value(), 1, 2048))
+            if (!wireLists.contains(it.key()) || !integer(it.value(), 1, 2048))
                 return fail(error, "CONFIG_PARAMETER_COUNT", QString::fromUtf8(u8"命令“%1”的列表“%2”不可用或输入项数不是1～2048整数").arg(code, it.key()));
         for (const QString &name : listParameters)
             if (!counts.contains(name))
@@ -525,7 +520,9 @@ bool ProtocolConfig::validate(TranslationError *error) const
                 if (!mappingNames.contains(source))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”找不到客户字段“%3”；请重新选择来源").arg(code, parameterName, source));
                 if (!available.contains(source))
-                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source));
+                    return fail(error, "CONFIG_EXPRESSION", hasMappedCommand()
+                        ? QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source)
+                        : QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了本映射声明不使用的字段“%3”；字段仍按格式解析").arg(code, parameterName, source));
                 if (!numericParameters.contains(source))
                     return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
                 if (listParameters.contains(source)) {
@@ -584,11 +581,22 @@ bool ProtocolConfig::liveReady(TranslationError *error) const
     return validate(error);
 }
 
+bool ProtocolConfig::hasMappedCommand() const
+{
+    for (const auto &value : root.value("external").toObject().value("fields").toArray()) {
+        const auto field = value.toObject();
+        if (field.value("role").toString() == "command")
+            return field.value("lengthMode").toString() == "mappedCommand";
+    }
+    return false;
+}
+
 QJsonObject ProtocolConfig::inputFormat(const QJsonObject &mapping) const
 {
     QJsonObject format = root.value("external").toObject();
+    if (!hasMappedCommand()) return format;
     const QJsonObject input = mapping.value("input").toObject();
-    // 只按映射省略字段；帧头、帧尾、编码始终来自共用格式。
+    // 仅显式选择 mappedCommand 时兼容旧短帧，不尝试完整/省略两套布局猜测。
     const QJsonArray omitted = input.value("omitFields").toArray();
     QJsonArray selected;
     for (const QJsonValue &field : format.value("fields").toArray())

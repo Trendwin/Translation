@@ -44,6 +44,7 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void formatDrivenParsingKeepsUnusedParameters();
     void explicitMappingStepOperationsAndResponsiveLayout();
     void noParameterResetGroupsAndExplicitTargets();
     void serialWriteErrorClosesBeforeNotification();
@@ -1800,6 +1801,86 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
     QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
 }
 
+
+void WidgetTest::formatDrivenParsingKeepsUnusedParameters()
+{
+    const QString path = freshDraftPath(); Widget widget(nullptr, path);
+    const auto directory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile example(directory.filePath("../examples/format-driven-unused-parameter.json")); QVERIFY(example.open(QIODevice::ReadOnly));
+    auto root = QJsonDocument::fromJson(example.readAll()).object();
+    auto external = root.value("external").toObject(); external.insert("header", "@&"); external.insert("footer", "\\r\\n");
+    auto fields = external.value("fields").toArray();
+    for (int row = 0; row < fields.size(); ++row) {
+        auto field = fields.at(row).toObject();
+        if (field.value("delimiter").toString() == "|") field.insert("delimiter", "&");
+        if (row < 3) field.insert("fixedValue", QStringList{"5A", "01", "SCT"}.at(row));
+        if (row == 8) { field.insert("fixedValue", "END&"); field.insert("length", 4); }
+        field.insert("extension", QString("field-%1").arg(row)); fields[row] = field;
+    }
+    external.insert("fields", fields); root.insert("external", external);
+    auto mapping = root.value("mappings").toArray().first().toObject(); mapping.insert("commandCode", "RST");
+    auto mappingInput = mapping.value("input").toObject(); mappingInput.insert("extension", "preserve unused input"); mapping.insert("input", mappingInput);
+    root.insert("mappings", QJsonArray{mapping}); applyRoot(widget, root);
+    const auto savedMappings = mappingRows(widget);
+    auto *input = widget.findChild<QLineEdit *>("customerInput");
+    const QString packet = "@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n";
+    input->setText(packet); button(widget, "parseFormatButton")->click();
+    auto *output = widget.findChild<QTextEdit *>("previewOutput");
+    QVERIFY2(output->toPlainText().contains(QString::fromUtf8(u8"数值 = [0]")), qPrintable(output->toPlainText()));
+    QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"延时 = 10")));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    QCOMPARE(mappingRows(widget), savedMappings);
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        widget.resize(1100, 740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2);
+        QDir().mkpath(render); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("format-driven-rst-parse.png")));
+    }
+    button(widget, "previewButton")->click(); QVERIFY(output->toPlainText().contains("EXECUTION_SEMANTICS"));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    auto *maps = widget.findChild<QTableWidget *>("mappingTable"); maps->setCurrentCell(0, 0); button(widget, "removeMapping")->click();
+    button(widget, "parseFormatButton")->click(); QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"数值 = [0]")));
+    QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"延时 = 10")));
+    applyRoot(widget, root); button(widget, "saveConfig")->click();
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored), savedMappings);
+    QCOMPARE(draftRoot(restored).value("external").toObject().value("fields").toArray().at(6).toObject().value("extension").toString(), QString("field-6"));
+    restored.findChild<QLineEdit *>("customerInput")->setText(packet); button(restored, "parseFormatButton")->click();
+    QVERIFY(restored.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"延时 = 10")));
+    const QString exported = freshDraftPath();
+    for (const char *action : {"exportConfig", "importConfig"}) {
+        bool opened = false;
+        QTimer::singleShot(0, &restored, [&restored, &opened, exported]() {
+            auto *dialog = restored.findChild<QFileDialog *>(); if (!dialog) return;
+            opened = true; dialog->selectFile(exported); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(restored, action)->click(); QVERIFY(opened);
+        QCOMPARE(mappingRows(restored), savedMappings);
+    }
+
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource");
+    QVERIFY(source->itemText(source->findData("@none")).contains(QString::fromUtf8(u8"字段仍解析")));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("OTHER"); button(widget, "saveMappingStep")->click();
+    auto *mode = widget.findChild<QComboBox *>("groupInputMode"); QCOMPARE(mode->currentData().toString(), QString("none"));
+    QVERIFY(mode->currentText().contains(QString::fromUtf8(u8"不使用客户参数")));
+    QCOMPARE(widget.findChild<QTableWidget *>("mappingParameterCounts")->rowCount(), 0);
+    QVERIFY(widget.findChild<QLabel *>("mappingInputHint")->text().contains(QString::fromUtf8(u8"始终读取全部字段")));
+    const auto visibleFields = widget.findChild<QTableWidget *>("fieldTable");
+    auto *commandMode = qobject_cast<QComboBox *>(visibleFields->cellWidget(5, 4));
+    commandMode->setCurrentIndex(commandMode->findData("mappedCommand"));
+    QVERIFY(mode->currentText().contains(QString::fromUtf8(u8"短报文")));
+    QVERIFY(widget.findChild<QLabel *>("mappingInputHint")->text().contains(QString::fromUtf8(u8"省略")));
+
+    // 只在测试副本将执行字段声明为普通元数据，验证RST三步均使用SDK固定零位置。
+    for (int row : {4, 7}) { auto field = fields.at(row).toObject(); field.insert("role", "metadata"); fields[row] = field; }
+    external.insert("fields", fields); root.insert("external", external); applyRoot(widget, root); button(widget, "saveConfig")->click();
+    input->setText(packet); button(widget, "previewButton")->click();
+    const auto targets = widget.findChild<QTextEdit *>("targetOutput")->toPlainText();
+    for (const QString &motor : {QString("11"), QString("12"), QString("13")}) QVERIFY(targets.contains(motor + " 44 00 03 E8 00 00 00"));
+    QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"数值 = [0]")));
+    input->setText(QString(packet).replace("RST=0;", "RST=bad;")); button(widget, "parseFormatButton")->click();
+    QVERIFY(output->toPlainText().contains("FIELD_LIST_NUMBER")); QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+}
 
 void WidgetTest::explicitMappingStepOperationsAndResponsiveLayout()
 {

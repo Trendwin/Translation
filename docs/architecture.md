@@ -8,7 +8,7 @@
 
 ## 职责
 
-- ProtocolConfig校验schemaVersion JSON，生成SHA-256版本；inputFormat按配置省略字段，帧尾只来自共用格式，不按客户协议名称选择布局。
+- ProtocolConfig校验schemaVersion JSON，生成SHA-256版本；inputFormat对普通顺序格式保持完整字段，仅mappedCommand模式兼容旧短帧省略。映射不用某字段不改变普通报文布局，帧尾只来自共用格式，不按客户协议名称选择布局。
 - ConversionEngine只依赖保存的帧边界、字段表和命令映射，完成通用分帧、字段解析、最长配置命令码匹配及参数换算。
 - UnifiedCommand/UnifiedResult传目标操作、设备、数值、单位约定、响应策略和诊断数据，不携带客户设备内置语法。
 - QushengSdk是独立QtCore模块，登记56族、实现31族单条请求/回告及08/09/17/45上报；QushengProtocol只适配业务请求和序号缓存，帧与载荷布局调用SDK。SDK参数定义/默认值/能力为普通指令单一来源，详见qusheng-sdk-design.md。
