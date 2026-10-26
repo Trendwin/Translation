@@ -31,6 +31,7 @@
 #include <QPushButton>
 #include <QSerialPortInfo>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QSignalBlocker>
 #include <QSet>
 #include <QScrollArea>
@@ -408,6 +409,12 @@ void Widget::buildUi()
 
     auto *mappingPage = new QWidget(this);
     auto *mappingLayout = new QVBoxLayout(mappingPage);
+    auto *mappingSplitter = new QSplitter(Qt::Vertical, mappingPage);
+    mappingSplitter->setObjectName("mappingSplitter");
+    mappingSplitter->setChildrenCollapsible(false);
+    auto *savedMappings = new QWidget(mappingSplitter);
+    auto *savedLayout = new QVBoxLayout(savedMappings);
+    savedLayout->setContentsMargins(0, 0, 0, 0);
     m_mappingTable = new QTableWidget(this);
     m_mappingTable->setObjectName("mappingTable");
     m_mappingTable->setColumnCount(3);
@@ -419,18 +426,18 @@ void Widget::buildUi()
     m_mappingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_mappingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mappingTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_mappingTable->setMinimumHeight(160);
+    m_mappingTable->setMinimumHeight(80);
     m_mappingTable->setToolTip(QString::fromUtf8(u8"选择映射后可删除；新增请填写下方表单。"));
     const QStringList mappingTips = {QString::fromUtf8(u8"客户报文中的命令码，支持不同长度"),
         QString::fromUtf8(u8"选择趋盛命令模板"), QString::fromUtf8(u8"来源字段、换算倍数或固定值")};
     for (int c = 0; c < mappingTips.size(); ++c) m_mappingTable->horizontalHeaderItem(c)->setToolTip(mappingTips.at(c));
-    mappingLayout->addWidget(m_mappingTable, 1);
+    savedLayout->addWidget(m_mappingTable, 1);
 
     m_mappingEditor = new QGroupBox(QString::fromUtf8(u8"添加新映射"), this);
     m_mappingEditor->setObjectName("mappingEditor");
     auto *editorLayout = new QVBoxLayout(m_mappingEditor);
-    m_mappingEditor->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    auto *newMappingHint = new QLabel(QString::fromUtf8(u8"不会更新上方已有映射；修改原项请删除重建。多条：本条入清单 → 新增下一条 → 添加命令映射。"), this);
+    m_mappingEditor->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto *newMappingHint = new QLabel(QString::fromUtf8(u8"不会更新上方已有映射。多条：添加到清单 → 新增下一条 → 添加命令映射；仅显式保存才改变清单。"), this);
     newMappingHint->setObjectName("newMappingHint"); newMappingHint->setWordWrap(true);
     editorLayout->addWidget(newMappingHint);
     auto *editorForm = new QFormLayout;
@@ -491,9 +498,14 @@ void Widget::buildUi()
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-    editorLayout->addWidget(m_mappingSteps);
+    m_mappingStepState = new QLabel(this);
+    m_mappingStepState->setObjectName("mappingStepState");
+    m_mappingStepState->setWordWrap(true);
+    editorLayout->addWidget(m_mappingStepState);
+    editorLayout->addWidget(m_mappingSteps, 1);
     auto *stepActions = new QHBoxLayout;
-    auto *saveStep = new QPushButton(QString::fromUtf8(u8"添加/更新本条指令"), this); saveStep->setObjectName("saveMappingStep");
+    auto *saveStep = new QPushButton(QString::fromUtf8(u8"添加到清单"), this); saveStep->setObjectName("saveMappingStep");
+    m_saveMappingStep = saveStep;
     auto *newStep = new QPushButton(QString::fromUtf8(u8"新增下一条"), this); newStep->setObjectName("newMappingStep");
     auto *deleteStep = new QPushButton(QString::fromUtf8(u8"删除本条"), this); deleteStep->setObjectName("deleteMappingStep");
     auto *stepUp = new QPushButton(QString::fromUtf8(u8"上移"), this); stepUp->setObjectName("mappingStepUp");
@@ -503,9 +515,8 @@ void Widget::buildUi()
     editorLayout->addLayout(stepActions);
     connect(saveStep, &QPushButton::clicked, this, [this]() { commitMappingStep(); });
     connect(newStep, &QPushButton::clicked, this, [this]() {
-        if (m_stepDirty && !commitMappingStep()) return;
+        if (!requireSavedMappingStep() || m_selectedStep < 0) return;
         loadMappingStep(-1);
-        m_stepDirty = true; // 用户已明确新增，即使复位不需参数，也应在最终添加时纳入。
     });
     connect(discardStep, &QPushButton::clicked, this, [this]() { loadMappingStep(m_selectedStep); });
     connect(deleteStep, &QPushButton::clicked, this, [this]() {
@@ -514,7 +525,7 @@ void Widget::buildUi()
         m_stepDrafts.removeAt(m_selectedStep); m_stepDirty = false; refreshMappingSteps(); loadMappingStep(next);
     });
     const auto moveStep = [this](int direction) {
-        if (m_stepDirty && !commitMappingStep()) return;
+        if (!requireSavedMappingStep()) return;
         const int next = m_selectedStep + direction;
         if (m_selectedStep < 0 || next < 0 || next >= m_stepDrafts.size()) return;
         const auto step = m_stepDrafts.takeAt(m_selectedStep); m_stepDrafts.insert(next, step);
@@ -555,8 +566,6 @@ void Widget::buildUi()
     m_mappingHint->setObjectName("mappingHint");
     m_mappingHint->setWordWrap(true);
     editorLayout->addWidget(m_mappingHint);
-    mappingLayout->addWidget(m_mappingEditor);
-    mappingLayout->addStretch();
     auto *mappingButtons = new QHBoxLayout;
     auto *addMapping = new QPushButton(QString::fromUtf8(u8"添加命令映射"), this);
     addMapping->setObjectName("addMapping");
@@ -566,8 +575,16 @@ void Widget::buildUi()
     removeMapping->setToolTip(QString::fromUtf8(u8"删除当前选中的映射；保存前仍可重新导入配置。"));
     mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping);
     removeMapping->setEnabled(false);
-    mappingButtons->addStretch(); mappingLayout->insertLayout(1, mappingButtons);
-    tabs->addTab(scrollPage(mappingPage), QString::fromUtf8(u8"命令映射"));
+    mappingButtons->addStretch(); savedLayout->addLayout(mappingButtons);
+    auto *mappingScroll = scrollPage(m_mappingEditor);
+    mappingScroll->setObjectName("mappingEditorScroll");
+    mappingSplitter->addWidget(savedMappings);
+    mappingSplitter->addWidget(mappingScroll);
+    mappingSplitter->setStretchFactor(0, 1);
+    mappingSplitter->setStretchFactor(1, 3);
+    mappingSplitter->setSizes({180, 460});
+    mappingLayout->addWidget(mappingSplitter);
+    tabs->addTab(mappingPage, QString::fromUtf8(u8"命令映射"));
 
     auto *devicePage = new QWidget(this);
     auto *deviceLayout = new QVBoxLayout(devicePage);
@@ -775,9 +792,13 @@ void Widget::buildUi()
 void Widget::connectSignals()
 {
     for (auto *line : {m_mappingValue, m_mappingMultiplier})
-        connect(line, &QLineEdit::textChanged, this, [this]() { if (!m_loadingStep && !m_loadingMapping) m_stepDirty = true; });
+        connect(line, &QLineEdit::textChanged, this, [this]() {
+            if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
+        });
     for (auto *box : {m_mappingSource, m_mappingMotor, m_mappingOperation})
-        connect(box, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() { if (!m_loadingStep && !m_loadingMapping) m_stepDirty = true; });
+        connect(box, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this]() {
+            if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
+        });
     connect(m_advancedJson, &QTextEdit::textChanged, this, [this]() {
         if (m_loadingUi) return;
         m_jsonDirty = true;
@@ -1149,13 +1170,16 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         fixed->setEnabled(selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
         connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint]() {
             updateListGuidance();
-            if (!m_loadingStep && !m_loadingMapping) m_stepDirty = true;
+            if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
             label->setData(Qt::UserRole + 2, true); const QString chosen = source->currentData().toString();
             fixed->setEnabled(chosen == "@constant");
             fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
                 : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
         });
-        connect(fixed, &QLineEdit::textChanged, this, [this, label]() { label->setData(Qt::UserRole + 2, true); if (!m_loadingStep && !m_loadingMapping) m_stepDirty = true; });
+        connect(fixed, &QLineEdit::textChanged, this, [this, label]() {
+            label->setData(Qt::UserRole + 2, true);
+            if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
+        });
     }
     // 少量参数不铺开大块空白；较多参数保留表内滚动，外层说明仍可继续滚动。
     m_mappingParameters->setFixedHeight(qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));
@@ -1235,7 +1259,7 @@ void Widget::refreshMappingSteps()
         }
         m_mappingSteps->setItem(i, 2, new QTableWidgetItem(parameters.join(QString::fromUtf8(u8"；"))));
     }
-    m_mappingSteps->setFixedHeight(qMin(110, 25 + 27 * m_stepDrafts.size()));
+    m_mappingSteps->setMinimumHeight(qMin(240, qMax(96, 26 + 26 * m_stepDrafts.size())));
     m_mappingSteps->setVisible(!m_stepDrafts.isEmpty());
     if (m_selectedStep >= 0 && m_selectedStep < m_stepDrafts.size()) m_mappingSteps->setCurrentCell(m_selectedStep, 0);
     updateMappingControls();
@@ -1258,8 +1282,27 @@ bool Widget::commitMappingStep()
     else m_stepDrafts[m_selectedStep] = mapping;
     m_stepOriginal = mapping; m_stepDirty = false;
     refreshMappingSteps(); updateMappingSources();
-    m_validationState->setText(QString::fromUtf8(u8"第%1条已更新到新组清单；完成后点击“添加命令映射”").arg(m_selectedStep + 1));
+    m_validationState->setText(QString::fromUtf8(u8"第%1条已保存，清单共%2条；完成后点击“添加命令映射”").arg(m_selectedStep + 1).arg(m_stepDrafts.size()));
     return true;
+}
+
+bool Widget::requireSavedMappingStep()
+{
+    if (!m_stepDirty) return true;
+    m_validationState->setText(QString::fromUtf8(u8"本条尚未保存到清单，请先点击“%1”或“放弃本条修改”；本次操作未执行。")
+        .arg(m_selectedStep < 0 ? QString::fromUtf8(u8"添加到清单") : QString::fromUtf8(u8"保存本条修改")));
+    return false;
+}
+
+void Widget::updateMappingStepState()
+{
+    const bool editing = m_selectedStep >= 0;
+    m_saveMappingStep->setText(editing ? QString::fromUtf8(u8"保存本条修改") : QString::fromUtf8(u8"添加到清单"));
+    m_mappingStepState->setText(editing
+        ? QString::fromUtf8(u8"正在编辑第%1条%2；清单共%3条").arg(m_selectedStep + 1)
+            .arg(m_stepDirty ? QString::fromUtf8(u8"（未保存修改）") : QString::fromUtf8(u8"（已保存）")).arg(m_stepDrafts.size())
+        : QString::fromUtf8(u8"正在新增指令（尚未入清单）；清单共%1条%2").arg(m_stepDrafts.size())
+            .arg(m_stepDirty ? QString::fromUtf8(u8"；请添加到清单或放弃修改") : QString()));
 }
 
 void Widget::loadMappingStep(int row)
@@ -1292,8 +1335,7 @@ void Widget::loadMappingStep(int row)
     m_stepDirty = false; m_loadingMapping = false; m_loadingStep = false;
     const QSignalBlocker blocker(m_mappingSteps);
     if (row >= 0) m_mappingSteps->setCurrentCell(row, 0); else { m_mappingSteps->clearSelection(); m_mappingSteps->setCurrentCell(-1, -1); }
-    m_validationState->setText(row >= 0 ? QString::fromUtf8(u8"正在编辑新组第%1条；完成后添加命令映射").arg(row + 1)
-                                      : QString::fromUtf8(u8"正在填写新的一条；已入清单的指令保持不变"));
+    m_validationState->clear();
     updateMappingControls();
 }
 
@@ -1301,8 +1343,9 @@ void Widget::selectMappingStep(int row)
 {
     if (m_switchingStep || m_loadingStep || row == m_selectedStep || row < 0) return;
     m_switchingStep = true;
-    if (m_stepDirty && !commitMappingStep()) {
+    if (!requireSavedMappingStep()) {
         const QSignalBlocker blocker(m_mappingSteps);
+        m_mappingSteps->clearSelection();
         m_mappingSteps->setCurrentCell(m_selectedStep, 0);
         m_switchingStep = false; return;
     }
@@ -1312,7 +1355,7 @@ void Widget::selectMappingStep(int row)
 bool Widget::readGroupMapping(QJsonObject *mapping)
 {
     if (m_stepDrafts.isEmpty()) return readNewMapping(mapping);
-    if (m_stepDirty && !commitMappingStep()) return false;
+    if (!requireSavedMappingStep()) return false;
     QJsonObject input = m_groupInput;
     const auto omitted = mappingOmittedFields();
     input.insert("omitFields", omitted);
@@ -1520,8 +1563,6 @@ void Widget::updateMappingCounts()
     m_mappingCounts->setFixedHeight(qMin(126, (m_mappingCounts->rowCount() + 1) * 30 + 6));
     m_mappingCountsGroup->setVisible(m_mappingCounts->rowCount() > 0);
     // Leave room for the list count and all four XYZ parameters in the normal window.
-    m_mappingTable->setMinimumHeight(m_mappingCounts->rowCount() > 0 ? 110 : 160);
-    m_mappingTable->setMaximumHeight(m_mappingCounts->rowCount() > 0 ? 120 : QWIDGETSIZE_MAX);
 }
 
 void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
@@ -1620,6 +1661,7 @@ void Widget::updateMappingSources(bool rebuildCounts)
 }
 void Widget::updateMappingControls()
 {
+    updateMappingStepState();
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     const bool grouped = !m_stepDrafts.isEmpty();
@@ -1633,9 +1675,6 @@ void Widget::updateMappingControls()
                 if (auto *label = form->labelForField(search)) label->setVisible(!grouped);
         }
     m_mappingSearch->setVisible(!grouped);
-    const bool hasLists = m_mappingCounts->rowCount() > 0;
-    m_mappingTable->setMinimumHeight(grouped ? 56 : hasLists ? 110 : 160);
-    m_mappingTable->setMaximumHeight(grouped ? 64 : hasLists ? 120 : QWIDGETSIZE_MAX);
     m_mappingParameters->verticalHeader()->setDefaultSectionSize(grouped ? 25 : 30);
     m_mappingParameters->setFixedHeight(grouped ? qMin(164, 28 + 25 * m_mappingParameters->rowCount())
                                               : qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));

@@ -19,6 +19,7 @@
 #include <QStandardItemModel>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QSplitter>
 #include "qusheng/qushengcommandcatalog.h"
 #include <QGroupBox>
 #include <QTemporaryDir>
@@ -43,6 +44,7 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void explicitMappingStepOperationsAndResponsiveLayout();
     void noParameterResetGroupsAndExplicitTargets();
     void serialWriteErrorClosesBeforeNotification();
     void oneToManyMappingEditorLifecycle();
@@ -757,7 +759,8 @@ void WidgetTest::simplifiedExpertInterface()
     QCOMPARE(button(widget, "sendButton")->text(), QString::fromUtf8(u8"发送"));
     QVERIFY(!widget.findChild<QWidget *>("deviceConfirmed"));
     tabs->setCurrentIndex(1); QCoreApplication::processEvents();
-    auto *scroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(scroll);
+    auto *scroll = widget.findChild<QScrollArea *>("mappingEditorScroll"); QVERIFY(scroll);
+    scroll->ensureWidgetVisible(widget.findChild<QLineEdit *>("mappingMultiplier")); QCoreApplication::processEvents();
     QVERIFY(scroll->viewport()->rect().contains(widget.findChild<QLineEdit *>("mappingMultiplier")->mapTo(scroll->viewport(), QPoint(0, 0))));
 }
 
@@ -1698,7 +1701,7 @@ void WidgetTest::renderChinesePages()
     widget.findChild<QPushButton *>("saveConfig")->click(); QCoreApplication::processEvents();
     if (!renderDir.isEmpty()) QVERIFY(widget.grab().save(QDir(renderDir).filePath("mapping-sdk-81.png")));
     operation->setCurrentIndex(operation->findData("QUSHENG_C2"));
-    auto *mappingScroll = qobject_cast<QScrollArea *>(tabs->widget(1)); QVERIFY(mappingScroll);
+    auto *mappingScroll = widget.findChild<QScrollArea *>("mappingEditorScroll"); QVERIFY(mappingScroll);
     operation->setCurrentIndex(operation->findData("QUSHENG_22"));
     mappingScroll->ensureWidgetVisible(operation); QCoreApplication::processEvents();
     operation->showPopup(); QCoreApplication::processEvents();
@@ -1798,6 +1801,102 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
 }
 
 
+void WidgetTest::explicitMappingStepOperationsAndResponsiveLayout()
+{
+    const QString path = freshDraftPath();
+    Widget widget(nullptr, path);
+    const auto directory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile example(directory.filePath("../examples/no-parameter-reset-group.json")); QVERIFY(example.open(QIODevice::ReadOnly));
+    auto root = QJsonDocument::fromJson(example.readAll()).object();
+    const auto sample = root.value("mappings").toArray().first().toObject();
+    QJsonArray savedMappings;
+    for (int index = 0; index < 8; ++index) {
+        auto mapping = sample; mapping.insert("commandCode", QString("R%1").arg(index)); savedMappings.append(mapping);
+    }
+    root.insert("mappings", savedMappings); applyRoot(widget, root);
+    widget.resize(1100, 740); widget.show();
+    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *motor = widget.findChild<QComboBox *>("mappingMotor");
+    auto *steps = widget.findChild<QTableWidget *>("mappingSteps");
+    auto *saveStep = button(widget, "saveMappingStep");
+    auto *state = widget.findChild<QLabel *>("mappingStepState");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("EIGHT");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET")); motor->setCurrentIndex(motor->findData(0x11));
+    QCOMPARE(saveStep->text(), QString::fromUtf8(u8"添加到清单"));
+    saveStep->click(); QCOMPARE(steps->rowCount(), 1);
+    QCOMPARE(saveStep->text(), QString::fromUtf8(u8"保存本条修改"));
+    saveStep->click(); QCOMPARE(steps->rowCount(), 1); // 再保存只更新，不追加。
+    button(widget, "newMappingStep")->click(); button(widget, "newMappingStep")->click();
+    QCOMPARE(steps->rowCount(), 1); QCOMPARE(steps->currentRow(), -1);
+    motor->setCurrentIndex(motor->findData(0x12));
+    for (const char *action : {"newMappingStep", "mappingStepUp", "mappingStepDown", "addMapping"}) {
+        button(widget, action)->click(); QCOMPARE(steps->rowCount(), 1); QCOMPARE(mappingRows(widget).size(), 8);
+        QCOMPARE(motor->currentData().toInt(), 0x12);
+        QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"尚未保存")));
+    }
+    steps->setCurrentCell(0, 0); QCOMPARE(steps->currentRow(), -1); QCOMPARE(motor->currentData().toInt(), 0x12);
+    saveStep->click(); QCOMPARE(steps->rowCount(), 2);
+    steps->setCurrentCell(0, 0); motor->setCurrentIndex(motor->findData(0x13));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"未保存")));
+    const auto firstRow = steps->item(0, 2)->text();
+    steps->setCurrentCell(1, 0); QCOMPARE(steps->currentRow(), 0);
+    for (const char *action : {"newMappingStep", "mappingStepUp", "mappingStepDown", "addMapping"}) button(widget, action)->click();
+    QCOMPARE(steps->rowCount(), 2); QCOMPARE(steps->currentRow(), 0);
+    QCOMPARE(steps->item(0, 2)->text(), firstRow); QCOMPARE(motor->currentData().toInt(), 0x13);
+    button(widget, "discardMappingStep")->click(); QCOMPARE(motor->currentData().toInt(), 0x11);
+    motor->setCurrentIndex(motor->findData(0x13)); saveStep->click(); QCOMPARE(steps->rowCount(), 2);
+    button(widget, "mappingStepDown")->click(); QCOMPARE(steps->rowCount(), 2); QCOMPARE(steps->currentRow(), 1);
+    button(widget, "mappingStepUp")->click(); QCOMPARE(steps->rowCount(), 2); QCOMPARE(steps->currentRow(), 0);
+
+    // 完全相同的指令仍可明确添加两次，不按值自动去重。
+    for (int index = 0; index < 2; ++index) { button(widget, "newMappingStep")->click(); saveStep->click(); }
+    QCOMPARE(steps->rowCount(), 4); QCOMPARE(steps->item(2, 2)->text(), steps->item(3, 2)->text());
+    while (steps->rowCount() < 8) {
+        button(widget, "newMappingStep")->click(); motor->setCurrentIndex(motor->findData(0x11 + steps->rowCount() % 6)); saveStep->click();
+    }
+    QCoreApplication::processEvents();
+    QVERIFY(widget.findChild<QTableWidget *>("mappingTable")->height() >= 100);
+    QVERIFY(steps->height() > 110);
+    const int normalHeight = steps->height();
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render);
+        QVERIFY(widget.grab().save(QDir(render).filePath("explicit-reset-eight.png")));
+    }
+    widget.resize(1400, 1000); QCoreApplication::processEvents();
+    QVERIFY(steps->height() > normalHeight);
+    if (!render.isEmpty()) QVERIFY(widget.grab().save(QDir(render).filePath("explicit-reset-large.png")));
+    widget.resize(1100, 740); QCoreApplication::processEvents();
+    auto *splitter = widget.findChild<QSplitter *>("mappingSplitter"); QVERIFY(splitter);
+    const int upperHeight = splitter->sizes().first(); splitter->setSizes({upperHeight + 40, splitter->sizes().last() - 40});
+    QCoreApplication::processEvents(); QVERIFY(splitter->sizes().first() > upperHeight);
+
+    // 干净的新草稿不属于清单；最终映射条数必须等于眼前的8条。
+    button(widget, "newMappingStep")->click(); button(widget, "newMappingStep")->click();
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), 9);
+    QCOMPARE(mappingRows(widget).last().toObject().value("steps").toArray().size(), 8);
+    button(widget, "saveConfig")->click(); const auto saved = mappingRows(widget);
+    button(widget, "saveConfig")->click(); QCOMPARE(mappingRows(widget), saved);
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored), saved);
+
+    widget.findChild<QLineEdit *>("mappingCode")->setText("XYZGROUP");
+    operation->setCurrentIndex(operation->findData("MOTOR_RESET")); saveStep->click();
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    for (const QString &key : {QString("moduleIndex"), QString("xPosition"), QString("yPosition"), QString("zPosition")}) {
+        const int row = parameterRow(parameters, key); QVERIFY(row >= 0);
+        auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(row, 1)); source->setCurrentIndex(source->findData("@constant"));
+        qobject_cast<QLineEdit *>(parameters->cellWidget(row, 2))->setText(key == "moduleIndex" ? "35" : "1234");
+    }
+    saveStep->click(); QCOMPARE(steps->rowCount(), 2);
+    auto *scroll = widget.findChild<QScrollArea *>("mappingEditorScroll"); QVERIFY(scroll);
+    QCoreApplication::processEvents(); scroll->ensureWidgetVisible(parameters);
+    QCoreApplication::processEvents();
+    QVERIFY(scroll->viewport()->rect().contains(QRect(parameters->mapTo(scroll->viewport(), QPoint()), parameters->size())));
+    if (!render.isEmpty()) QVERIFY(widget.grab().save(QDir(render).filePath("explicit-xyz-parameters.png")));
+}
+
 void WidgetTest::noParameterResetGroupsAndExplicitTargets()
 {
     const QString path = freshDraftPath();
@@ -1877,6 +1976,7 @@ void WidgetTest::noParameterResetGroupsAndExplicitTargets()
         widget.findChild<QLabel *>("validationState")->clear(); QCoreApplication::processEvents();
         QVERIFY(widget.grab().save(QDir(render).filePath("no-parameter-fixed-position.png")));
     }
+    button(widget, "saveMappingStep")->click();
     button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), mappingCount + 1);
     const auto mixed = mappingRows(widget).last().toObject();
     QCOMPARE(mixed.value("steps").toArray().size(), 2);
@@ -1906,7 +2006,7 @@ void WidgetTest::noParameterResetGroupsAndExplicitTargets()
     operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
     motor->setCurrentIndex(motor->findData(0x13));
     button(widget, "saveMappingStep")->click();
-    button(widget, "newMappingStep")->click();
+    button(widget, "newMappingStep")->click(); button(widget, "saveMappingStep")->click();
     button(widget, "addMapping")->click();
     const auto repeated = mappingRows(widget).last().toObject().value("steps").toArray();
     QCOMPARE(repeated.size(), 2); QCOMPARE(repeated.first(), repeated.last());
@@ -1958,7 +2058,8 @@ void WidgetTest::oneToManyMappingEditorLifecycle()
     button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); source->setCurrentIndex(parameterChoice(source, "values", 1)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 3);
     steps->setCurrentCell(0, 0); source->setCurrentIndex(parameterChoice(source, "values", 2));
     widget.findChild<QComboBox *>("mappingMotor")->setCurrentIndex(widget.findChild<QComboBox *>("mappingMotor")->findData(0x12));
-    // Final add must capture the current uncommitted valid edit exactly once.
+    // Only explicit step save changes the list; final add uses the visible list.
+    button(widget, "saveMappingStep")->click();
     button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), 4);
     button(widget, "saveConfig")->click(); const auto saved = draftRoot(widget); const auto mapping = saved.value("mappings").toArray().last().toObject();
     const auto configured = mapping.value("steps").toArray(); QCOMPARE(configured.size(), 3);
