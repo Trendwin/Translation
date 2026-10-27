@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "阀号选择与时间来源通用示例",
+  "external": {
+    "encoding": "ascii", "header": "!", "footer": "\\r",
+    "fields": [
+      {"name": "command", "role": "command", "type": "ascii", "lengthMode": "delimited", "delimiter": "="},
+      {"name": "values", "role": "parameter", "type": "integerList", "lengthMode": "toFooter", "min": 0, "max": 4294967295}
+    ]
+  },
+  "mappings": [
+    {"commandCode": "CLOSE1", "operation": "QUSHENG_21", "input": {"omitFields": ["values"]},
+     "parameters": {"mode": {"kind": "constant", "value": 0}, "valveMask": {"kind": "constant", "value": 1}, "duration": {"kind": "constant", "value": 0}}},
+    {"commandCode": "CLOSE30", "operation": "QUSHENG_21", "input": {"omitFields": ["values"]},
+     "parameters": {"mode": {"kind": "constant", "value": 0}, "valveMask": {"kind": "constant", "value": 536870912}}},
+    {"commandCode": "OPENSET", "operation": "QUSHENG_21", "input": {"parameterCounts": {"values": 1}},
+     "parameters": {"mode": {"kind": "constant", "value": 1}, "valveMask": {"kind": "constant", "value": 538445313},
+       "duration": {"kind": "field", "field": "values", "itemIndex": 1}}},
+    {"commandCode": "OPEN30", "operation": "QUSHENG_22", "input": {"parameterCounts": {"values": 1}},
+     "parameters": {"devId": {"kind": "constant", "value": 78}, "duration": {"kind": "field", "field": "values", "itemIndex": 1}}},
+    {"commandCode": "REPLACE", "operation": "QUSHENG_21", "input": {"omitFields": ["values"]},
+     "parameters": {"mode": {"kind": "constant", "value": 2}, "valveMask": {"kind": "constant", "value": 5}, "duration": {"kind": "constant", "value": 1000}}},
+    {"commandCode": "DEFAULT22", "operation": "QUSHENG_22", "input": {"omitFields": ["values"]}, "parameters": {}}
+  ],
+  "device": {"destination": 2, "source": 1, "devId": 17, "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 6000}
+}

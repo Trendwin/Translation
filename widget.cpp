@@ -10,6 +10,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -21,6 +22,7 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -565,6 +567,67 @@ void Widget::buildUi()
     m_mappingListGuidance->setWordWrap(true);
     countsLayout->addWidget(m_mappingListGuidance);
     editorLayout->addWidget(m_mappingCountsGroup);
+    m_valveEditor = new QGroupBox(QString::fromUtf8(u8"选择阀门（自动生成固定参数）"), this);
+    m_valveEditor->setObjectName("valveSelectionEditor");
+    auto *valveLayout = new QVBoxLayout(m_valveEditor);
+    valveLayout->setContentsMargins(6, 6, 6, 6);
+    valveLayout->setSpacing(4);
+    auto *valveForm = new QFormLayout;
+    m_valveMode = new QComboBox(this); m_valveMode->setObjectName("valveMode");
+    m_valveMode->addItem(QString::fromUtf8(u8"未确定（请检查取值来源；选择动作可改固定值）"), -1);
+    m_valveMode->addItem(QString::fromUtf8(u8"关闭选中阀（其余不变）"), 0);
+    m_valveMode->addItem(QString::fromUtf8(u8"开启选中阀（其余不变）"), 1);
+    m_valveMode->addItem(QString::fromUtf8(u8"按位覆盖全部（未选阀关闭）"), 2);
+    qobject_cast<QStandardItemModel *>(m_valveMode->model())->item(0)->setEnabled(false);
+    m_valveNumber = new QComboBox(this); m_valveNumber->setObjectName("valveNumber");
+    m_valveNumber->setMaxVisibleItems(12);
+    m_valveNumber->addItem(QString::fromUtf8(u8"未确定（请检查取值来源；选择阀号可改固定值）"), 0);
+    qobject_cast<QStandardItemModel *>(m_valveNumber->model())->item(0)->setEnabled(false);
+    for (int number = 1; number <= 30; ++number)
+        m_valveNumber->addItem(QString::fromUtf8(u8"%1号阀（0x%2）").arg(number).arg(QString::number(0x30 + number, 16).toUpper()), 0x30 + number);
+    valveForm->addRow(QString::fromUtf8(u8"动作"), m_valveMode);
+    valveForm->addRow(QString::fromUtf8(u8"仅开启的阀号"), m_valveNumber);
+    valveLayout->addLayout(valveForm);
+    m_valveActionHint = new QLabel(this); m_valveActionHint->setObjectName("valveActionHint"); m_valveActionHint->setWordWrap(true);
+    valveLayout->addWidget(m_valveActionHint);
+    m_valveChecksGroup = new QGroupBox(QString::fromUtf8(u8"选一个阀即单路，选多个即多路"), this);
+    auto *valveChecksLayout = new QVBoxLayout(m_valveChecksGroup);
+    valveChecksLayout->setContentsMargins(4, 4, 4, 4);
+    auto *valveGroups = new QHBoxLayout;
+    for (int group = 0; group < 3; ++group) {
+        auto *box = new QGroupBox(QString::fromUtf8(u8"%1～%2号阀").arg(group * 10 + 1).arg(group * 10 + 10), this);
+        auto *grid = new QGridLayout(box); grid->setContentsMargins(5, 5, 5, 5); grid->setVerticalSpacing(2);
+        for (int item = 0; item < 10; ++item) {
+            const int number = group * 10 + item + 1;
+            auto *check = new QCheckBox(QString::fromUtf8(u8"%1号阀（0x%2）").arg(number).arg(QString::number(0x30 + number, 16).toUpper()), this);
+            check->setObjectName("valveCheck" + QString::number(number));
+            m_valveChecks.append(check); grid->addWidget(check, item % 5, item / 5);
+            connect(check, &QCheckBox::toggled, this, [this]() {
+                quint32 mask = 0;
+                for (int index = 0; index < m_valveChecks.size(); ++index)
+                    if (m_valveChecks[index]->isChecked()) mask |= quint32(1) << index;
+                setValveConstant("valveMask", mask);
+            });
+        }
+        valveGroups->addWidget(box);
+    }
+    valveChecksLayout->addLayout(valveGroups);
+    auto *valveButtons = new QHBoxLayout;
+    auto *allValves = new QPushButton(QString::fromUtf8(u8"全选"), this); allValves->setObjectName("selectAllValves");
+    auto *noValves = new QPushButton(QString::fromUtf8(u8"清空选择"), this); noValves->setObjectName("clearValves");
+    valveButtons->addWidget(allValves); valveButtons->addWidget(noValves); valveButtons->addStretch();
+    valveChecksLayout->addLayout(valveButtons); valveLayout->addWidget(m_valveChecksGroup);
+    connect(allValves, &QPushButton::clicked, this, [this]() { setValveConstant("valveMask", 0x3fffffff); });
+    connect(noValves, &QPushButton::clicked, this, [this]() { setValveConstant("valveMask", 0); });
+    const auto setMode = [this](int index) { const int value = m_valveMode->itemData(index).toInt(); if (value >= 0) setValveConstant("mode", quint32(value)); };
+    const auto setNumber = [this](int index) { const int value = m_valveNumber->itemData(index).toInt(); if (value >= 0x31) setValveConstant("devId", quint32(value)); };
+    connect(m_valveMode, QOverload<int>::of(&QComboBox::currentIndexChanged), this, setMode);
+    connect(m_valveMode, QOverload<int>::of(&QComboBox::activated), this, setMode);
+    connect(m_valveNumber, QOverload<int>::of(&QComboBox::currentIndexChanged), this, setNumber);
+    connect(m_valveNumber, QOverload<int>::of(&QComboBox::activated), this, setNumber);
+    m_valveSummary = new QLabel(this); m_valveSummary->setObjectName("valveSelectionSummary"); m_valveSummary->setWordWrap(true);
+    valveLayout->addWidget(m_valveSummary);
+    editorLayout->addWidget(m_valveEditor);
     editorLayout->addWidget(m_mappingParameters);
     m_mappingHint = new QLabel(QString::fromUtf8(u8"模块编号不是物理电机编号。三个位置都须设置，固定0表示位置0；三轴速度沿用设备页默认运动速度，单位由下位机配置决定。"), this);
     m_mappingHint->setObjectName("mappingHint");
@@ -1181,14 +1244,115 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
             fixed->setEnabled(chosen == "@constant");
             fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
                 : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
+            updateValveEditor();
         });
         connect(fixed, &QLineEdit::textChanged, this, [this, label]() {
             label->setData(Qt::UserRole + 2, true);
             if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
+            updateValveEditor();
         });
     }
     // 少量参数不铺开大块空白；较多参数保留表内滚动，外层说明仍可继续滚动。
     m_mappingParameters->setFixedHeight(qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));
+    updateValveEditor();
+}
+
+bool Widget::valveValue(const QString &key, quint32 *value, QString *origin) const
+{
+    const QString operation = m_mappingOperation->currentData().toString();
+    for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
+        const auto *label = m_mappingParameters->item(row, 0);
+        const auto definition = label->data(Qt::UserRole).toJsonObject();
+        if (definition.value("key").toString() != key) continue;
+        auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1));
+        auto *fixed = qobject_cast<QLineEdit *>(m_mappingParameters->cellWidget(row, 2));
+        if (!source || !fixed) break;
+        QString text;
+        if (source->currentData().toString() == "@constant") {
+            *origin = QString::fromUtf8(u8"固定值"); text = fixed->text().trimmed();
+        } else if (source->currentData().toString().isEmpty()) {
+            *origin = parameterDefaultText(definition, operation);
+            const auto preset = m_draftRoot.value("sdkDefaults").toObject().value(operation).toObject();
+            text = (preset.contains(key) ? preset.value(key) : definition.value("default")).toVariant().toString();
+        } else {
+            *origin = QString::fromUtf8(u8"客户来源：") + source->currentText();
+            if (label->data(Qt::UserRole + 1).toJsonObject().value("kind").toString() == "linear")
+                *origin += QString::fromUtf8(u8"（保留线性关系）");
+            return false;
+        }
+        bool ok = false; const qlonglong number = text.toLongLong(&ok);
+        if (!ok || number < definition.value("min").toDouble() || number > definition.value("max").toDouble()) {
+            *origin += QString::fromUtf8(u8"尚未设置或无效"); return false;
+        }
+        *value = quint32(number); return true;
+    }
+    *origin = QString::fromUtf8(u8"尚未设置"); return false;
+}
+
+void Widget::setValveConstant(const QString &key, quint32 value)
+{
+    const QString operation = m_mappingOperation->currentData().toString();
+    if (operation != "QUSHENG_21" && operation != "QUSHENG_22") return;
+    for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
+        if (m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject().value("key").toString() != key) continue;
+        auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1));
+        auto *fixed = qobject_cast<QLineEdit *>(m_mappingParameters->cellWidget(row, 2));
+        if (!source || !fixed) return;
+        // 通过原参数编辑入口改变对应关系；不接触时长或其它表达式及扩展元数据。
+        source->setCurrentIndex(source->findData("@constant")); fixed->setText(QString::number(value));
+        updateValveEditor(); return;
+    }
+}
+
+void Widget::updateValveEditor()
+{
+    if (!m_valveEditor) return;
+    const QString operation = m_mappingOperation->currentData().toString();
+    const bool group = operation == "QUSHENG_21", single = operation == "QUSHENG_22";
+    m_valveEditor->setVisible(group || single);
+    if (!group && !single) return;
+    m_valveChecksGroup->setVisible(group); m_valveMode->setVisible(group); m_valveNumber->setVisible(single);
+    auto *form = qobject_cast<QFormLayout *>(m_valveEditor->layout()->itemAt(0)->layout());
+    if (form) {
+        if (auto *label = form->labelForField(m_valveMode)) label->setVisible(group);
+        if (auto *label = form->labelForField(m_valveNumber)) label->setVisible(single);
+    }
+    quint32 mode = 0, mask = 0, number = 0; QString modeOrigin, maskOrigin, numberOrigin;
+    if (group) {
+        const bool modeKnown = valveValue("mode", &mode, &modeOrigin);
+        const bool maskKnown = valveValue("valveMask", &mask, &maskOrigin);
+        const QSignalBlocker modeBlocker(m_valveMode);
+        m_valveMode->setCurrentIndex(m_valveMode->findData(modeKnown ? int(mode) : -1));
+        QStringList selected;
+        for (int index = 0; index < m_valveChecks.size(); ++index) {
+            const QSignalBlocker blocker(m_valveChecks[index]);
+            const bool checked = maskKnown && (mask & (quint32(1) << index));
+            m_valveChecks[index]->setChecked(checked);
+            if (checked) selected.append(QString::number(index + 1));
+        }
+        QString effect;
+        if (modeKnown && mode == 2) effect = QString::fromUtf8(u8"按位覆盖全部：选中阀开启，未选阀全部关闭。");
+        else effect = QString::fromUtf8(u8"关闭单阀：选“关闭选中”，只勾目标阀，其余阀不变。覆盖全部模式会关闭未选阀。");
+        if (maskKnown && mask == 0)
+            effect += modeKnown && mode == 2 ? QString::fromUtf8(u8" 当前未选阀，将关闭全部阀。")
+                                            : QString::fromUtf8(u8" 当前未选阀；开/关选中模式不会操作任何阀。");
+        m_valveActionHint->setText(effect + QString::fromUtf8(u8" 关闭动作不使用开启时间；开启时0表示使用设备超时设置。"));
+        m_valveActionHint->setStyleSheet(modeKnown && mode == 2 ? "color:#9b4300;font-weight:bold;" : QString());
+        const QString selection = maskKnown ? (selected.isEmpty() ? QString::fromUtf8(u8"未选阀")
+            : QString::fromUtf8(u8"已选%1号阀").arg(selected.join(QString::fromUtf8(u8"、"))))
+            : QString::fromUtf8(u8"尚不能显示固定阀号，请查看来源；勾选将改为固定阀号");
+        m_valveSummary->setText(QString::fromUtf8(u8"动作来源：%1；阀号来源：%2。%3。选择动作或阀号会改用固定值；客户参数来源和时间仍可在下表设置。")
+            .arg(modeOrigin, maskOrigin, selection));
+    } else {
+        const bool known = valveValue("devId", &number, &numberOrigin);
+        const QSignalBlocker blocker(m_valveNumber);
+        m_valveNumber->setCurrentIndex(m_valveNumber->findData(known ? int(number) : 0));
+        m_valveActionHint->setStyleSheet(QString());
+        m_valveActionHint->setText(QString::fromUtf8(u8"0x22仅开启单阀，时间0不等于关闭。关闭请选0x21“电磁阀开关（单路/多路）”，选择关闭并只勾目标阀。"));
+        m_valveSummary->setText(QString::fromUtf8(u8"阀号来源：%1。%2；选择阀号会改用固定阀号，客户参数来源和时间仍可在下表设置。")
+            .arg(numberOrigin, known ? QString::fromUtf8(u8"当前%1号阀，协议编号0x%2").arg(number - 0x30).arg(QString::number(number, 16).toUpper())
+                                    : QString::fromUtf8(u8"尚未确定固定阀号，请查看实际来源")));
+    }
 }
 
 QString Widget::parameterDefaultText(const QJsonObject &definition, const QString &operation) const
@@ -1678,6 +1842,7 @@ void Widget::updateMappingSources(bool rebuildCounts)
 void Widget::updateMappingControls()
 {
     updateMappingStepState();
+    updateValveEditor();
     const bool legacyInput = legacyMappedInput();
     m_groupInputMode->setItemText(m_groupInputMode->findData("parameters"), legacyInput
         ? QString::fromUtf8(u8"读取客户参数") : QString::fromUtf8(u8"使用客户参数取值"));
@@ -2324,6 +2489,23 @@ QByteArray Widget::inputBytes(const ProtocolConfig &config, TranslationError *er
 
 QString Widget::previewText(const ConversionPreview &preview) const
 {
+    const auto targetDescription = [](const UnifiedCommand &command) {
+        if (command.operation == "QUSHENG_21") {
+            const quint32 mask = command.parameters.value("valveMask").toUInt();
+            const bool replaceAll = command.parameters.value("mode").toUInt() == 2;
+            QStringList valves;
+            for (int index = 0; index < 30; ++index)
+                if (mask & (quint32(1) << index)) valves.append(QString::number(index + 1));
+            if (valves.isEmpty()) return replaceAll ? QString::fromUtf8(u8"全部30路阀关闭") : QString::fromUtf8(u8"未选阀（无操作）");
+            return QString::fromUtf8(u8"%1号阀%2").arg(valves.join(QString::fromUtf8(u8"、")))
+                .arg(replaceAll ? QString::fromUtf8(u8"（未选阀关闭）") : QString());
+        }
+        if (command.operation == "QUSHENG_22") {
+            const quint32 number = command.parameters.value("devId").toUInt();
+            return QString::fromUtf8(u8"%1号阀（0x%2）").arg(number - 0x30).arg(QString::number(number, 16).toUpper());
+        }
+        return command.targetDevice;
+    };
     QStringList lines;
     lines << QString::fromUtf8(u8"原始输入：%1").arg(visibleBytes(preview.input));
     lines << QString::fromUtf8(u8"识别字段：");
@@ -2335,7 +2517,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
         lines << QString::fromUtf8(u8"共%1条趋盛指令（成功应答后顺序发送；不代表机械动作完成）").arg(preview.steps.size());
         for (int i = 0; i < preview.steps.size(); ++i) {
             const auto &step = preview.steps[i];
-            lines << QString::fromUtf8(u8"第%1条：%2，目标%3").arg(i + 1).arg(operationName(step.command.operation), step.command.targetDevice);
+            lines << QString::fromUtf8(u8"第%1条：%2，目标%3").arg(i + 1).arg(operationName(step.command.operation), targetDescription(step.command));
             for (auto it = step.parameterTrace.begin(); it != step.parameterTrace.end(); ++it)
                 lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
         }
@@ -2344,10 +2526,12 @@ QString Widget::previewText(const ConversionPreview &preview) const
     lines << QString::fromUtf8(u8"参数换算：");
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
         lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
-    const QString device = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
-        || preview.command.operation == "QUSHENG_C1"
-        ? preview.command.targetDevice : QStringLiteral("-");
-    lines << QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3")
+    const bool valve = preview.command.operation == "QUSHENG_21" || preview.command.operation == "QUSHENG_22";
+    const bool hasDevice = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
+        || preview.command.operation == "QUSHENG_C1";
+    const QString device = valve ? targetDescription(preview.command) : hasDevice ? preview.command.targetDevice : QStringLiteral("-");
+    lines << (valve ? QString::fromUtf8(u8"统一命令：操作=%1，目标=%2，配置版本=%3")
+                   : QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3"))
              .arg(operationName(preview.command.operation), device,
                   preview.command.configVersion.left(12));
     for (auto it = preview.command.parameters.begin(); it != preview.command.parameters.end(); ++it)
