@@ -32,6 +32,14 @@ QJsonArray QushengCommandCatalog::commands()
                          .arg(spec.label).arg(spec.minimum).arg(spec.maximum)}};
                     if (!spec.deviceKey.isEmpty()) parameter.insert("defaultSource", "device." + spec.deviceKey);
                     if (spec.defaultValue.isValid()) parameter.insert("default", QJsonValue::fromVariant(spec.defaultValue));
+                    if (code == 0x21 && spec.key == "mode")
+                        parameter.insert("description", QString::fromUtf8(u8"0关闭选中、1开启选中，其余不变；2按位覆盖全部，未选阀关闭。"));
+                    if (code == 0x21 && spec.key == "valveMask")
+                        parameter.insert("description", QString::fromUtf8(u8"阀1为bit0，阀30为bit29；可在阀选择区勾选自动生成，也保留客户字段和原始数值来源。"));
+                    if ((code == 0x21 || code == 0x22) && spec.key == "duration")
+                        parameter.insert("description", QString::fromUtf8(u8"4字节大端开启时间。0使用超时配置，不表示关闭；关闭选中时保留配置值，不自动删改来源。"));
+                    if (code == 0x22 && spec.key == "devId")
+                        parameter.insert("description", QString::fromUtf8(u8"1～30号阀对应0x31～0x4E，0x22只开启；关闭使用0x21选择目标阀。"));
                     if (code == 0xc1 && (spec.key == "moduleType" || spec.key.endsWith("Speed")))
                         parameter.insert("editable", false);
                     QJsonArray allowed; for (qint64 value : spec.allowedValues) allowed.append(double(value));

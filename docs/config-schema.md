@@ -114,3 +114,7 @@ SDK固定 `moduleType=1`，拒绝类型2。`xSpeed/ySpeed/zSpeed` 不能作为�
 ## 一对多映射
 
 映射根可使用非空steps数组（1～64条），各步独立operation/parameters，根input共用。不能同时存在根operation/parameters，step禁止input/commandCode/steps。旧单条格式保持兼容；未知扩展分层保留。整组静态校验和数值快照全部成功后才入队，任何一步错误清空输出；执行按成功ACK与完整写出双条件推进，错误终止本组剩余。详见[完整说明与示例](one-to-many-mappings.md)。
+
+## 阀号辅助选择
+
+阀选择器继续保存原operation和参数表达式，不增加schema字段：QUSHENG_21使用mode（0关闭选中、1开启选中、2覆盖全部）、valveMask（30位）和duration；QUSHENG_22使用devId（0x31～0x4E）和duration，仅开启。勾选阀号时只把对应valveMask改为constant，选择动作或单阀编号同理；默认、field、linear和itemIndex在未操作对应选择器时保留，duration不随开关动作自动删改。mode0/1的mask0是无操作，mode2的mask0关闭全部。详见[电磁阀号选择](valve-selection.md)。

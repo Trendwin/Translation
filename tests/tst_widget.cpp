@@ -44,6 +44,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void valveSelectionMappingLifecycle();
+    void valveSourcesAndMetadataArePreserved();
     void formatDrivenParsingKeepsUnusedParameters();
     void explicitMappingStepOperationsAndResponsiveLayout();
     void noParameterResetGroupsAndExplicitTargets();
@@ -674,7 +676,8 @@ void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
     Widget widget(nullptr, freshDraftPath());
     auto *operation = widget.findChild<QComboBox *>("mappingOperation"); QVERIFY(operation);
     // 独立核对截图里的项，不能仅从同一张目录自动生成期望而遗漏格式乱码。
-    QCOMPARE(operation->itemText(operation->findData("QUSHENG_22")), QString::fromUtf8(u8"0x22 | 电磁阀单路控制"));
+    QCOMPARE(operation->itemText(operation->findData("QUSHENG_21")), QString::fromUtf8(u8"0x21 | 电磁阀开关（单路/多路）"));
+    QCOMPARE(operation->itemText(operation->findData("QUSHENG_22")), QString::fromUtf8(u8"0x22 | 电磁阀单路开启（仅开启）"));
     QCOMPARE(operation->itemText(operation->findData("QUSHENG_17")), QString::fromUtf8(u8"0x17 | 电机运动完成上报 (仅接收)"));
     QCOMPARE(operation->itemText(operation->findData("MOTOR_FORWARD")), QString::fromUtf8(u8"0x11 | 步进电机前进"));
     QCOMPARE(operation->itemText(operation->findData("MOTOR_STOP")), QString::fromUtf8(u8"0x11 | 步进电机停止"));
@@ -682,7 +685,7 @@ void WidgetTest::catalogTextIsReadableAndSourceLiteralsAreExplicit()
     QCOMPARE(operation->itemText(operation->findData("MOTOR_RESET")), QString::fromUtf8(u8"0x11 | 步进电机复位"));
     QCOMPARE(operation->itemText(operation->findData("QUERY_MOTOR")), QString::fromUtf8(u8"0x12 | 电机信息查询"));
     QCOMPARE(operation->itemText(operation->findData("QUERY_DEVICE_INFO")), QString::fromUtf8(u8"0x04 | 设备信息查询"));
-    QCOMPARE(operation->itemData(operation->findData("QUSHENG_22"), Qt::ToolTipRole).toString(), QString::fromUtf8(u8"电磁阀单路控制"));
+    QCOMPARE(operation->itemData(operation->findData("QUSHENG_22"), Qt::ToolTipRole).toString(), QString::fromUtf8(u8"电磁阀单路开启（仅开启）"));
     QCOMPARE(operation->count(), 59);
     for (int i = 0; i < operation->count(); ++i) {
         const QString op = operation->itemData(i).toString();
@@ -1801,6 +1804,132 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
     QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
 }
 
+
+void WidgetTest::valveSelectionMappingLifecycle()
+{
+    const QString path = freshDraftPath(); Widget widget(nullptr, path);
+    const auto directory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile file(directory.filePath("../examples/valve-selection.json")); QVERIFY(file.open(QIODevice::ReadOnly));
+    applyRoot(widget, QJsonDocument::fromJson(file.readAll()).object());
+    const int originalCount = mappingRows(widget).size();
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    auto *steps = widget.findChild<QTableWidget *>("mappingSteps");
+    auto *mode = widget.findChild<QComboBox *>("valveMode");
+    auto *number = widget.findChild<QComboBox *>("valveNumber");
+    auto check = [&widget](int number) { return widget.findChild<QCheckBox *>("valveCheck" + QString::number(number)); };
+    widget.findChild<QLineEdit *>("mappingCode")->setText("VALVES");
+    operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    QVERIFY(operation->currentText().contains(QString::fromUtf8(u8"电磁阀")));
+    QVERIFY(!qobject_cast<QStandardItemModel *>(mode->model())->item(0)->isEnabled());
+    QVERIFY(widget.findChild<QLabel *>("valveActionHint")->text().contains(QString::fromUtf8(u8"不会操作任何阀")));
+    for (int index = 1; index <= 30; ++index) QVERIFY(!check(index)->isChecked());
+    QMetaObject::invokeMethod(mode, "activated", Qt::DirectConnection, Q_ARG(int, mode->findData(0)));
+    check(1)->click(); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    button(widget, "newMappingStep")->click(); check(30)->click(); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
+    button(widget, "newMappingStep")->click(); mode->setCurrentIndex(mode->findData(1));
+    for (int index : {1, 10, 11, 20, 21, 30}) check(index)->click();
+    const int durationRow = parameterRow(parameters, "duration");
+    auto *durationSource = qobject_cast<QComboBox *>(parameters->cellWidget(durationRow, 1));
+    durationSource->setCurrentIndex(parameterChoice(durationSource, "values", 1));
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 3);
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    widget.resize(1100, 740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    auto *helper = widget.findChild<QGroupBox *>("valveSelectionEditor");
+    auto *scroll = widget.findChild<QScrollArea *>("mappingEditorScroll"); QVERIFY(scroll);
+    QCoreApplication::processEvents(); scroll->ensureWidgetVisible(helper); QCoreApplication::processEvents();
+    if (!render.isEmpty()) {
+        QDir().mkpath(render); QVERIFY(widget.grab().save(QDir(render).filePath("valve-selection-1100.png")));
+        widget.resize(1400, 1000); QCoreApplication::processEvents(); scroll->ensureWidgetVisible(helper); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("valve-selection-large.png")));
+        widget.resize(1100, 740);
+    }
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("QUSHENG_22"));
+    QCOMPARE(number->currentData().toInt(), 0x31); QVERIFY(number->currentText().contains("1")); QVERIFY(number->currentText().contains("0x31"));
+    QCOMPARE(qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, "devId"), 1))->currentData().toString(), QString());
+    QVERIFY(widget.findChild<QLabel *>("valveActionHint")->text().contains(QString::fromUtf8(u8"时间0不等于关闭")));
+    QVERIFY(!qobject_cast<QStandardItemModel *>(number->model())->item(0)->isEnabled());
+    number->setCurrentIndex(number->findData(0x4e)); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 4);
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    mode->setCurrentIndex(mode->findData(2)); button(widget, "clearValves")->click();
+    QVERIFY(widget.findChild<QLabel *>("valveActionHint")->text().contains(QString::fromUtf8(u8"将关闭全部阀")));
+    check(1)->click(); check(30)->click(); button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 5);
+    check(2)->click();
+    button(widget, "newMappingStep")->click(); steps->setCurrentCell(0, 0); button(widget, "mappingStepUp")->click(); button(widget, "addMapping")->click();
+    QCOMPARE(steps->rowCount(), 5); QCOMPARE(steps->currentRow(), 4); QCOMPARE(mappingRows(widget).size(), originalCount);
+    QVERIFY(check(2)->isChecked()); button(widget, "discardMappingStep")->click(); QVERIFY(!check(2)->isChecked());
+    QVERIFY(check(1)->isChecked()); QVERIFY(check(30)->isChecked());
+    button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget).size(), originalCount + 1);
+    button(widget, "saveConfig")->click(); const auto saved = mappingRows(widget).last().toObject();
+    const auto configured = saved.value("steps").toArray(); QCOMPARE(configured.size(), 5);
+    QCOMPARE(configured[0].toObject().value("parameters").toObject().value("valveMask").toObject().value("value").toInt(), 1);
+    QCOMPARE(configured[1].toObject().value("parameters").toObject().value("valveMask").toObject().value("value").toInt(), int(0x20000000));
+    QCOMPARE(configured[2].toObject().value("parameters").toObject().value("valveMask").toObject().value("value").toInt(), int(0x20180601));
+    QCOMPARE(configured[2].toObject().value("parameters").toObject().value("duration").toObject().value("itemIndex").toInt(), 1);
+    widget.findChild<QLineEdit *>("customerInput")->setText("!VALVES=3000\\r"); button(widget, "previewButton")->click();
+    const QString targets = widget.findChild<QTextEdit *>("targetOutput")->toPlainText();
+    for (const QString &payload : {QString("00 00 00 01 00 00 00 00"), QString("20 00 00 00 00 00 00 00"), QString("60 18 06 01 00 00 0B B8"), QString("4E 00 00 00 00"), QString("A0 00 00 01 00 00 00 00")}) QVERIFY2(targets.contains(payload), qPrintable(targets));
+    if (!render.isEmpty()) {
+        widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("valve-preview-frames.png")));
+    }
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored).last().toObject(), saved);
+}
+
+void WidgetTest::valveSourcesAndMetadataArePreserved()
+{
+    Widget widget(nullptr, freshDraftPath()); applyRoot(widget, listExample());
+    auto root = draftRoot(widget); root.insert("sdkDefaults", QJsonObject{{"QUSHENG_21", QJsonObject{{"mode", 1}, {"valveMask", double(0x20000001)}, {"duration", 77}}},
+        {"QUSHENG_22", QJsonObject{{"devId", 78}, {"duration", 88}}}});
+    auto mappings = root.value("mappings").toArray();
+    const QJsonObject relation{{"kind", "linear"}, {"field", "values"}, {"itemIndex", 2}, {"numerator", 2}, {"denominator", 1}, {"offset", 3}, {"round", "floor"}, {"extension", "keep relation"}};
+    const QJsonObject legacy{{"commandCode", "RAW"}, {"operation", "QUSHENG_21"}, {"input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 3}}}, {"extension", "keep input"}}},
+        {"parameters", QJsonObject{{"mode", QJsonObject{{"kind", "constant"}, {"value", 1}}}, {"valveMask", relation}, {"duration", relation}}}, {"extension", "keep mapping"}};
+    mappings.append(legacy); root.insert("mappings", mappings); applyRoot(widget, root);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    auto *mode = widget.findChild<QComboBox *>("valveMode"); QCOMPARE(mode->currentData().toInt(), 1);
+    QVERIFY(widget.findChild<QCheckBox *>("valveCheck1")->isChecked()); QVERIFY(widget.findChild<QCheckBox *>("valveCheck30")->isChecked());
+    for (int row = 0; row < parameters->rowCount(); ++row)
+        QCOMPARE(qobject_cast<QComboBox *>(parameters->cellWidget(row, 1))->currentData().toString(), QString());
+    widget.findChild<QLineEdit *>("mappingCode")->setText("DEFAULTS");
+    auto *inputSource = widget.findChild<QComboBox *>("mappingSource"); inputSource->setCurrentIndex(inputSource->findData("@none"));
+    button(widget, "saveMappingStep")->click();
+    button(widget, "newMappingStep")->click(); operation->setCurrentIndex(operation->findData("QUSHENG_22"));
+    QCOMPARE(widget.findChild<QComboBox *>("valveNumber")->currentData().toInt(), 78);
+    button(widget, "saveMappingStep")->click(); button(widget, "addMapping")->click();
+    const auto defaults = mappingRows(widget).last().toObject().value("steps").toArray();
+    QCOMPARE(defaults.size(), 2); QVERIFY(defaults[0].toObject().value("parameters").toObject().isEmpty()); QVERIFY(defaults[1].toObject().value("parameters").toObject().isEmpty());
+    operation->setCurrentIndex(operation->findData("QUSHENG_21")); widget.findChild<QLineEdit *>("mappingCode")->setText("DYNAMIC");
+    auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts"); qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
+    for (const auto &pair : {qMakePair(QString("mode"), 1), qMakePair(QString("valveMask"), 2), qMakePair(QString("duration"), 3)}) {
+        auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, pair.first), 1));
+        source->setCurrentIndex(parameterChoice(source, "values", pair.second));
+    }
+    QCOMPARE(mode->currentData().toInt(), -1); QVERIFY(widget.findChild<QLabel *>("valveSelectionSummary")->text().contains(QString::fromUtf8(u8"客户来源")));
+    mode->setCurrentIndex(mode->findData(0)); widget.findChild<QCheckBox *>("valveCheck3")->click();
+    const int durationRow = parameterRow(parameters, "duration");
+    QCOMPARE(qobject_cast<QComboBox *>(parameters->cellWidget(durationRow, 1))->currentData(Qt::UserRole + 2).toInt(), 3);
+    auto *rawMask = qobject_cast<QLineEdit *>(parameters->cellWidget(parameterRow(parameters, "valveMask"), 2));
+    rawMask->setText("1073741824"); QVERIFY(widget.findChild<QLabel *>("valveSelectionSummary")->text().contains(QString::fromUtf8(u8"无效")));
+    rawMask->setText("2"); QVERIFY(widget.findChild<QCheckBox *>("valveCheck2")->isChecked()); QVERIFY(!widget.findChild<QCheckBox *>("valveCheck3")->isChecked());
+    button(widget, "selectAllValves")->click();
+    for (int number = 1; number <= 30; ++number) QVERIFY(widget.findChild<QCheckBox *>("valveCheck" + QString::number(number))->isChecked());
+    button(widget, "clearValves")->click(); QVERIFY(widget.findChild<QLabel *>("valveActionHint")->text().contains(QString::fromUtf8(u8"不会操作任何阀")));
+    button(widget, "addMapping")->click(); button(widget, "saveConfig")->click();
+    QCOMPARE(mappingRows(widget).last().toObject().value("parameters").toObject().value("duration").toObject().value("itemIndex").toInt(), 3);
+    QCOMPARE(mappingRows(widget).at(mappings.size() - 1).toObject(), legacy);
+    const QString exported = freshDraftPath();
+    for (const char *action : {"exportConfig", "importConfig"}) {
+        bool opened = false;
+        QTimer::singleShot(0, &widget, [&widget, &opened, exported]() {
+            auto *dialog = widget.findChild<QFileDialog *>(); if (!dialog) return;
+            opened = true; dialog->selectFile(exported); QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(widget, action)->click(); QVERIFY(opened); QCOMPARE(mappingRows(widget).at(mappings.size() - 1).toObject(), legacy);
+    }
+}
 
 void WidgetTest::formatDrivenParsingKeepsUnusedParameters()
 {

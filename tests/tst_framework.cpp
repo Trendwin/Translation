@@ -34,6 +34,7 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void valveSelectionPayloadsAndDefaults();
     void formatDrivenUnusedFieldsAndCounts();
     void groupedConversionAndSchema();
     void groupedAckAndWriteOrdering();
@@ -120,6 +121,47 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+void FrameworkTest::valveSelectionPayloadsAndDefaults()
+{
+    ProtocolConfig config; TranslationError error; ConversionPreview preview;
+    QVERIFY(ProtocolConfig::load(example("valve-selection.json"), &config, &error));
+    const QList<QPair<QByteArray, QByteArray>> packets = {
+        {"!CLOSE1=0\r", QByteArray::fromHex("0000000100000000")},
+        {"!CLOSE30=0\r", QByteArray::fromHex("2000000000000000")},
+        {"!OPENSET=3000\r", QByteArray::fromHex("6018060100000bb8")},
+        {"!OPEN30=4294967295\r", QByteArray::fromHex("4effffffff")},
+        {"!REPLACE=0\r", QByteArray::fromHex("80000005000003e8")},
+        {"!DEFAULT22=0\r", QByteArray::fromHex("3100000000")}
+    };
+    for (const auto &packet : packets) {
+        QVERIFY2(ConversionEngine(config).convertBatch(packet.first, false, &preview, &error), qPrintable(error.message));
+        QCOMPARE(preview.steps.size(), 1);
+        const auto frame = preview.steps.first().targetFrame;
+        QCOMPARE(frame.mid(8, packet.second.size()), packet.second);
+        QCOMPARE(frame, QushengProtocol::makeFrame(2, 1, 0, packet.second.size() == 5 ? 0x22 : 0x21, packet.second));
+    }
+    auto mappings = config.root.value("mappings").toArray();
+    auto mapping = mappings.at(2).toObject(); auto parameters = mapping.value("parameters").toObject();
+    const QJsonObject duration{{"kind", "linear"}, {"field", "values"}, {"itemIndex", 1}, {"numerator", 2}, {"denominator", 1},
+                              {"offset", 5}, {"round", "exact"}, {"extension", "keep expression"}};
+    parameters.insert("duration", duration); parameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 0}});
+    mapping.insert("parameters", parameters); mapping.insert("extension", "keep mapping"); mappings[2] = mapping; config.root.insert("mappings", mappings);
+    QVERIFY(ConversionEngine(config).convertBatch("!OPENSET=100\r", false, &preview, &error));
+    QCOMPARE(preview.steps.first().targetFrame.mid(8, 8), QByteArray::fromHex("20180601000000cd")); // 关闭不擅自改时间。
+    QTemporaryDir directory; const auto path = directory.filePath("valves.json"); QVERIFY(config.save(path, &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, config.root);
+    for (const auto &invalid : QList<QPair<QString, double>>{{"mode", 3}, {"valveMask", double(0x40000000)}, {"duration", 4294967296.0}}) {
+        auto bad = config; auto changed = parameters; changed.insert(invalid.first, QJsonObject{{"kind", "constant"}, {"value", invalid.second}});
+        auto badMapping = mapping; badMapping.insert("parameters", changed); bad.root.insert("mappings", QJsonArray{badMapping});
+        QVERIFY(!bad.validate(&error));
+    }
+    for (int devId : {1, 48, 79}) {
+        auto bad = config; bad.root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "BAD"}, {"operation", "QUSHENG_22"},
+            {"input", QJsonObject{{"omitFields", QJsonArray{"values"}}}}, {"parameters", QJsonObject{{"devId", QJsonObject{{"kind", "constant"}, {"value", devId}}}}}}});
+        QVERIFY(!bad.validate(&error));
+    }
 }
 
 void FrameworkTest::sixMotorConfigurationAndConversion()

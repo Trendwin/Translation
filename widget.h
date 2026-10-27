@@ -12,6 +12,7 @@
 #include "src/core/conversionengine.h"
 
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QGroupBox;
@@ -86,6 +87,9 @@ private:
     void updateMappingControls();
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
+    void updateValveEditor();
+    void setValveConstant(const QString &key, quint32 value);
+    bool valveValue(const QString &key, quint32 *value, QString *origin) const;
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
     QString parameterDefaultText(const QJsonObject &definition, const QString &operation) const;
     static QString stateText(RequestState state);
@@ -130,6 +134,13 @@ private:
     QComboBox *m_mappingOperation = nullptr;
     QLineEdit *m_mappingSearch = nullptr;
     QTableWidget *m_mappingParameters = nullptr;
+    QGroupBox *m_valveEditor = nullptr;
+    QGroupBox *m_valveChecksGroup = nullptr;
+    QComboBox *m_valveMode = nullptr;
+    QComboBox *m_valveNumber = nullptr;
+    QList<QCheckBox *> m_valveChecks;
+    QLabel *m_valveSummary = nullptr;
+    QLabel *m_valveActionHint = nullptr;
     QLabel *m_mappingHint = nullptr;
     QGroupBox *m_mappingCountsGroup = nullptr;
     QLabel *m_mappingListGuidance = nullptr;
