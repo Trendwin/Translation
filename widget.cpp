@@ -2489,6 +2489,23 @@ QByteArray Widget::inputBytes(const ProtocolConfig &config, TranslationError *er
 
 QString Widget::previewText(const ConversionPreview &preview) const
 {
+    const auto targetDescription = [](const UnifiedCommand &command) {
+        if (command.operation == "QUSHENG_21") {
+            const quint32 mask = command.parameters.value("valveMask").toUInt();
+            const bool replaceAll = command.parameters.value("mode").toUInt() == 2;
+            QStringList valves;
+            for (int index = 0; index < 30; ++index)
+                if (mask & (quint32(1) << index)) valves.append(QString::number(index + 1));
+            if (valves.isEmpty()) return replaceAll ? QString::fromUtf8(u8"全部30路阀关闭") : QString::fromUtf8(u8"未选阀（无操作）");
+            return QString::fromUtf8(u8"%1号阀%2").arg(valves.join(QString::fromUtf8(u8"、")))
+                .arg(replaceAll ? QString::fromUtf8(u8"（未选阀关闭）") : QString());
+        }
+        if (command.operation == "QUSHENG_22") {
+            const quint32 number = command.parameters.value("devId").toUInt();
+            return QString::fromUtf8(u8"%1号阀（0x%2）").arg(number - 0x30).arg(QString::number(number, 16).toUpper());
+        }
+        return command.targetDevice;
+    };
     QStringList lines;
     lines << QString::fromUtf8(u8"原始输入：%1").arg(visibleBytes(preview.input));
     lines << QString::fromUtf8(u8"识别字段：");
@@ -2500,7 +2517,7 @@ QString Widget::previewText(const ConversionPreview &preview) const
         lines << QString::fromUtf8(u8"共%1条趋盛指令（成功应答后顺序发送；不代表机械动作完成）").arg(preview.steps.size());
         for (int i = 0; i < preview.steps.size(); ++i) {
             const auto &step = preview.steps[i];
-            lines << QString::fromUtf8(u8"第%1条：%2，目标%3").arg(i + 1).arg(operationName(step.command.operation), step.command.targetDevice);
+            lines << QString::fromUtf8(u8"第%1条：%2，目标%3").arg(i + 1).arg(operationName(step.command.operation), targetDescription(step.command));
             for (auto it = step.parameterTrace.begin(); it != step.parameterTrace.end(); ++it)
                 lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
         }
@@ -2509,10 +2526,12 @@ QString Widget::previewText(const ConversionPreview &preview) const
     lines << QString::fromUtf8(u8"参数换算：");
     for (auto it = preview.parameterTrace.begin(); it != preview.parameterTrace.end(); ++it)
         lines << QStringLiteral("  %1: %2").arg(displayName(it.key()), it.value());
-    const QString device = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
-        || preview.command.operation == "QUSHENG_C1"
-        ? preview.command.targetDevice : QStringLiteral("-");
-    lines << QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3")
+    const bool valve = preview.command.operation == "QUSHENG_21" || preview.command.operation == "QUSHENG_22";
+    const bool hasDevice = isMotionEditor(preview.command.operation) || preview.command.parameters.contains("devId")
+        || preview.command.operation == "QUSHENG_C1";
+    const QString device = valve ? targetDescription(preview.command) : hasDevice ? preview.command.targetDevice : QStringLiteral("-");
+    lines << (valve ? QString::fromUtf8(u8"统一命令：操作=%1，目标=%2，配置版本=%3")
+                   : QString::fromUtf8(u8"统一命令：操作=%1，设备编号=%2，配置版本=%3"))
              .arg(operationName(preview.command.operation), device,
                   preview.command.configVersion.left(12));
     for (auto it = preview.command.parameters.begin(); it != preview.command.parameters.end(); ++it)

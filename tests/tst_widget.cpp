@@ -1869,12 +1869,28 @@ void WidgetTest::valveSelectionMappingLifecycle()
     QCOMPARE(configured[2].toObject().value("parameters").toObject().value("duration").toObject().value("itemIndex").toInt(), 1);
     widget.findChild<QLineEdit *>("customerInput")->setText("!VALVES=3000\\r"); button(widget, "previewButton")->click();
     const QString targets = widget.findChild<QTextEdit *>("targetOutput")->toPlainText();
+    const QString preview = widget.findChild<QTextEdit *>("previewOutput")->toPlainText();
+    QVERIFY(!preview.contains(QString::fromUtf8(u8"目标17")));
+    QVERIFY(preview.contains(QString::fromUtf8(u8"目标1号阀")));
+    QVERIFY(preview.contains(QString::fromUtf8(u8"目标30号阀（0x4E）")));
+    QVERIFY(preview.contains(QString::fromUtf8(u8"目标1、30号阀（未选阀关闭）")));
     for (const QString &payload : {QString("00 00 00 01 00 00 00 00"), QString("20 00 00 00 00 00 00 00"), QString("60 18 06 01 00 00 0B B8"), QString("4E 00 00 00 00"), QString("A0 00 00 01 00 00 00 00")}) QVERIFY2(targets.contains(payload), qPrintable(targets));
     if (!render.isEmpty()) {
         widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2); QCoreApplication::processEvents();
         QVERIFY(widget.grab().save(QDir(render).filePath("valve-preview-frames.png")));
     }
     Widget restored(nullptr, path); QCOMPARE(mappingRows(restored).last().toObject(), saved);
+    widget.findChild<QLineEdit *>("customerInput")->setText("!DEFAULT22=0\\r"); button(widget, "previewButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"目标=1号阀（0x31）")));
+    auto root = draftRoot(widget); auto mappings = root.value("mappings").toArray();
+    for (int modeValue : {0, 2}) mappings.append(QJsonObject{{"commandCode", "EMPTY" + QString::number(modeValue)}, {"operation", "QUSHENG_21"},
+        {"input", QJsonObject{{"omitFields", QJsonArray{"values"}}}}, {"parameters", QJsonObject{{"mode", QJsonObject{{"kind", "constant"}, {"value", modeValue}}},
+            {"valveMask", QJsonObject{{"kind", "constant"}, {"value", 0}}}}}});
+    root.insert("mappings", mappings); applyRoot(widget, root);
+    widget.findChild<QLineEdit *>("customerInput")->setText("!EMPTY0=0\\r"); button(widget, "previewButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"目标=未选阀（无操作）")));
+    widget.findChild<QLineEdit *>("customerInput")->setText("!EMPTY2=0\\r"); button(widget, "previewButton")->click();
+    QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"目标=全部30路阀关闭")));
 }
 
 void WidgetTest::valveSourcesAndMetadataArePreserved()
