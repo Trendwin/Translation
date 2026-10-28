@@ -34,6 +34,7 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void valveStateParameterAndExpressionConstraints();
     void valveSelectionPayloadsAndDefaults();
     void formatDrivenUnusedFieldsAndCounts();
     void groupedConversionAndSchema();
@@ -121,6 +122,60 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+void FrameworkTest::valveStateParameterAndExpressionConstraints()
+{
+    ProtocolConfig base; TranslationError error; ConversionPreview preview;
+    QVERIFY(ProtocolConfig::load(example("valve-selection.json"), &base, &error));
+    auto mapping = base.root.value("mappings").toArray().last().toObject();
+    auto relation = mapping.value("parameters").toObject().value("mode").toObject();
+    for (bool scalar : {false, true}) {
+        auto config = base;
+        auto selected = mapping; auto parameters = selected.value("parameters").toObject(); auto mode = relation;
+        if (scalar) {
+            auto external = config.root.value("external").toObject(); auto fields = external.value("fields").toArray();
+            auto field = fields[1].toObject(); field.insert("type", "int"); field.remove("min"); fields[1] = field;
+            external.insert("fields", fields); config.root.insert("external", external);
+            selected.remove("input"); mode.remove("itemIndex");
+        } else {
+            auto external = config.root.value("external").toObject(); auto fields = external.value("fields").toArray();
+            auto field = fields[1].toObject(); field.remove("min"); fields[1] = field;
+            external.insert("fields", fields); config.root.insert("external", external);
+        }
+        parameters.insert("mode", mode); selected.insert("parameters", parameters);
+        config.root.insert("mappings", QJsonArray{selected}); QVERIFY2(config.validate(&error), qPrintable(error.message));
+        for (int state : {0, 1}) {
+            QVERIFY2(ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + '\r', false, &preview, &error), qPrintable(error.message));
+            QCOMPARE(preview.steps.first().targetFrame.mid(8, 8), QByteArray::fromHex(state ? "6000000100000000" : "2000000100000000"));
+        }
+        for (int state : {-1, 2, 3}) {
+            QVERIFY(!ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + '\r', false, &preview, &error));
+            QCOMPARE(error.code, QString("EXPRESSION_VALUE")); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
+        }
+        auto first = selected; auto firstParameters = parameters; firstParameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 0}});
+        first.insert("parameters", firstParameters); first.remove("input"); first.remove("commandCode"); auto second = selected; second.remove("input"); second.remove("commandCode");
+        auto group = selected; group.remove("operation"); group.remove("parameters"); group.insert("steps", QJsonArray{first, second});
+        config.root.insert("mappings", QJsonArray{group}); QVERIFY(config.validate(&error));
+        QVERIFY(!ConversionEngine(config).convertBatch("!SW=2\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
+    }
+    auto config = base; auto parameters = mapping.value("parameters").toObject();
+    auto linear = relation; linear.insert("kind", "linear"); linear.insert("numerator", 2); linear.insert("denominator", 1); linear.insert("round", "exact");
+    parameters.insert("mode", linear); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convertBatch("!SW=1\r", false, &preview, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
+    linear.remove("allowedValues"); parameters.insert("mode", linear); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(ConversionEngine(config).convertBatch("!SW=1\r", false, &preview, &error)); QCOMPARE(preview.steps.first().command.parameters.value("mode").toInt(), 2);
+    for (const auto &bad : QList<QJsonValue>{QJsonValue(), QJsonValue("0,1"), QJsonArray{}, QJsonArray{0, "1"}, QJsonArray{0, 0.5}, QJsonArray{9007199254740992.0}}) {
+        auto invalid = base; auto changed = relation; changed.insert("allowedValues", bad); auto p = parameters; p.insert("mode", changed);
+        auto item = mapping; item.insert("parameters", p); invalid.root.insert("mappings", QJsonArray{item}); QVERIFY(!invalid.validate(&error));
+    }
+    auto constant = QJsonObject{{"kind", "constant"}, {"value", 2}, {"allowedValues", QJsonArray{0, 1}}};
+    parameters.insert("mode", constant); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping}); QVERIFY(!config.validate(&error));
+    constant.insert("value", 1); parameters.insert("mode", constant); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\r", false, &preview, &error));
+    QTemporaryDir directory; const auto path = directory.filePath("state.json"); QVERIFY(base.save(path, &error));
+    ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, base.root);
 }
 
 void FrameworkTest::valveSelectionPayloadsAndDefaults()

@@ -44,6 +44,7 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void valveStateParameterEditorLifecycle();
     void valveSelectionMappingLifecycle();
     void valveSourcesAndMetadataArePreserved();
     void formatDrivenParsingKeepsUnusedParameters();
@@ -1804,6 +1805,99 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
     QVERIFY(file.open(QIODevice::ReadOnly)); QCOMPARE(file.readAll(), QByteArray("{broken-json"));
 }
 
+
+void WidgetTest::valveStateParameterEditorLifecycle()
+{
+    const QString path = freshDraftPath(); Widget widget(nullptr, path);
+    const auto directory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+    QFile file(directory.filePath("../examples/valve-selection.json")); QVERIFY(file.open(QIODevice::ReadOnly));
+    auto root = QJsonDocument::fromJson(file.readAll()).object();
+    const auto existing = root.value("mappings").toArray(); applyRoot(widget, root);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *mode = widget.findChild<QComboBox *>("valveMode");
+    auto *state = widget.findChild<QComboBox *>("valveStateSource"); QVERIFY(state);
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    auto *steps = widget.findChild<QTableWidget *>("mappingSteps");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("SWPAIR");
+    operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    mode->setCurrentIndex(mode->findData(-2)); QCOMPARE(mode->currentData().toInt(), -2);
+    QCOMPARE(state->currentData().toString(), QString());
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 0);
+    state->setCurrentIndex(parameterChoice(state, "values", 1));
+    widget.findChild<QCheckBox *>("valveCheck1")->click(); widget.findChild<QCheckBox *>("valveCheck30")->click();
+    QCOMPARE(mode->currentData().toInt(), -2); QCOMPARE(state->currentData(Qt::UserRole + 2).toInt(), 1);
+    auto *rawMode = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, "mode"), 1));
+    QCOMPARE(rawMode->currentData().toString(), QString("values")); QCOMPARE(rawMode->currentData(Qt::UserRole + 2).toInt(), 1);
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 1);
+    button(widget, "newMappingStep")->click(); mode->setCurrentIndex(mode->findData(-2));
+    state->setCurrentIndex(parameterChoice(state, "values", 1)); widget.findChild<QCheckBox *>("valveCheck2")->click();
+    button(widget, "saveMappingStep")->click(); QCOMPARE(steps->rowCount(), 2);
+    auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts"); qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(2);
+    state->setCurrentIndex(parameterChoice(state, "values", 2));
+    steps->setCurrentCell(0, 0); button(widget, "addMapping")->click();
+    QCOMPARE(steps->currentRow(), 1); QCOMPARE(mappingRows(widget).size(), existing.size());
+    button(widget, "discardMappingStep")->click(); QCOMPARE(state->currentData(Qt::UserRole + 2).toInt(), 1);
+    rawMode = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, "mode"), 1));
+    rawMode->setCurrentIndex(parameterChoice(rawMode, "values", 2));
+    QCOMPARE(state->currentData(Qt::UserRole + 2).toInt(), 2); QCOMPARE(mode->currentData().toInt(), -2);
+    button(widget, "saveMappingStep")->click(); button(widget, "addMapping")->click();
+    QCOMPARE(mappingRows(widget).size(), existing.size() + 1); button(widget, "saveConfig")->click();
+    const auto saved = mappingRows(widget).last().toObject(); const auto configured = saved.value("steps").toArray();
+    QCOMPARE(configured.size(), 2);
+    const auto first = configured.first().toObject().value("parameters").toObject();
+    QCOMPARE(first.value("mode").toObject().value("allowedValues").toArray(), QJsonArray({0, 1}));
+    QCOMPARE(first.value("valveMask").toObject().value("value").toInt(), int(0x20000001));
+    QCOMPARE(configured.last().toObject().value("parameters").toObject().value("mode").toObject().value("itemIndex").toInt(), 2);
+    for (int i = 0; i < existing.size(); ++i) QCOMPARE(mappingRows(widget).at(i), existing.at(i));
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored).last().toObject(), saved);
+    auto *input = widget.findChild<QLineEdit *>("customerInput");
+    auto *target = widget.findChild<QTextEdit *>("targetOutput"); auto *preview = widget.findChild<QTextEdit *>("previewOutput");
+    input->setText("!SWPAIR=1,0\\r"); button(widget, "previewButton")->click();
+    QVERIFY(target->toPlainText().contains("60 00 00 01 00 00 00 00")); QVERIFY(target->toPlainText().contains("00 00 00 02 00 00 00 00"));
+    QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"开启，其余不变"))); QVERIFY(preview->toPlainText().contains(QString::fromUtf8(u8"关闭，其余不变")));
+    button(widget, "sendButton")->click(); QVERIFY(target->toPlainText().contains("60 00 00 01 00 00 00 00"));
+    input->setText("!SWPAIR=1,2\\r"); button(widget, "previewButton")->click(); QVERIFY(target->toPlainText().isEmpty());
+    button(widget, "sendButton")->click(); QVERIFY(target->toPlainText().isEmpty());
+    // Explicitly choosing a fixed action removes the switch-only constraint, leaving cover-all available.
+    widget.findChild<QLineEdit *>("mappingCode")->setText("FIXED2"); operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    mode->setCurrentIndex(mode->findData(-2)); state->setCurrentIndex(parameterChoice(state, "values", 1));
+    rawMode = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, "mode"), 1));
+    rawMode->setCurrentIndex(rawMode->findData("@constant"));
+    qobject_cast<QLineEdit *>(parameters->cellWidget(parameterRow(parameters, "mode"), 2))->setText("2");
+    QCOMPARE(mode->currentData().toInt(), 2); button(widget, "addMapping")->click();
+    QVERIFY(!mappingRows(widget).last().toObject().value("parameters").toObject().value("mode").toObject().contains("allowedValues"));
+
+    // A loaded fixed expression may also carry a constraint. Re-selecting its existing
+    // fixed action changes only that constraint, so it must still require an explicit save.
+    Widget guarded(nullptr, freshDraftPath()); applyRoot(guarded, root);
+    auto *guardedOperation = guarded.findChild<QComboBox *>("mappingOperation");
+    guarded.findChild<QLineEdit *>("mappingCode")->setText("GUARDED_FIXED");
+    guardedOperation->setCurrentIndex(guardedOperation->findData("QUSHENG_21"));
+    auto *guardedMode = guarded.findChild<QComboBox *>("valveMode"); guardedMode->setCurrentIndex(guardedMode->findData(1));
+    auto *guardedParameters = guarded.findChild<QTableWidget *>("mappingParameters");
+    const int guardedModeRow = parameterRow(guardedParameters, "mode");
+    // Seed an imported advanced expression, then save and reload it through the real step editor.
+    auto *guardedLabel = guardedParameters->item(guardedModeRow, 0);
+    guardedLabel->setData(Qt::UserRole + 1, QJsonObject{{"kind", "constant"}, {"value", 1}, {"allowedValues", QJsonArray{0, 1}}});
+    guardedLabel->setData(Qt::UserRole + 2, true);
+    button(guarded, "saveMappingStep")->click(); button(guarded, "newMappingStep")->click();
+    auto *guardedSteps = guarded.findChild<QTableWidget *>("mappingSteps"); guardedSteps->setCurrentCell(0, 0);
+    QCOMPARE(guardedMode->currentData().toInt(), 1);
+    guardedLabel = guardedParameters->item(parameterRow(guardedParameters, "mode"), 0);
+    QVERIFY(guardedLabel->data(Qt::UserRole + 1).toJsonObject().contains("allowedValues"));
+    QVERIFY(!guarded.findChild<QLabel *>("mappingStepState")->text().contains(QString::fromUtf8(u8"未保存修改")));
+    QMetaObject::invokeMethod(guardedMode, "activated", Qt::DirectConnection, Q_ARG(int, guardedMode->findData(1)));
+    QVERIFY(guarded.findChild<QLabel *>("mappingStepState")->text().contains(QString::fromUtf8(u8"未保存修改")));
+    button(guarded, "newMappingStep")->click(); button(guarded, "addMapping")->click();
+    QCOMPARE(guardedSteps->currentRow(), 0); QCOMPARE(mappingRows(guarded).size(), existing.size());
+    button(guarded, "discardMappingStep")->click();
+    guardedLabel = guardedParameters->item(parameterRow(guardedParameters, "mode"), 0);
+    QVERIFY(guardedLabel->data(Qt::UserRole + 1).toJsonObject().contains("allowedValues"));
+    QMetaObject::invokeMethod(guardedMode, "activated", Qt::DirectConnection, Q_ARG(int, guardedMode->findData(1)));
+    button(guarded, "saveMappingStep")->click(); button(guarded, "addMapping")->click();
+    QCOMPARE(mappingRows(guarded).size(), existing.size() + 1);
+    QVERIFY(!mappingRows(guarded).last().toObject().value("steps").toArray().first().toObject().value("parameters").toObject().value("mode").toObject().contains("allowedValues"));
+}
 
 void WidgetTest::valveSelectionMappingLifecycle()
 {

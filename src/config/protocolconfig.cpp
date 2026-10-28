@@ -37,6 +37,13 @@ bool validHex(const QString &text)
 bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNames,
                      qint64 constantMin = 0, qint64 constantMax = 0xfffffe)
 {
+    if (expression.contains("allowedValues")) {
+        const auto allowed = expression.value("allowedValues").toArray();
+        if (!expression.value("allowedValues").isArray() || allowed.isEmpty()) return false;
+        for (const auto &value : allowed)
+            if (!integer(value, -9007199254740991LL, 9007199254740991LL)) return false;
+        if (expression.value("kind").toString() == "constant" && !allowed.contains(expression.value("value"))) return false;
+    }
     const QString kind = expression.value("kind").toString();
     if (kind == "constant") return !expression.contains("itemIndex") && integer(expression.value("value"), constantMin, constantMax);
     if (kind == "field") return fieldNames.contains(expression.value("field").toString());

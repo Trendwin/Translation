@@ -82,7 +82,7 @@ quint64 readUnsigned(const QByteArray &bytes, bool littleEndian)
     return result;
 }
 
-bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
+bool evaluateValue(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
               QVariant *output, QString *trace, TranslationError *error)
 {
     // 表达式只求数值，不判断趋盛参数是否合法；字段约束在parse检查，目标范围在SDK检查。
@@ -150,6 +150,26 @@ bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fiel
                 .arg(sourceName).arg(input).arg(numerator).arg(denominator).arg(offset)
                 .arg(converted, 0, 10).arg(roundNames.value(rounding));
     }
+    return true;
+}
+
+bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
+              QVariant *output, QString *trace, TranslationError *error)
+{
+    if (!evaluateValue(expression, fields, output, trace, error)) return false;
+    if (!expression.contains("allowedValues")) return true;
+    bool ok = false;
+    const qint64 result = output->toLongLong(&ok);
+    QStringList allowedText;
+    bool allowed = false;
+    for (const auto &value : expression.value("allowedValues").toArray()) {
+        allowedText.append(value.toVariant().toString());
+        if (ok && result == qint64(value.toDouble())) allowed = true;
+    }
+    if (!allowed)
+        return fail(error, "EXPRESSION_VALUE", QString::fromUtf8(u8"参数关系求值为%1，只允许%2，已拒绝生成目标帧。")
+                    .arg(output->toString(), allowedText.join(QString::fromUtf8(u8"、"))));
+    if (trace) *trace += QString::fromUtf8(u8"（允许值：%1）").arg(allowedText.join(QString::fromUtf8(u8"、")));
     return true;
 }
 }
