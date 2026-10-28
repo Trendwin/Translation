@@ -20,7 +20,10 @@
      "parameters": {"devId": {"kind": "constant", "value": 78}, "duration": {"kind": "field", "field": "values", "itemIndex": 1}}},
     {"commandCode": "REPLACE", "operation": "QUSHENG_21", "input": {"omitFields": ["values"]},
      "parameters": {"mode": {"kind": "constant", "value": 2}, "valveMask": {"kind": "constant", "value": 5}, "duration": {"kind": "constant", "value": 1000}}},
-    {"commandCode": "DEFAULT22", "operation": "QUSHENG_22", "input": {"omitFields": ["values"]}, "parameters": {}}
+    {"commandCode": "DEFAULT22", "operation": "QUSHENG_22", "input": {"omitFields": ["values"]}, "parameters": {}},
+    {"commandCode": "SW", "operation": "QUSHENG_21", "input": {"parameterCounts": {"values": 1}},
+     "parameters": {"mode": {"kind": "field", "field": "values", "itemIndex": 1, "allowedValues": [0, 1]},
+       "valveMask": {"kind": "constant", "value": 536870913}}}
   ],
   "device": {"destination": 2, "source": 1, "devId": 17, "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 6000}
 }

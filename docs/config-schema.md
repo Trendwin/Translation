@@ -65,6 +65,8 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 参数关系保持 field（直接引用）、constant（固定值）、linear（线性换算）三种。常用界面只选择来源/固定值和换算倍数。有限位数的十进制倍数精确转换成整数分数，避免浮点舍入改变目标值。既有高级分数修改无关选项后仍保持原值。
 
+三种表达式均可带可选的`allowedValues`，内容必须是非空整数数组，数值限于JSON安全整数范围±9007199254740991。约束检查表达式的最终结果（含linear换算之后），不匹配时整组零输出；constant值不在集合时配置校验即拒绝。没有该属性的旧表达式维持原行为。例如阀开关来源`{"kind":"field","field":"values","itemIndex":1,"allowedValues":[0,1]}`仅允许0关闭、1开启，不会将2解释成覆盖全部。客户字段自身的min/max与此表达式约束相互独立。
+
 简洁表单不再提供偏移/取整控件；已有表达式的offset、round和精确分数保留，普通编辑不会将它们改成零或默认取整。所有命令统一使用external.footer；勾选的省略字段继续写入input.omitFields。旧responsePolicy的ack/complete可在核心加载，但运行均立即反馈；界面载入和保存会清除responsePolicy与input.footer，不保留隐藏的旧控制项。核心校验拒绝独立帧尾覆盖。
 
 高级 linear 公式为 来源 × numerator ÷ denominator + offset，round 可为 exact、floor、ceil、nearest。分子范围 ±1000000000，分母1–1000000000，偏移默认0、范围 ±1000000000；除零、溢出、exact产生余数均拒绝生成目标帧。运动固定值0–16777214；0xFFFFFF是趋盛特殊持续运行值，软件运动链路禁止作为位置或距离。普通SDK参数按自身类型/范围校验，例如A1的PWM允许-128～127，阀持续时间可为32位无符号整数，不能套用位置范围。
@@ -117,4 +119,4 @@ SDK固定 `moduleType=1`，拒绝类型2。`xSpeed/ySpeed/zSpeed` 不能作为�
 
 ## 阀号辅助选择
 
-阀选择器继续保存原operation和参数表达式，不增加schema字段：QUSHENG_21使用mode（0关闭选中、1开启选中、2覆盖全部）、valveMask（30位）和duration；QUSHENG_22使用devId（0x31～0x4E）和duration，仅开启。勾选阀号时只把对应valveMask改为constant，选择动作或单阀编号同理；默认、field、linear和itemIndex在未操作对应选择器时保留，duration不随开关动作自动删改。mode0/1的mask0是无操作，mode2的mask0关闭全部。详见[电磁阀号选择](valve-selection.md)。
+阀选择器继续保存原operation和参数：QUSHENG_21使用mode（0关闭选中、1开启选中、2覆盖全部）、valveMask（30位）和duration；QUSHENG_22使用devId（0x31～0x4E）和duration，仅开启。“按客户参数开关（1开、0关）”把mode设为字段/列表项引用并附加allowedValues约束，阀位图仍由勾选固定。勾选阀号时只把对应valveMask改为constant；固定动作与单阀编号同理。默认、field、linear和itemIndex在未操作对应选择器时保留，duration不随开关动作自动删改。mode0/1的mask0是无操作，mode2的mask0关闭全部。详见[电磁阀号选择](valve-selection.md)。

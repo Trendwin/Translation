@@ -89,6 +89,7 @@ private:
     void loadCatalogParameters(const QJsonObject &parameters);
     void updateValveEditor();
     void setValveConstant(const QString &key, quint32 value);
+    void setValveStateSource();
     bool valveValue(const QString &key, quint32 *value, QString *origin) const;
     bool catalogParameters(QJsonObject *parameters, QString *reason) const;
     QString parameterDefaultText(const QJsonObject &definition, const QString &operation) const;
@@ -137,6 +138,9 @@ private:
     QGroupBox *m_valveEditor = nullptr;
     QGroupBox *m_valveChecksGroup = nullptr;
     QComboBox *m_valveMode = nullptr;
+    QComboBox *m_valveStateSource = nullptr;
+    bool m_valveStatePending = false;
+    bool m_updatingValveState = false;
     QComboBox *m_valveNumber = nullptr;
     QList<QCheckBox *> m_valveChecks;
     QLabel *m_valveSummary = nullptr;
