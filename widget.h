@@ -19,6 +19,7 @@ class QGroupBox;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
+class QSplitter;
 class QTextEdit;
 class QushengProtocol;
 class SerialTransport;
@@ -34,6 +35,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildUi();
@@ -76,7 +78,6 @@ private:
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources(bool rebuildCounts = true);
     void updateMappingCounts();
-    void updateListGuidance();
     void addNumericSources(QComboBox *box, const QJsonArray &omitted);
     QJsonArray mappingOmittedFields() const;
     bool legacyMappedInput() const;
@@ -85,9 +86,11 @@ private:
     QString mappingFieldIssue(const QJsonObject &mapping) const;
     void refreshMappingSummaries();
     void updateMappingControls();
+    void scheduleMappingLayout();
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
     void updateValveEditor();
+    void updateCatalogParameterVisibility();
     void setValveConstant(const QString &key, quint32 value);
     void setValveStateSource();
     bool valveValue(const QString &key, quint32 *value, QString *origin) const;
@@ -110,6 +113,9 @@ private:
     bool m_requestActive = false;
     quint64 m_lastRequestId = 0;
 
+    QCheckBox *m_formatRangesToggle = nullptr;
+    QCheckBox *m_valveRawParametersToggle = nullptr;
+    QCheckBox *m_motionDefaultsToggle = nullptr;
     QLabel *m_draftVersion = nullptr;
     QLabel *m_activeVersion = nullptr;
     QLabel *m_validationState = nullptr;
@@ -121,10 +127,12 @@ private:
     QTableWidget *m_fieldTable = nullptr;
     QTableWidget *m_mappingTable = nullptr;
     QGroupBox *m_mappingEditor = nullptr;
+    QSplitter *m_mappingSplitter = nullptr;
+    bool m_mappingSplitterAdjusted = false;
+    bool m_mappingLayoutPending = false;
     QTableWidget *m_mappingSteps = nullptr;
     QPushButton *m_saveMappingStep = nullptr;
     QLabel *m_mappingStepState = nullptr;
-    QLabel *m_mappingInputHint = nullptr;
     QComboBox *m_groupInputMode = nullptr;
     QJsonArray m_stepDrafts;
     QJsonObject m_groupInput;
@@ -143,11 +151,8 @@ private:
     bool m_updatingValveState = false;
     QComboBox *m_valveNumber = nullptr;
     QList<QCheckBox *> m_valveChecks;
-    QLabel *m_valveSummary = nullptr;
     QLabel *m_valveActionHint = nullptr;
-    QLabel *m_mappingHint = nullptr;
     QGroupBox *m_mappingCountsGroup = nullptr;
-    QLabel *m_mappingListGuidance = nullptr;
     QTableWidget *m_mappingCounts = nullptr;
     QMap<QString, int> m_listCounts;
     QComboBox *m_mappingSource = nullptr;
