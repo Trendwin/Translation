@@ -44,6 +44,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void simpleUiVisibilityPreservesConfiguration();
+    void mappingLayoutFitsContentAndRespectsManualSplit();
     void valveStateParameterEditorLifecycle();
     void valveSelectionMappingLifecycle();
     void valveSourcesAndMetadataArePreserved();
@@ -340,6 +342,7 @@ void WidgetTest::closeCommitsActiveCellEditor()
     const QString path = freshDraftPath();
     Widget widget(nullptr, path);
     widget.show();
+    widget.findChild<QCheckBox *>("formatRangesToggle")->setChecked(true);
     auto *fields = widget.findChild<QTableWidget *>("fieldTable");
     fields->setCurrentCell(2, 8);
     fields->editItem(fields->item(2, 8));
@@ -1288,13 +1291,12 @@ void WidgetTest::newMappingListGuidance()
     QVERIFY(!widget.findChild<QSpinBox *>("mappingItemIndex"));
     auto *counts = widget.findChild<QTableWidget *>("mappingParameterCounts");
     qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
-    auto *guidance = widget.findChild<QLabel *>("mappingListGuidance"); QVERIFY(guidance);
-    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"values需3项")));
-    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"解析格式")));
-    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"第几个参数")));
+    QVERIFY(!widget.findChild<QLabel *>("mappingListGuidance"));
+    QVERIFY(counts->toolTip().contains(QString::fromUtf8(u8"实际项数必须完全相同")));
     QCOMPARE(source->currentData().toString(), QString());
     for (int item = 1; item <= 3; ++item) QVERIFY(parameterChoice(source, "values", item) >= 0);
-    QVERIFY(widget.findChild<QLabel *>("newMappingHint")->text().contains(QString::fromUtf8(u8"不会更新上方")));
+    QVERIFY(!widget.findChild<QLabel *>("newMappingHint"));
+    QVERIFY(widget.findChild<QGroupBox *>("mappingEditor")->toolTip().contains(QString::fromUtf8(u8"不修改上方")));
     auto *motors = widget.findChild<QComboBox *>("mappingMotor"); QCOMPARE(motors->count(), 7);
     QCOMPARE(motors->findData(0x17), -1); QCOMPARE(motors->findData(0x1c), -1); QVERIFY(motors->findData(0x16) >= 0);
     const auto existing = mappingRows(widget);
@@ -1308,13 +1310,13 @@ void WidgetTest::newMappingListGuidance()
     QVERIFY(parameterChoice(source, "values", 2048) >= 0);
     QCOMPARE(source->currentData(Qt::UserRole + 2).toInt(), 2);
     qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
-    QVERIFY(guidance->text().contains(QString::fromUtf8(u8"目标位置取values第2项")));
+    QCOMPARE(source->currentData(Qt::UserRole + 2).toInt(), 2);
     if (!render.isEmpty()) {
         QCoreApplication::processEvents(); QVERIFY(widget.grab().save(QDir(render).filePath("list-three-second-item.png")));
     }
     qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(1);
     QCOMPARE(source->currentData(Qt::UserRole + 2).toInt(), 2);
-    QVERIFY(source->currentText().contains(QString::fromUtf8(u8"超出输入项数"))); QVERIFY(guidance->text().contains(QString::fromUtf8(u8"超出输入项数")));
+    QVERIFY(source->currentText().contains(QString::fromUtf8(u8"超出输入项数")));
     widget.findChild<QLineEdit *>("mappingCode")->setText("NEW"); button(widget, "addMapping")->click(); QCOMPARE(mappingRows(widget), existing);
     qobject_cast<QSpinBox *>(counts->cellWidget(0, 1))->setValue(3);
     button(widget, "saveConfig")->click(); QCOMPARE(mappingRows(widget), existing); // A new form never edits existing mappings.
@@ -1806,6 +1808,78 @@ void WidgetTest::damagedLocalDraftIsNotOverwritten()
 }
 
 
+void WidgetTest::mappingLayoutFitsContentAndRespectsManualSplit()
+{
+    Widget widget(nullptr, freshDraftPath());
+    widget.resize(1100, 740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+    auto pump = []() { for (int i = 0; i < 5; ++i) QCoreApplication::processEvents(); };
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation");
+    auto *splitter = widget.findChild<QSplitter *>("mappingSplitter");
+    operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); pump();
+    const auto shortSizes = splitter->sizes();
+    QVERIFY(shortSizes[1] <= widget.findChild<QGroupBox *>("mappingEditor")->sizeHint().height() + 16);
+    QVERIFY(widget.findChild<QTableWidget *>("mappingTable")->height() > 200);
+    operation->setCurrentIndex(operation->findData("QUSHENG_21")); pump();
+    QVERIFY(splitter->sizes()[1] > shortSizes[1] + 80);
+    QVERIFY(splitter->sizes()[0] >= 120);
+    const auto valveSizes = splitter->sizes();
+    widget.resize(1400, 1000); pump();
+    QVERIFY(splitter->sizes()[0] > valveSizes[0]);
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) { QDir().mkpath(render); QVERIFY(widget.grab().save(QDir(render).filePath("content-fit-valves.png"))); }
+    splitter->setSizes({400, 400});
+    QMetaObject::invokeMethod(splitter, "splitterMoved", Qt::DirectConnection, Q_ARG(int, 400), Q_ARG(int, 1));
+    pump(); const auto manualSizes = splitter->sizes();
+    operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2"); pump();
+    QCOMPARE(splitter->sizes(), manualSizes);
+}
+
+void WidgetTest::simpleUiVisibilityPreservesConfiguration()
+{
+    const auto path = freshDraftPath(); Widget widget(nullptr, path); applyRoot(widget, listExample());
+    button(widget, "saveConfig")->click(); const auto original = draftBytes(path);
+    auto *ranges = widget.findChild<QCheckBox *>("formatRangesToggle");
+    auto *motion = widget.findChild<QCheckBox *>("motionDefaultsToggle");
+    auto *raw = widget.findChild<QCheckBox *>("valveRawParametersToggle"); QVERIFY(ranges); QVERIFY(motion); QVERIFY(raw);
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable");
+    QVERIFY(fields->isColumnHidden(7)); QVERIFY(fields->isColumnHidden(8));
+    const QString minimum = fields->item(1, 7)->text(), maximum = fields->item(1, 8)->text();
+    ranges->setChecked(true); QVERIFY(!fields->isColumnHidden(7)); ranges->setChecked(false);
+    QCOMPARE(fields->item(1, 7)->text(), minimum); QCOMPARE(fields->item(1, 8)->text(), maximum);
+    auto *defaults = widget.findChild<QWidget *>("motionDefaults"); QVERIFY(defaults->isHidden());
+    motion->setChecked(true); QVERIFY(!defaults->isHidden()); motion->setChecked(false);
+    button(widget, "saveConfig")->click(); QCOMPARE(draftBytes(path), original);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_21"));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    const int modeRow = parameterRow(parameters, "mode"), maskRow = parameterRow(parameters, "valveMask");
+    QVERIFY(parameters->isRowHidden(modeRow)); QVERIFY(parameters->isRowHidden(maskRow));
+    QVERIFY(!parameters->isRowHidden(parameterRow(parameters, "duration")));
+    raw->setChecked(true); QVERIFY(!parameters->isRowHidden(modeRow)); raw->setChecked(false);
+    QVERIFY(button(widget, "newMappingStep")->isHidden()); QVERIFY(button(widget, "mappingStepUp")->isHidden());
+    auto *mode = widget.findChild<QComboBox *>("valveMode"); mode->setCurrentIndex(mode->findData(-2));
+    auto *state = widget.findChild<QComboBox *>("valveStateSource"); state->setCurrentIndex(parameterChoice(state, "values", 1));
+    QVERIFY(!raw->isChecked()); QVERIFY(parameters->isRowHidden(modeRow));
+    widget.findChild<QCheckBox *>("valveCheck1")->setChecked(true);
+    QVERIFY(!raw->isChecked()); QVERIFY(parameters->isRowHidden(maskRow));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("SIMPLE"); button(widget, "saveMappingStep")->click();
+    const QString cleanState = widget.findChild<QLabel *>("mappingStepState")->text();
+    raw->setChecked(true); raw->setChecked(false);
+    QCOMPARE(widget.findChild<QLabel *>("mappingStepState")->text(), cleanState);
+    QVERIFY(!button(widget, "newMappingStep")->isHidden()); QVERIFY(button(widget, "mappingStepUp")->isHidden());
+    auto *rawMode = qobject_cast<QComboBox *>(parameters->cellWidget(modeRow, 1));
+    QCOMPARE(rawMode->currentData().toString(), QString("values"));
+    button(widget, "addMapping")->click(); button(widget, "saveConfig")->click();
+    const auto mapping = mappingRows(widget).last().toObject();
+    const auto savedStep = mapping.contains("steps") ? mapping.value("steps").toArray().first().toObject() : mapping;
+    const auto savedMode = savedStep.value("parameters").toObject().value("mode").toObject();
+    QCOMPARE(savedMode.value("allowedValues").toArray(), QJsonArray({0, 1}));
+    Widget restored(nullptr, path); QCOMPARE(mappingRows(restored).last().toObject(), mapping);
+    auto *input = restored.findChild<QLineEdit *>("customerInput"); input->setText("!SIMPLE=1\\r"); button(restored, "previewButton")->click();
+    const auto preview = restored.findChild<QTextEdit *>("previewOutput")->toPlainText();
+    QVERIFY(preview.contains(QString::fromUtf8(u8"开启"))); QVERIFY(!preview.contains(QString::fromUtf8(u8"配置版本")));
+}
+
 void WidgetTest::valveStateParameterEditorLifecycle()
 {
     const QString path = freshDraftPath(); Widget widget(nullptr, path);
@@ -1906,6 +1980,18 @@ void WidgetTest::valveSelectionMappingLifecycle()
     QFile file(directory.filePath("../examples/valve-selection.json")); QVERIFY(file.open(QIODevice::ReadOnly));
     applyRoot(widget, QJsonDocument::fromJson(file.readAll()).object());
     const int originalCount = mappingRows(widget).size();
+    auto *savedTable = widget.findChild<QTableWidget *>("mappingTable");
+    const auto summaryFor = [savedTable](const QString &code) {
+        for (int row = 0; row < savedTable->rowCount(); ++row)
+            if (savedTable->item(row, 0)->text() == code) return savedTable->item(row, 2)->text();
+        return QString();
+    };
+    QVERIFY(summaryFor("CLOSE1").contains(QString::fromUtf8(u8"关闭 1号阀，其余不变")));
+    QVERIFY(summaryFor("OPEN30").contains(QString::fromUtf8(u8"开启 30号阀")));
+    QVERIFY(summaryFor("SW").contains(QString::fromUtf8(u8"1、30号阀")));
+    QVERIFY(summaryFor("SW").contains(QString::fromUtf8(u8"决定开关（1开0关）")));
+    QVERIFY(!summaryFor("SW").contains("536870913"));
+    QVERIFY(!summaryFor("SW").contains(QString::fromUtf8(u8"阀门位图")));
     auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
     auto *steps = widget.findChild<QTableWidget *>("mappingSteps");
@@ -2017,12 +2103,12 @@ void WidgetTest::valveSourcesAndMetadataArePreserved()
         auto *source = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters, pair.first), 1));
         source->setCurrentIndex(parameterChoice(source, "values", pair.second));
     }
-    QCOMPARE(mode->currentData().toInt(), -1); QVERIFY(widget.findChild<QLabel *>("valveSelectionSummary")->text().contains(QString::fromUtf8(u8"客户来源")));
+    QCOMPARE(mode->currentData().toInt(), -1); QVERIFY(widget.findChild<QGroupBox *>("valveSelectionEditor")->toolTip().contains(QString::fromUtf8(u8"客户来源")));
     mode->setCurrentIndex(mode->findData(0)); widget.findChild<QCheckBox *>("valveCheck3")->click();
     const int durationRow = parameterRow(parameters, "duration");
     QCOMPARE(qobject_cast<QComboBox *>(parameters->cellWidget(durationRow, 1))->currentData(Qt::UserRole + 2).toInt(), 3);
     auto *rawMask = qobject_cast<QLineEdit *>(parameters->cellWidget(parameterRow(parameters, "valveMask"), 2));
-    rawMask->setText("1073741824"); QVERIFY(widget.findChild<QLabel *>("valveSelectionSummary")->text().contains(QString::fromUtf8(u8"无效")));
+    rawMask->setText("1073741824"); QVERIFY(widget.findChild<QGroupBox *>("valveSelectionEditor")->toolTip().contains(QString::fromUtf8(u8"无效")));
     rawMask->setText("2"); QVERIFY(widget.findChild<QCheckBox *>("valveCheck2")->isChecked()); QVERIFY(!widget.findChild<QCheckBox *>("valveCheck3")->isChecked());
     button(widget, "selectAllValves")->click();
     for (int number = 1; number <= 30; ++number) QVERIFY(widget.findChild<QCheckBox *>("valveCheck" + QString::number(number))->isChecked());
@@ -2103,12 +2189,12 @@ void WidgetTest::formatDrivenParsingKeepsUnusedParameters()
     auto *mode = widget.findChild<QComboBox *>("groupInputMode"); QCOMPARE(mode->currentData().toString(), QString("none"));
     QVERIFY(mode->currentText().contains(QString::fromUtf8(u8"不使用客户参数")));
     QCOMPARE(widget.findChild<QTableWidget *>("mappingParameterCounts")->rowCount(), 0);
-    QVERIFY(widget.findChild<QLabel *>("mappingInputHint")->text().contains(QString::fromUtf8(u8"始终读取全部字段")));
+    QVERIFY(mode->toolTip().contains(QString::fromUtf8(u8"不会删除报文中的字段")));
     const auto visibleFields = widget.findChild<QTableWidget *>("fieldTable");
     auto *commandMode = qobject_cast<QComboBox *>(visibleFields->cellWidget(5, 4));
     commandMode->setCurrentIndex(commandMode->findData("mappedCommand"));
     QVERIFY(mode->currentText().contains(QString::fromUtf8(u8"短报文")));
-    QVERIFY(widget.findChild<QLabel *>("mappingInputHint")->text().contains(QString::fromUtf8(u8"省略")));
+    QVERIFY(mode->toolTip().contains(QString::fromUtf8(u8"省略")));
 
     // 只在测试副本将执行字段声明为普通元数据，验证RST三步均使用SDK固定零位置。
     for (int row : {4, 7}) { auto field = fields.at(row).toObject(); field.insert("role", "metadata"); fields[row] = field; }
