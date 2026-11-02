@@ -45,6 +45,7 @@ class WidgetTest : public QObject
     Q_OBJECT
 private slots:
     void simpleUiVisibilityPreservesConfiguration();
+    void deviceDefaultsIntegratedOnDevicePage();
     void mappingLayoutFitsContentAndRespectsManualSplit();
     void valveStateParameterEditorLifecycle();
     void valveSelectionMappingLifecycle();
@@ -1835,20 +1836,59 @@ void WidgetTest::mappingLayoutFitsContentAndRespectsManualSplit()
     QCOMPARE(splitter->sizes(), manualSizes);
 }
 
+void WidgetTest::deviceDefaultsIntegratedOnDevicePage()
+{
+    const QString path = freshDraftPath(); Widget widget(nullptr, path);
+    auto root = draftRoot(widget);
+    const QJsonObject presets{{"QUSHENG_21", QJsonObject{{"duration", 321}}}};
+    const QJsonObject metadata{{"note", "preserve device page extension"}};
+    root.insert("sdkDefaults", presets); root.insert("integrationMetadata", metadata); applyRoot(widget, root);
+    widget.resize(1100, 740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(3);
+    QCoreApplication::processEvents();
+    auto *group = widget.findChild<QGroupBox *>("motionDefaults"); QVERIFY(group); QVERIFY(group->isVisible());
+    QCOMPARE(group->title(), QString::fromUtf8(u8"默认运动参数"));
+    QVERIFY(!widget.findChild<QCheckBox *>("motionDefaultsToggle"));
+    const auto spin = [&widget](const char *name) { return widget.findChild<QSpinBox *>(name); };
+    for (const char *name : {"defaultMotorId", "defaultMotorSpeed", "defaultMinPosition", "defaultMaxPosition"}) {
+        QVERIFY(spin(name)); QVERIFY(spin(name)->isVisible());
+    }
+    spin("defaultMotorId")->setValue(0x12); spin("defaultMotorSpeed")->setValue(2222);
+    spin("defaultMinPosition")->setValue(5); spin("defaultMaxPosition")->setValue(90000);
+    QVERIFY(!widget.findChild<SerialTransport *>()->isConnected());
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    for (const auto size : {QSize(1100, 740), QSize(1400, 1000)}) {
+        widget.resize(size); QCoreApplication::processEvents();
+        QVERIFY(widget.rect().contains(QRect(group->mapTo(&widget, QPoint()), group->size())));
+        QVERIFY(spin("defaultMotorSpeed")->height() < 50);
+        if (!render.isEmpty()) {
+            QDir().mkpath(render);
+            QVERIFY(widget.grab().save(QDir(render).filePath(QString("device-defaults-%1x%2.png").arg(size.width()).arg(size.height()))));
+        }
+    }
+    button(widget, "saveConfig")->click();
+    const auto saved = QJsonDocument::fromJson(draftBytes(path)).object();
+    QCOMPARE(saved.value("sdkDefaults").toObject(), presets); QCOMPARE(saved.value("integrationMetadata").toObject(), metadata);
+    Widget restored(nullptr, path); restored.show(); restored.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(3);
+    QCoreApplication::processEvents();
+    QCOMPARE(restored.findChild<QSpinBox *>("defaultMotorId")->value(), 0x12);
+    QCOMPARE(restored.findChild<QSpinBox *>("defaultMotorSpeed")->value(), 2222);
+    QCOMPARE(restored.findChild<QSpinBox *>("defaultMinPosition")->value(), 5);
+    QCOMPARE(restored.findChild<QSpinBox *>("defaultMaxPosition")->value(), 90000);
+    QVERIFY(restored.findChild<QGroupBox *>("motionDefaults")->isVisible());
+    QVERIFY(!restored.findChild<SerialTransport *>()->isConnected());
+}
+
 void WidgetTest::simpleUiVisibilityPreservesConfiguration()
 {
     const auto path = freshDraftPath(); Widget widget(nullptr, path); applyRoot(widget, listExample());
     button(widget, "saveConfig")->click(); const auto original = draftBytes(path);
     auto *ranges = widget.findChild<QCheckBox *>("formatRangesToggle");
-    auto *motion = widget.findChild<QCheckBox *>("motionDefaultsToggle");
-    auto *raw = widget.findChild<QCheckBox *>("valveRawParametersToggle"); QVERIFY(ranges); QVERIFY(motion); QVERIFY(raw);
+    auto *raw = widget.findChild<QCheckBox *>("valveRawParametersToggle"); QVERIFY(ranges); QVERIFY(raw);
     auto *fields = widget.findChild<QTableWidget *>("fieldTable");
     QVERIFY(fields->isColumnHidden(7)); QVERIFY(fields->isColumnHidden(8));
     const QString minimum = fields->item(1, 7)->text(), maximum = fields->item(1, 8)->text();
     ranges->setChecked(true); QVERIFY(!fields->isColumnHidden(7)); ranges->setChecked(false);
     QCOMPARE(fields->item(1, 7)->text(), minimum); QCOMPARE(fields->item(1, 8)->text(), maximum);
-    auto *defaults = widget.findChild<QWidget *>("motionDefaults"); QVERIFY(defaults->isHidden());
-    motion->setChecked(true); QVERIFY(!defaults->isHidden()); motion->setChecked(false);
     button(widget, "saveConfig")->click(); QCOMPARE(draftBytes(path), original);
     auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_21"));
     auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");

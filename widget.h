@@ -115,7 +115,6 @@ private:
 
     QCheckBox *m_formatRangesToggle = nullptr;
     QCheckBox *m_valveRawParametersToggle = nullptr;
-    QCheckBox *m_motionDefaultsToggle = nullptr;
     QLabel *m_draftVersion = nullptr;
     QLabel *m_activeVersion = nullptr;
     QLabel *m_validationState = nullptr;

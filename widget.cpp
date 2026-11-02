@@ -664,20 +664,19 @@ void Widget::buildUi()
     auto *deviceLayout = new QVBoxLayout(devicePage);
     auto *deviceGroup = new QGroupBox(QString::fromUtf8(u8"趋盛设备参数"), this);
     auto *deviceForm = new QFormLayout(deviceGroup);
-    m_motionDefaultsToggle = new QCheckBox(QString::fromUtf8(u8"运动默认值"), this);
-    m_motionDefaultsToggle->setObjectName("motionDefaultsToggle");
-    auto *motionDefaults = new QWidget(this); motionDefaults->setObjectName("motionDefaults");
+    auto *motionDefaults = new QGroupBox(QString::fromUtf8(u8"默认运动参数"), this); motionDefaults->setObjectName("motionDefaults");
     auto *motionForm = new QFormLayout(motionDefaults);
-    motionForm->setContentsMargins(0, 0, 0, 0);
-    motionDefaults->hide();
-    connect(m_motionDefaultsToggle, &QCheckBox::toggled, motionDefaults, &QWidget::setVisible);
+    deviceLayout->setAlignment(Qt::AlignTop);
+    for (auto *group : {deviceGroup, motionDefaults}) group->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     m_destination = new QSpinBox(this); m_destination->setRange(1, 255);
     m_source = new QSpinBox(this); m_source->setRange(1, 255);
+    m_destination->setObjectName("deviceDestination"); m_source->setObjectName("deviceSource");
     m_devId = new QSpinBox(this); m_devId->setObjectName("defaultMotorId"); m_devId->setRange(0x11, 0x16); m_devId->setDisplayIntegerBase(16);
     m_action = new QSpinBox(this); m_action->setObjectName("legacyAbsoluteAction"); m_action->setRange(1, 3); m_action->setSingleStep(2);
     m_speed = new QSpinBox(this); m_speed->setObjectName("defaultMotorSpeed"); m_speed->setRange(1, 0xfffffe);
     m_minPosition = new QSpinBox(this); m_minPosition->setRange(0, 0xfffffe);
     m_maxPosition = new QSpinBox(this); m_maxPosition->setRange(0, 0xfffffe);
+    m_minPosition->setObjectName("defaultMinPosition"); m_maxPosition->setObjectName("defaultMaxPosition");
     m_destination->setToolTip(QString::fromUtf8(u8"控制板地址，范围 1–255，必须与软件源地址不同。"));
     m_source->setToolTip(QString::fromUtf8(u8"软件地址，范围 1–255。"));
     m_devId->setToolTip(QString::fromUtf8(u8"电机编号 0x11–0x16，按设备资料确认。"));
@@ -693,10 +692,10 @@ void Widget::buildUi()
     motionForm->addRow(QString::fromUtf8(u8"最小位置"), m_minPosition);
     motionForm->addRow(QString::fromUtf8(u8"最大位置"), m_maxPosition);
     deviceLayout->addWidget(deviceGroup);
-    deviceLayout->addWidget(m_motionDefaultsToggle);
     deviceLayout->addWidget(motionDefaults);
 
     auto *serialGroup = new QGroupBox(QString::fromUtf8(u8"下游串口连接"), this);
+    serialGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     auto *serialLayout = new QHBoxLayout(serialGroup);
     m_port = new QComboBox(this);
     m_port->setToolTip(QString::fromUtf8(u8"选择连接趋盛控制板的串口。"));
