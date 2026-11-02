@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "name": "位置与校准参数引用示例（数值仅作演示）",
+  "external": {
+    "encoding": "ascii", "header": "!", "footer": "\\r",
+    "fields": [
+      {"name": "command", "role": "command", "type": "ascii", "lengthMode": "delimited", "delimiter": "="},
+      {"name": "value", "role": "parameter", "type": "int", "lengthMode": "toFooter"}
+    ]
+  },
+  "parameterPresets": [
+    {"id": "plate-a", "name": "样品盘A首孔", "values": [80, 1075, 30], "note": "示例值，使用前按实际设备填写"},
+    {"id": "plate-b", "name": "样品盘B首孔", "values": [80, 1075, 30], "note": "示例值，使用前按实际设备填写"},
+    {"id": "wash", "name": "清洗池校准", "values": [80, 1075, 30], "note": "示例值，使用前按实际设备填写"},
+    {"id": "door", "name": "开门校准", "values": [80, 1075, 30], "note": "示例值，使用前按实际设备填写"},
+    {"id": "pclm", "name": "芯片PCLM", "values": [1275, 1248, 1259], "note": "依次为触发弹片、对位销、卸载位置，不是XYZ坐标"}
+  ],
+  "mappings": [
+    {"commandCode": "PLATE", "operation": "QUSHENG_C1", "parameters": {
+      "moduleIndex": {"kind": "constant", "value": 35},
+      "xPosition": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 1},
+      "yPosition": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 2},
+      "zPosition": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 3}
+    }},
+    {"commandCode": "PIN", "operation": "MOTOR_FORWARD", "parameters": {
+      "devId": {"kind": "constant", "value": 17},
+      "positionUm": {"kind": "field", "scope": "preset", "field": "pclm", "itemIndex": 2}
+    }}
+  ],
+  "device": {"destination": 2, "source": 1, "devId": 17, "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 60000}
+}

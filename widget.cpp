@@ -45,6 +45,7 @@
 #include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTimer>
+#include <QUuid>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <limits>
@@ -155,8 +156,10 @@ QString comboData(const QTableWidget *table, int row, int column)
 
 void selectData(QComboBox *box, const QString &data)
 {
-    const int index = box->findData(data);
-    if (index >= 0) box->setCurrentIndex(index);
+    for (int index = 0; index < box->count(); ++index)
+        if (box->itemData(index).toString() == data && box->itemData(index, Qt::UserRole + 4).toString() != "preset") {
+            box->setCurrentIndex(index); return;
+        }
 }
 
 
@@ -166,12 +169,40 @@ bool isListSource(const QComboBox *box)
 int sourceItemIndex(const QComboBox *box)
 { return box ? box->currentData(Qt::UserRole + 2).toInt() : 0; }
 
-void restoreSource(QComboBox *box, const QString &name, bool list, int itemIndex = 0)
+bool isPresetSource(const QComboBox *box)
+{ return box && box->currentData(Qt::UserRole + 4).toString() == "preset"; }
+
+QString sourceScope(const QComboBox *box)
+{ return isPresetSource(box) ? QStringLiteral("preset") : QStringLiteral("input"); }
+
+void applySourceScope(QJsonObject *expression, const QComboBox *box)
+{
+    if (isPresetSource(box)) expression->insert("scope", "preset");
+    else if (expression->value("scope").toString() == "preset") expression->remove("scope");
+}
+
+bool presetValues(const QString &text, QJsonArray *values)
+{
+    *values = QJsonArray();
+    const auto parts = text.split(',');
+    if (parts.isEmpty() || parts.size() > 64) return false;
+    static const QRegularExpression integer(QStringLiteral("^[+-]?[0-9]+$"));
+    for (const auto &part : parts) {
+        const QString token = part.trimmed(); bool ok = false;
+        const qlonglong number = token.toLongLong(&ok);
+        if (!ok || !integer.match(token).hasMatch() || number < -9007199254740991LL || number > 9007199254740991LL) return false;
+        values->append(double(number));
+    }
+    return true;
+}
+
+void restoreSource(QComboBox *box, const QString &name, bool list, int itemIndex = 0, const QString &scope = QStringLiteral("input"))
 {
     bool sameTypeAvailable = false;
     bool qualified = true;
     for (int i = 0; i < box->count(); ++i) {
-        if (box->itemData(i).toString() != name || box->itemData(i, Qt::UserRole + 1).toBool() != list) continue;
+        if (box->itemData(i).toString() != name || box->itemData(i, Qt::UserRole + 1).toBool() != list
+                || (box->itemData(i, Qt::UserRole + 4).toString() == "preset") != (scope == "preset")) continue;
         sameTypeAvailable = true;
         qualified = box->itemData(i, Qt::UserRole + 3).toBool();
         if (!list || box->itemData(i, Qt::UserRole + 2).toInt() == itemIndex) {
@@ -188,9 +219,11 @@ void restoreSource(QComboBox *box, const QString &name, bool list, int itemIndex
         label = QString::fromUtf8(u8"来源不可用或类型已变化：%1").arg(name);
         if (list) label += QString::fromUtf8(u8" · 第%1个参数").arg(itemIndex);
     }
+    if (scope == "preset") label = QString::fromUtf8(u8"预设失效或项号越界：%1 · 第%2项").arg(name).arg(itemIndex);
     box->addItem(label, name);
     box->setItemData(box->count() - 1, list, Qt::UserRole + 1);
     box->setItemData(box->count() - 1, itemIndex, Qt::UserRole + 2);
+    box->setItemData(box->count() - 1, scope, Qt::UserRole + 4);
     box->setCurrentIndex(box->count() - 1);
 }
 
@@ -202,7 +235,7 @@ QJsonObject renameMappingFields(QJsonObject mapping, const QMap<QString, QString
             auto expression = it.value().toObject();
             const QString field = expression.value("field").toString();
             const QString kind = expression.value("kind").toString();
-            if ((kind == "field" || kind == "linear") && renames.contains(field)) {
+            if ((kind == "field" || kind == "linear") && expression.value("scope").toString() != "preset" && renames.contains(field)) {
                 expression.insert("field", renames.value(field)); it.value() = expression;
             }
         }
@@ -229,13 +262,6 @@ QJsonObject renameMappingFields(QJsonObject mapping, const QMap<QString, QString
         mapping.insert("input", input);
     }
     return mapping;
-}
-
-QString sourceName(const QJsonObject &expression)
-{
-    const QString field = expression.value("field").toString();
-    return expression.contains("itemIndex")
-        ? QString::fromUtf8(u8"%1 · 第 %2 项").arg(field).arg(expression.value("itemIndex").toVariant().toString()) : field;
 }
 
 QStringList fieldPreview(const QString &name, const QVariant &value)
@@ -693,6 +719,33 @@ void Widget::buildUi()
     motionForm->addRow(QString::fromUtf8(u8"最大位置"), m_maxPosition);
     deviceLayout->addWidget(deviceGroup);
     deviceLayout->addWidget(motionDefaults);
+    auto *presetGroup = new QGroupBox(QString::fromUtf8(u8"位置与校准参数"), this);
+    presetGroup->setObjectName("parameterPresetsGroup");
+    auto *presetLayout = new QVBoxLayout(presetGroup);
+    presetLayout->addWidget(new QLabel(QString::fromUtf8(u8"原始整数，不自动换算；每组1～64项。"), this));
+    m_parameterPresets = new QTableWidget(this); m_parameterPresets->setObjectName("parameterPresetsTable");
+    m_parameterPresets->setColumnCount(2);
+    m_parameterPresets->setHorizontalHeaderLabels({QString::fromUtf8(u8"名称"), QString::fromUtf8(u8"参数值（逗号分隔）")});
+    m_parameterPresets->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_parameterPresets->verticalHeader()->hide();
+    m_parameterPresets->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_parameterPresets->setMinimumHeight(110); m_parameterPresets->setMaximumHeight(180);
+    presetLayout->addWidget(m_parameterPresets);
+    auto *presetActions = new QHBoxLayout;
+    auto *addPreset = new QPushButton(QString::fromUtf8(u8"添加参数组"), this); addPreset->setObjectName("addParameterPreset");
+    auto *removePreset = new QPushButton(QString::fromUtf8(u8"删除选中参数组"), this); removePreset->setObjectName("removeParameterPreset");
+    presetActions->addWidget(addPreset); presetActions->addWidget(removePreset); presetActions->addStretch();
+    presetLayout->addLayout(presetActions); presetGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    deviceLayout->addWidget(presetGroup);
+    connect(addPreset, &QPushButton::clicked, this, [this]() {
+        if (m_parameterPresets->rowCount() >= 64) { m_validationState->setText(QString::fromUtf8(u8"最多64组位置与校准参数。")); return; }
+        addParameterPresetRow(); m_parameterPresets->setCurrentCell(m_parameterPresets->rowCount() - 1, 0); parameterPresetsChanged();
+    });
+    connect(removePreset, &QPushButton::clicked, this, [this]() {
+        if (m_parameterPresets->currentRow() < 0) return;
+        m_parameterPresets->removeRow(m_parameterPresets->currentRow()); parameterPresetsChanged();
+    });
+    connect(m_parameterPresets, &QTableWidget::cellChanged, this, [this]() { parameterPresetsChanged(); });
 
     auto *serialGroup = new QGroupBox(QString::fromUtf8(u8"下游串口连接"), this);
     serialGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
@@ -1303,25 +1356,25 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         addNumericSources(source, mappingOmittedFields());
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
         const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
-        restoreSource(source, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt()); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
+        restoreSource(source, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt(), expression.value("scope").toString("input")); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
         const QString emptyHint = source->itemText(0).contains(QString::fromUtf8(u8"默认"))
             ? QString::fromUtf8(u8"无需填写") : QString::fromUtf8(u8"先选择来源");
-        auto *fixed = new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(selected == "@constant" ? QString::fromUtf8(u8"填写整数")
+        auto *fixed = new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(!isPresetSource(source) && selected == "@constant" ? QString::fromUtf8(u8"填写整数")
             : selected.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
-        fixed->setEnabled(selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
+        fixed->setEnabled(!isPresetSource(source) && selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
         connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint]() {
             if (!m_updatingValveState && m_mappingOperation->currentData().toString() == "QUSHENG_21"
                     && label->data(Qt::UserRole).toJsonObject().value("key").toString() == "mode") {
                 m_valveStatePending = false;
-                if (source->currentData().toString().isEmpty() || source->currentData().toString() == "@constant") {
+                if (!isPresetSource(source) && (source->currentData().toString().isEmpty() || source->currentData().toString() == "@constant")) {
                     auto expression = label->data(Qt::UserRole + 1).toJsonObject();
                     expression.remove("allowedValues"); label->setData(Qt::UserRole + 1, expression);
                 }
             }
             if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
             label->setData(Qt::UserRole + 2, true); const QString chosen = source->currentData().toString();
-            fixed->setEnabled(chosen == "@constant");
-            fixed->setPlaceholderText(chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
+            fixed->setEnabled(!isPresetSource(source) && chosen == "@constant");
+            fixed->setPlaceholderText(!isPresetSource(source) && chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
                 : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
             updateValveEditor();
         });
@@ -1347,14 +1400,14 @@ bool Widget::valveValue(const QString &key, quint32 *value, QString *origin) con
         auto *fixed = qobject_cast<QLineEdit *>(m_mappingParameters->cellWidget(row, 2));
         if (!source || !fixed) break;
         QString text;
-        if (source->currentData().toString() == "@constant") {
+        if (!isPresetSource(source) && source->currentData().toString() == "@constant") {
             *origin = QString::fromUtf8(u8"固定值"); text = fixed->text().trimmed();
         } else if (source->currentData().toString().isEmpty()) {
             *origin = parameterDefaultText(definition, operation);
             const auto preset = m_draftRoot.value("sdkDefaults").toObject().value(operation).toObject();
             text = (preset.contains(key) ? preset.value(key) : definition.value("default")).toVariant().toString();
         } else {
-            *origin = QString::fromUtf8(u8"客户来源：") + source->currentText();
+            *origin = (isPresetSource(source) ? QString::fromUtf8(u8"预设来源：") : QString::fromUtf8(u8"客户来源：")) + source->currentText();
             if (label->data(Qt::UserRole + 1).toJsonObject().value("kind").toString() == "linear")
                 *origin += QString::fromUtf8(u8"（保留线性关系）");
             return false;
@@ -1388,7 +1441,7 @@ void Widget::setValveConstant(const QString &key, quint32 value)
         // Source and value form one selector transaction; an empty intermediate
         // value must not open the raw editor as if the saved mapping were invalid.
         m_updatingValveState = true;
-        source->setCurrentIndex(source->findData("@constant")); fixed->setText(QString::number(value));
+        selectData(source, "@constant"); fixed->setText(QString::number(value));
         m_updatingValveState = false;
         updateValveEditor(); return;
     }
@@ -1404,11 +1457,12 @@ void Widget::setValveStateSource()
         auto expression = label->data(Qt::UserRole + 1).toJsonObject();
         expression.insert("kind", "field"); expression.insert("field", m_valveStateSource->currentData().toString());
         expression.insert("allowedValues", QJsonArray{0, 1});
+        applySourceScope(&expression, m_valveStateSource);
         for (const QString &key : {"value", "numerator", "denominator", "offset", "round", "itemIndex"}) expression.remove(key);
         if (isListSource(m_valveStateSource)) expression.insert("itemIndex", sourceItemIndex(m_valveStateSource));
         m_valveStatePending = expression.value("field").toString().isEmpty();
         m_updatingValveState = true;
-        restoreSource(source, expression.value("field").toString(), expression.contains("itemIndex"), expression.value("itemIndex").toInt());
+        restoreSource(source, expression.value("field").toString(), expression.contains("itemIndex"), expression.value("itemIndex").toInt(), expression.value("scope").toString("input"));
         m_updatingValveState = false;
         label->setData(Qt::UserRole + 1, expression); label->setData(Qt::UserRole + 2, true);
         label->setText(label->data(Qt::UserRole).toJsonObject().value("label").toString());
@@ -1436,14 +1490,14 @@ void Widget::updateValveEditor()
         const auto expression = label->data(Qt::UserRole + 1).toJsonObject();
         const auto allowed = expression.value("allowedValues").toArray();
         stateParameter = stateParameter || (rawModeSource && !rawModeSource->currentData().toString().isEmpty()
-            && rawModeSource->currentData().toString() != "@constant" && allowed.size() == 2 && allowed.contains(0) && allowed.contains(1));
+            && (isPresetSource(rawModeSource) || rawModeSource->currentData().toString() != "@constant") && allowed.size() == 2 && allowed.contains(0) && allowed.contains(1));
     }
     {
         const QSignalBlocker stateBlocker(m_valveStateSource);
         m_valveStateSource->clear(); m_valveStateSource->addItem(QString::fromUtf8(u8"请选择开关参数"), "");
         addNumericSources(m_valveStateSource, mappingOmittedFields());
-        if (rawModeSource && rawModeSource->currentData().toString() != "@constant")
-            restoreSource(m_valveStateSource, rawModeSource->currentData().toString(), isListSource(rawModeSource), sourceItemIndex(rawModeSource));
+        if (rawModeSource && (isPresetSource(rawModeSource) || rawModeSource->currentData().toString() != "@constant"))
+            restoreSource(m_valveStateSource, rawModeSource->currentData().toString(), isListSource(rawModeSource), sourceItemIndex(rawModeSource), sourceScope(rawModeSource));
     }
     m_valveStateSource->setVisible(group && stateParameter);
     auto *form = qobject_cast<QFormLayout *>(m_valveEditor->layout()->itemAt(0)->layout());
@@ -1556,7 +1610,7 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
         const QString selected = source->currentData().toString();
         if (selected.isEmpty()) { parameters->remove(key); continue; }
         QJsonObject expression = label->data(Qt::UserRole + 1).toJsonObject();
-        if (selected == "@constant") {
+        if (!isPresetSource(source) && selected == "@constant") {
             bool ok = false; const qlonglong number = fixed->text().trimmed().toLongLong(&ok);
             if (!ok || (definition.contains("min") && number < definition.value("min").toDouble())
                 || (definition.contains("max") && number > definition.value("max").toDouble())) {
@@ -1573,9 +1627,11 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
             const bool linear = expression.value("kind").toString() == "linear";
             expression.insert("kind", linear ? "linear" : "field"); expression.insert("field", selected); expression.remove("value");
         }
-        if (selected != "@constant" && isListSource(source))
+        if ((isPresetSource(source) || selected != "@constant") && isListSource(source))
             expression.insert("itemIndex", sourceItemIndex(source));
         else expression.remove("itemIndex");
+        if (expression.value("kind").toString() == "constant") expression.remove("scope");
+        else applySourceScope(&expression, source);
         parameters->insert(key, expression);
     }
     return true;
@@ -1672,7 +1728,7 @@ void Widget::loadMappingStep(int row)
         const bool fixedInput = !m_stepDrafts.isEmpty() && m_groupInputMode->currentData().toString() == "none";
         const QString selected = expression.value("kind").toString() == "constant" || (expression.isEmpty() && fixedInput)
             ? "@constant" : expression.value("field").toString();
-        restoreSource(m_mappingSource, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt());
+        restoreSource(m_mappingSource, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt(), expression.value("scope").toString("input"));
         m_mappingValue->setText(expression.value("value").toVariant().toString());
         m_mappingMultiplier->setText(expression.value("kind").toString() == "linear" ? multiplierText(expression) : QStringLiteral("1"));
     } else selectData(m_mappingSource, isQuery(operation) || QushengCommandCatalog::isStopOrReset(operation) ? "@none" : "@fields");
@@ -1750,7 +1806,7 @@ bool Widget::legacyMappedInput() const
 QJsonArray Widget::mappingOmittedFields() const
 {
     QJsonArray omitted;
-    const bool none = !m_stepDrafts.isEmpty() ? m_groupInputMode->currentData().toString() == "none" : m_mappingSource->currentData().toString() == "@none";
+    const bool none = !m_stepDrafts.isEmpty() ? m_groupInputMode->currentData().toString() == "none" : !isPresetSource(m_mappingSource) && m_mappingSource->currentData().toString() == "@none";
     if (!none) return omitted;
     bool commandSeen = false;
     for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
@@ -1811,7 +1867,7 @@ bool Widget::synchronizeFieldNames()
         const bool previousLoading=m_loadingMapping; m_loadingMapping=true;
         auto renameSource=[&renames](QComboBox *box) {
             const QString old=box->currentData().toString();
-            if (!renames.contains(old)) return;
+            if (isPresetSource(box) || !renames.contains(old)) return;
             const QString name=renames.value(old);
             box->setItemData(box->currentIndex(), name);
             box->setItemText(box->currentIndex(), name);
@@ -1875,6 +1931,18 @@ QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
     const QJsonObject parameters = mapping.value("parameters").toObject();
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject(); const QString kind = expression.value("kind").toString();
+        if ((kind == "field" || kind == "linear") && expression.value("scope").toString() == "preset") {
+            bool found = false;
+            for (const auto &value : parameterPresetRecords()) {
+                const auto preset = value.toObject();
+                if (preset.value("id") != expression.value("field")) continue;
+                found = true; const auto index = expression.value("itemIndex");
+                if (!index.isDouble() || index.toDouble() != index.toInt() || index.toInt() < 1 || index.toInt() > preset.value("values").toArray().size())
+                    return QString::fromUtf8(u8"预设“%1”的项号不可用：%2").arg(preset.value("name").toString()).arg(index.toInt());
+            }
+            if (!found) return QString::fromUtf8(u8"预设已删除或不可用：%1").arg(expression.value("field").toString());
+            continue;
+        }
         if ((kind == "field" || kind == "linear") && !numeric.contains(expression.value("field").toString()))
             return QString::fromUtf8(u8"来源字段不可用或已声明不使用：%1").arg(expression.value("field").toString());
         if (kind == "field" || kind == "linear") {
@@ -1922,14 +1990,88 @@ void Widget::updateMappingCounts()
     // Leave room for the list count and all four XYZ parameters in the normal window.
 }
 
-void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
+void Widget::addParameterPresetRow(const QJsonObject &preset)
+{
+    const QSignalBlocker blocker(m_parameterPresets);
+    const int row = m_parameterPresets->rowCount(); m_parameterPresets->insertRow(row);
+    auto record = preset;
+    if (record.isEmpty()) record.insert("id", QUuid::createUuid().toString(QUuid::WithoutBraces));
+    auto *name = new QTableWidgetItem(record.value("name").toString()); name->setData(Qt::UserRole, record);
+    m_parameterPresets->setItem(row, 0, name);
+    QStringList values;
+    for (const auto &value : record.value("values").toArray()) values.append(value.toVariant().toString());
+    m_parameterPresets->setItem(row, 1, new QTableWidgetItem(values.join(",")));
+}
+
+QJsonArray Widget::parameterPresetRecords() const
+{
+    QJsonArray result;
+    for (int row = 0; row < m_parameterPresets->rowCount(); ++row) {
+        const auto *name = m_parameterPresets->item(row, 0);
+        auto record = name ? name->data(Qt::UserRole).toJsonObject() : QJsonObject();
+        record.insert("name", itemText(m_parameterPresets, row, 0));
+        QJsonArray values;
+        if (!presetValues(itemText(m_parameterPresets, row, 1), &values)) values = QJsonArray();
+        record.insert("values", values); result.append(record);
+    }
+    return result;
+}
+
+bool Widget::collectParameterPresets(QJsonArray *presets, QString *reason) const
+{
+    const auto stored = m_draftRoot.value("parameterPresets");
+    if (!stored.isUndefined() && !stored.isArray()) {
+        *reason = QString::fromUtf8(u8"原位置与校准参数不是数组，无法在表格中完整显示；请导入修正后的配置，原内容未覆盖。"); return false;
+    }
+    for (const auto &record : stored.toArray()) if (!record.isObject()) {
+        *reason = QString::fromUtf8(u8"原位置与校准参数含非对象记录，无法在表格中完整显示；请导入修正后的配置，原内容未覆盖。"); return false;
+    }
+    if (m_parameterPresets->rowCount() > 64) { *reason = QString::fromUtf8(u8"位置与校准参数最多64组。"); return false; }
+    QSet<QString> ids, names; *presets = parameterPresetRecords();
+    for (int row = 0; row < presets->size(); ++row) {
+        const auto record = presets->at(row).toObject(); const QString id = record.value("id").toString(), name = record.value("name").toString();
+        if (id.trimmed().isEmpty() || ids.contains(id) || name.isEmpty() || names.contains(name)) {
+            *reason = QString::fromUtf8(u8"第%1组参数名称或标识为空、重复，请填写唯一名称。").arg(row + 1); return false;
+        }
+        ids.insert(id); names.insert(name);
+        if (record.value("values").toArray().isEmpty()) {
+            *reason = QString::fromUtf8(u8"参数组“%1”需填写1～64个逗号分隔整数，不能留空项；范围为±9007199254740991。").arg(name); return false;
+        }
+    }
+    return true;
+}
+
+QString Widget::sourceName(const QJsonObject &expression) const
+{
+    QString field = expression.value("field").toString();
+    if (expression.value("scope").toString() == "preset") {
+        bool found = false;
+        for (const auto &value : parameterPresetRecords()) {
+            const auto record = value.toObject();
+            if (record.value("id").toString() == field) { field = record.value("name").toString(); found = true; break; }
+        }
+        field = (found ? QString::fromUtf8(u8"预设 · ") : QString::fromUtf8(u8"失效预设 · ")) + field;
+    }
+    return expression.contains("itemIndex") ? QString::fromUtf8(u8"%1 · 第 %2 项").arg(field).arg(expression.value("itemIndex").toVariant().toString()) : field;
+}
+
+void Widget::parameterPresetsChanged()
+{
+    if (m_loadingUi) return;
+    const bool loading = m_loadingMapping; m_loadingMapping = true;
+    updateMappingSources(false); refreshMappingSteps(); markDraftDirty(); m_loadingMapping = loading;
+    QJsonArray ignored; QString reason;
+    if (!collectParameterPresets(&ignored, &reason)) m_validationState->setText(reason);
+}
+
+void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted, bool includeInput)
 {
     int numericFields = 0;
     for (int row = 0; row < m_fieldTable->rowCount(); ++row)
         if (comboData(m_fieldTable, row, 2) == "parameter" && comboData(m_fieldTable, row, 3) != "ascii"
                 && !itemText(m_fieldTable, row, 1).isEmpty() && !omitted.contains(itemText(m_fieldTable, row, 1))) ++numericFields;
     box->setMaxVisibleItems(12);
-    for (int row = 0; row < m_fieldTable->rowCount(); ++row) {
+    for (int row = 0; includeInput && row < m_fieldTable->rowCount(); ++row) {
         const QString name = itemText(m_fieldTable, row, 1);
         const QString type = comboData(m_fieldTable, row, 3);
         if (comboData(m_fieldTable, row, 2) != "parameter" || type == "ascii" || name.isEmpty() || omitted.contains(name)) continue;
@@ -1944,6 +2086,16 @@ void Widget::addNumericSources(QComboBox *box, const QJsonArray &omitted)
             box->setItemData(box->count() - 1, numericFields > 1, Qt::UserRole + 3);
         }
     }
+    for (const auto &value : parameterPresetRecords()) {
+        const auto preset = value.toObject();
+        if (preset.value("name").toString().isEmpty()) continue;
+        for (int item = 1; item <= preset.value("values").toArray().size(); ++item) {
+            box->addItem(QString::fromUtf8(u8"预设 · %1 · 第%2项").arg(preset.value("name").toString()).arg(item), preset.value("id").toString());
+            const int index = box->count() - 1;
+            box->setItemData(index, true, Qt::UserRole + 1); box->setItemData(index, item, Qt::UserRole + 2);
+            box->setItemData(index, "preset", Qt::UserRole + 4);
+        }
+    }
 }
 
 void Widget::updateMappingSources(bool rebuildCounts)
@@ -1955,15 +2107,16 @@ void Widget::updateMappingSources(bool rebuildCounts)
     QString selected = m_mappingSource->currentData().toString();
     const bool selectedList = isListSource(m_mappingSource);
     const int selectedIndex = sourceItemIndex(m_mappingSource);
+    const QString selectedScope = sourceScope(m_mappingSource);
     if (rebuildCounts) updateMappingCounts();
     if (!motion && selected != "@none") selected = "@fields";
-    else if (motion && selected == "@fields") selected.clear();
-    if (motion && grouped && (selected == "@none" || (groupWithoutParameters && selected.isEmpty())))
+    else if (motion && selectedScope != "preset" && selected == "@fields") selected.clear();
+    if (motion && selectedScope != "preset" && grouped && (selected == "@none" || (groupWithoutParameters && selected.isEmpty())))
         selected = "@constant";
     m_mappingSource->clear();
     m_mappingSource->addItem(motion ? QString::fromUtf8(u8"请选择来源") : QString::fromUtf8(u8"客户参数"), motion ? "" : "@fields");
     if (motion) {
-        if (!groupWithoutParameters) addNumericSources(m_mappingSource, {});
+        addNumericSources(m_mappingSource, {}, !groupWithoutParameters);
         m_mappingSource->addItem(QString::fromUtf8(u8"固定值"), "@constant");
     }
     if (!motion || !grouped) {
@@ -1972,18 +2125,19 @@ void Widget::updateMappingSources(bool rebuildCounts)
         m_mappingSource->addItem(motion ? unused + (relative ? QString::fromUtf8(u8"（使用固定距离）") : QString::fromUtf8(u8"（使用固定位置）"))
                                        : unused + (legacyMappedInput() ? QString::fromUtf8(u8"（省略参数字段）") : QString::fromUtf8(u8"（字段仍解析）")), "@none");
     }
-    restoreSource(m_mappingSource, selected, motion && selectedList, motion ? selectedIndex : 0);
+    restoreSource(m_mappingSource, selected, motion && selectedList, motion ? selectedIndex : 0, motion ? selectedScope : QStringLiteral("input"));
     const QJsonArray omitted = mappingOmittedFields();
     for (int row = 0; row < m_mappingParameters->rowCount(); ++row) {
         auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1)); if (!source) continue;
         const QSignalBlocker sourceBlocker(source);
         const QString chosen = source->currentData().toString(); const bool list = isListSource(source);
         const int itemIndex = sourceItemIndex(source);
+        const QString scope = sourceScope(source);
         source->clear(); source->addItem(parameterDefaultText(m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject(),
             m_mappingOperation->currentData().toString()), "");
         addNumericSources(source, omitted);
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
-        restoreSource(source, chosen, list, itemIndex);
+        restoreSource(source, chosen, list, itemIndex, scope);
     }
     updateMappingControls();
 }
@@ -2055,9 +2209,9 @@ void Widget::updateMappingControls()
     for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
         if (auto *form = qobject_cast<QFormLayout *>(m_mappingEditor->layout()->itemAt(i)->layout()))
             if (QWidget *label = form->labelForField(m_mappingMotor)) label->setVisible(motor);
-    const bool constant = m_mappingSource->currentData().toString() == "@constant";
-    const bool noParameters = grouped ? m_groupInputMode->currentData().toString() == "none"
-                                      : m_mappingSource->currentData().toString() == "@none";
+    const bool constant = !isPresetSource(m_mappingSource) && m_mappingSource->currentData().toString() == "@constant";
+    const bool noParameters = !isPresetSource(m_mappingSource) && (grouped ? m_groupInputMode->currentData().toString() == "none"
+                                      : m_mappingSource->currentData().toString() == "@none");
     const QString motionValueName = mappingParameterKey(operation) == "distanceUm" ? QString::fromUtf8(u8"运动距离") : QString::fromUtf8(u8"目标位置");
     m_mappingValue->setPlaceholderText(QString::fromUtf8(u8"填写%1整数").arg(motionValueName));
     auto visibility = [](QWidget *control, bool show) {
@@ -2106,7 +2260,7 @@ bool Widget::readNewMapping(QJsonObject *result)
     if (isMotionEditor(operation)) {
         QJsonObject expression;
         const QString source=m_mappingSource->currentData().toString();
-        if (source=="@constant" || source=="@none") {
+        if (!isPresetSource(m_mappingSource) && (source=="@constant" || source=="@none")) {
             bool ok=false; const qlonglong value=m_mappingValue->text().trimmed().toLongLong(&ok);
             if (!ok || value<0 || value>0xfffffe) {
                 const QString valueName = mappingParameterKey(operation) == "distanceUm" ? QString::fromUtf8(u8"运动距离") : QString::fromUtf8(u8"目标位置");
@@ -2115,7 +2269,7 @@ bool Widget::readNewMapping(QJsonObject *result)
             }
             expression = m_stepOriginal.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
             expression.insert("kind", "constant"); expression.insert("value", double(value));
-            for (const QString &key : {"field", "itemIndex", "numerator", "denominator", "offset", "round"}) expression.remove(key);
+            for (const QString &key : {"field", "scope", "itemIndex", "numerator", "denominator", "offset", "round"}) expression.remove(key);
         } else {
             if (source.isEmpty()) return fail(QString::fromUtf8(u8"请选择位置来源字段。"));
             const auto original = m_stepOriginal.value("parameters").toObject().value(mappingParameterKey(operation)).toObject();
@@ -2126,6 +2280,7 @@ bool Widget::readNewMapping(QJsonObject *result)
             expression = original;
             expression.insert("kind", original.value("kind").toString() == "linear" ? "linear" : "field");
             expression.insert("field", source);
+            applySourceScope(&expression, m_mappingSource);
             expression.remove("value");
             if (!preserveLinear && (numerator!=denominator || original.value("kind").toString() == "linear")) {
                 expression.insert("kind","linear"); expression.insert("numerator",double(numerator));
@@ -2149,7 +2304,7 @@ bool Widget::readNewMapping(QJsonObject *result)
     const QJsonArray omitted = mappingOmittedFields();
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject();
-        if (omitted.contains(expression.value("field")))
+        if (expression.value("scope").toString() != "preset" && omitted.contains(expression.value("field")))
             return fail(legacyMappedInput() ? QString::fromUtf8(u8"无参数短报文不能引用被省略的字段，请选择默认值或固定值。")
                 : QString::fromUtf8(u8"本映射已声明不使用该客户字段；如需引用，请选择读取客户参数。格式表中的字段仍会解析。"));
     }
@@ -2217,6 +2372,10 @@ void Widget::loadUiFromDraft()
     m_byteOrder->setVisible(binary);
     m_fieldTable->setRowCount(0);
     for (const QJsonValue &field : external.value("fields").toArray()) addFieldRow(field.toObject());
+    {
+        const QSignalBlocker presetBlocker(m_parameterPresets); m_parameterPresets->setRowCount(0);
+        for (const auto &value : m_draftRoot.value("parameterPresets").toArray()) addParameterPresetRow(value.toObject());
+    }
     m_mappingTable->setRowCount(0);
     for (const QJsonValue &mapping : m_draftRoot.value("mappings").toArray()) addMappingRow(mapping.toObject());
     const QJsonObject device = m_draftRoot.value("device").toObject();
@@ -2290,7 +2449,12 @@ bool Widget::collectUiDraft(QJsonObject *draft)
         }
         return ok;
     };
+    QJsonArray presets; QString presetReason;
+    if (!collectParameterPresets(&presets, &presetReason)) {
+        m_validationState->setText(QString::fromUtf8(u8"保存失败：") + presetReason); return false;
+    }
     QJsonObject root = m_draftRoot;
+    if (!presets.isEmpty() || root.contains("parameterPresets")) root.insert("parameterPresets", presets);
     if (!root.contains("schemaVersion")) root.insert("schemaVersion", 1);
     if (!root.contains("name")) root.insert("name", QString::fromUtf8(u8"用户协议配置"));
     QJsonObject external = root.value("external").toObject();

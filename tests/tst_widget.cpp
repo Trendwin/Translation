@@ -44,6 +44,9 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void calibrationPresetTableRoundTripAndInvalidValues();
+    void calibrationPresetReferencesAndInputScope();
+    void calibrationPresetReservedIdsAndDamagedStructure();
     void simpleUiVisibilityPreservesConfiguration();
     void deviceDefaultsIntegratedOnDevicePage();
     void mappingLayoutFitsContentAndRespectsManualSplit();
@@ -1834,6 +1837,124 @@ void WidgetTest::mappingLayoutFitsContentAndRespectsManualSplit()
     operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
     widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2"); pump();
     QCOMPARE(splitter->sizes(), manualSizes);
+}
+
+static int presetChoice(QComboBox *box, const QString &id, int item)
+{
+    for (int i = 0; i < box->count(); ++i)
+        if (box->itemData(i).toString() == id && box->itemData(i, Qt::UserRole + 4).toString() == "preset"
+                && box->itemData(i, Qt::UserRole + 2).toInt() == item) return i;
+    return -1;
+}
+
+void WidgetTest::calibrationPresetReservedIdsAndDamagedStructure()
+{
+    auto root = listExample(); root.insert("parameterPresets", QJsonArray{
+        QJsonObject{{"id","@none"},{"name","preset none"},{"values",QJsonArray{80}}},
+        QJsonObject{{"id","@constant"},{"name","preset constant"},{"values",QJsonArray{1}}}});
+    Widget widget(nullptr,freshDraftPath()); applyRoot(widget,root);
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource"); source->setCurrentIndex(presetChoice(source,"@none",1));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("RESERVED"); button(widget,"addMapping")->click();
+    auto mapping = mappingRows(widget).last().toObject();
+    QCOMPARE(mapping.value("parameters").toObject().value("positionUm").toObject().value("scope").toString(),QString("preset"));
+    QVERIFY(mapping.value("input").toObject().value("omitFields").toArray().isEmpty());
+    operation->setCurrentIndex(operation->findData("QUSHENG_21")); auto *mode = widget.findChild<QComboBox *>("valveMode"); mode->setCurrentIndex(mode->findData(-2));
+    auto *state = widget.findChild<QComboBox *>("valveStateSource"); state->setCurrentIndex(presetChoice(state,"@constant",1));
+    QCOMPARE(mode->currentData().toInt(),-2); QCOMPARE(state->currentData(Qt::UserRole+4).toString(),QString("preset"));
+    mode->setCurrentIndex(mode->findData(0));
+    auto *parameters = widget.findChild<QTableWidget *>("mappingParameters"); auto *raw = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,"mode"),1));
+    QCOMPARE(raw->currentData().toString(),QString("@constant")); QVERIFY(raw->currentData(Qt::UserRole+4).toString() != "preset");
+    for (const auto &bad : QList<QJsonValue>{QJsonObject{{"unknown","keep"}},QJsonArray{123}}) {
+        const auto path = freshDraftPath(); auto broken = root; broken.insert("parameterPresets",bad);
+        QFile file(path); QVERIFY(file.open(QIODevice::WriteOnly)); const auto original = QJsonDocument(broken).toJson(); file.write(original); file.close();
+        Widget damaged(nullptr,path); button(damaged,"saveConfig")->click(); QCOMPARE(draftBytes(path),original);
+        QVERIFY(damaged.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"原内容未覆盖")));
+    }
+}
+
+void WidgetTest::calibrationPresetTableRoundTripAndInvalidValues()
+{
+    const auto path = freshDraftPath(); Widget widget(nullptr, path); applyRoot(widget, listExample());
+    auto *presets = widget.findChild<QTableWidget *>("parameterPresetsTable"); QVERIFY(presets);
+    QCOMPARE(presets->rowCount(), 0); button(widget, "addParameterPreset")->click(); QCOMPARE(presets->rowCount(), 1);
+    QVERIFY(presets->item(0, 1)->text().isEmpty());
+    const auto id = presets->item(0, 0)->data(Qt::UserRole).toJsonObject().value("id").toString(); QVERIFY(!id.isEmpty());
+    presets->item(0, 0)->setText(QString::fromUtf8(u8"通用校准位置")); presets->item(0, 1)->setText("80,1075,30");
+    button(widget, "saveConfig")->click(); const auto saved = QJsonDocument::fromJson(draftBytes(path)).object();
+    const auto record = saved.value("parameterPresets").toArray().first().toObject();
+    QCOMPARE(record.value("id").toString(), id); QCOMPARE(record.value("values").toArray(), QJsonArray({80,1075,30}));
+    const auto previous = draftBytes(path);
+    for (const QString &bad : {QString(""), QString("1,,2"), QString("1.5"), QString("9007199254740992"), QString("abc")}) {
+        presets->item(0, 1)->setText(bad); button(widget, "saveConfig")->click(); QCOMPARE(draftBytes(path), previous);
+    }
+    presets->item(0, 1)->setText("-1,2,3"); button(widget, "saveConfig")->click();
+    Widget restored(nullptr, path); auto *restoredPresets = restored.findChild<QTableWidget *>("parameterPresetsTable");
+    QCOMPARE(restoredPresets->item(0, 0)->data(Qt::UserRole).toJsonObject().value("id").toString(), id);
+    QCOMPARE(restoredPresets->item(0, 1)->text(), QString("-1,2,3"));
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        const auto directory = QFileInfo(QDir(QString::fromLatin1(QT_TESTCASE_BUILDDIR)).absoluteFilePath(QString::fromLatin1(__FILE__))).dir();
+        QFile example(directory.filePath("../examples/calibration-presets.json")); QVERIFY(example.open(QIODevice::ReadOnly));
+        Widget demonstration(nullptr, freshDraftPath()); applyRoot(demonstration, QJsonDocument::fromJson(example.readAll()).object());
+        QDir().mkpath(render); demonstration.show(); demonstration.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(3);
+        for (const auto size : {QSize(1100,740), QSize(1400,1000)}) {
+            demonstration.resize(size); QCoreApplication::processEvents();
+            auto *group = demonstration.findChild<QGroupBox *>("parameterPresetsGroup");
+            auto *scroll = group->parentWidget(); while (scroll && !qobject_cast<QScrollArea *>(scroll)) scroll = scroll->parentWidget();
+            QVERIFY(scroll); qobject_cast<QScrollArea *>(scroll)->ensureWidgetVisible(group); QCoreApplication::processEvents();
+            QVERIFY(demonstration.grab().save(QDir(render).filePath(QString("calibration-device-%1x%2.png").arg(size.width()).arg(size.height()))));
+        }
+    }
+}
+
+void WidgetTest::calibrationPresetReferencesAndInputScope()
+{
+    const auto path = freshDraftPath(); Widget widget(nullptr, path); auto root = listExample();
+    const QJsonObject record{{"id","values"},{"name",QString::fromUtf8(u8"样品盘位置")},{"values",QJsonArray{80,1075,30}},{"extension","keep record"}};
+    root.insert("parameterPresets", QJsonArray{record}); applyRoot(widget, root);
+    auto *presets = widget.findChild<QTableWidget *>("parameterPresetsTable");
+    auto *operation = widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("MOTOR_RESET"));
+    widget.findChild<QLineEdit *>("mappingCode")->setText("PRESETS"); button(widget,"saveMappingStep")->click();
+    button(widget,"newMappingStep")->click(); operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
+    auto *source = widget.findChild<QComboBox *>("mappingSource"); const int chosen = presetChoice(source,"values",2); QVERIFY(chosen >= 0);
+    source->setCurrentIndex(chosen); QVERIFY(widget.findChild<QLineEdit *>("mappingValue")->isHidden());
+    QCOMPARE(widget.findChild<QTableWidget *>("mappingParameterCounts")->rowCount(),0);
+    button(widget,"saveMappingStep")->click(); auto *state = widget.findChild<QLabel *>("mappingStepState"); const auto clean = state->text();
+    presets->item(0,0)->setText(QString::fromUtf8(u8"新的位置名")); presets->item(0,1)->setText("81,1080,31");
+    QCOMPARE(state->text(),clean); QCOMPARE(source->currentData(Qt::UserRole+4).toString(),QString("preset"));
+    QVERIFY(source->currentText().contains(QString::fromUtf8(u8"新的位置名")));
+    auto *fields = widget.findChild<QTableWidget *>("fieldTable"); fields->item(1,1)->setText("inputValues");
+    QCOMPARE(source->currentData().toString(),QString("values")); QCOMPARE(source->currentData(Qt::UserRole+4).toString(),QString("preset"));
+    button(widget,"addMapping")->click(); button(widget,"saveConfig")->click();
+    const auto mapping = mappingRows(widget).last().toObject();
+    const auto expression = mapping.value("steps").toArray().at(1).toObject().value("parameters").toObject().value("positionUm").toObject();
+    QCOMPARE(expression.value("scope").toString(),QString("preset")); QCOMPARE(expression.value("field").toString(),QString("values"));
+    QCOMPARE(expression.value("itemIndex").toInt(),2);
+    const auto saved = QJsonDocument::fromJson(draftBytes(path)).object(); QCOMPARE(saved.value("parameterPresets").toArray().first().toObject().value("extension").toString(),QString("keep record"));
+    Widget restored(nullptr,path); QCOMPARE(mappingRows(restored).last().toObject(),mapping);
+    operation->setCurrentIndex(operation->findData("QUSHENG_C1")); auto *parameters = widget.findChild<QTableWidget *>("mappingParameters");
+    widget.findChild<QLineEdit *>("mappingCode")->setText("XYZPRESET");
+    auto *inputMode = widget.findChild<QComboBox *>("mappingSource"); inputMode->setCurrentIndex(inputMode->findData("@none"));
+    for (const QString &key : {QString("xPosition"),QString("yPosition"),QString("zPosition")}) {
+        auto *box = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,key),1)); QVERIFY(presetChoice(box,"values",1)>=0); box->setCurrentIndex(presetChoice(box,"values",1));
+    }
+    auto *module = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,"moduleIndex"),1)); module->setCurrentIndex(module->findData("@constant"));
+    qobject_cast<QLineEdit *>(parameters->cellWidget(parameterRow(parameters,"moduleIndex"),2))->setText("35");
+    button(widget,"saveMappingStep")->click(); const auto originalRows = mappingRows(widget).size();
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render); widget.resize(1100,740); widget.show(); widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
+        QCoreApplication::processEvents(); widget.findChild<QScrollArea *>("mappingEditorScroll")->ensureWidgetVisible(parameters); QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("calibration-mapping.png")));
+    }
+    auto *x = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,"xPosition"),1)); x->setCurrentIndex(presetChoice(x,"values",3));
+    button(widget,"addMapping")->click(); QCOMPARE(mappingRows(widget).size(),originalRows);
+    button(widget,"discardMappingStep")->click();
+    x = qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,"xPosition"),1));
+    presets->item(0,1)->setText("81"); QVERIFY(widget.findChild<QTableWidget *>("mappingTable")->item(originalRows-1,2)->text().contains(QString::fromUtf8(u8"失效")));
+    presets->setCurrentCell(0,0); button(widget,"removeParameterPreset")->click();
+    QVERIFY(x->currentText().contains(QString::fromUtf8(u8"失效"))); QCOMPARE(x->currentData().toString(),QString("values"));
 }
 
 void WidgetTest::deviceDefaultsIntegratedOnDevicePage()

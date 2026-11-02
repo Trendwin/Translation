@@ -34,6 +34,9 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void parameterPresetsSchemaAndRoundTrip();
+    void parameterPresetsMappingAndSnapshots();
+    void parameterPresetsFailuresAndScopeIsolation();
     void valveStateParameterAndExpressionConstraints();
     void valveSelectionPayloadsAndDefaults();
     void formatDrivenUnusedFieldsAndCounts();
@@ -122,6 +125,132 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+static QJsonObject presetRelation(int item)
+{
+    return {{"kind", "field"}, {"scope", "preset"}, {"field", "values"}, {"itemIndex", item}};
+}
+
+static ProtocolConfig parameterPresetConfig()
+{
+    auto config = integerListConfig();
+    config.root.insert("parameterPresets", QJsonArray{QJsonObject{{"id", "values"}, {"name", QString::fromUtf8(u8"样品盘A首孔")},
+        {"values", QJsonArray{80, 1075, 30}}, {"extension", QJsonObject{{"keep", true}}}}});
+    auto device = config.root.value("device").toObject(); device.insert("speedUmPerS", 1000); config.root.insert("device", device);
+    auto linear = presetRelation(2); linear.insert("kind", "linear"); linear.insert("numerator", 2);
+    linear.insert("denominator", 1); linear.insert("offset", 5); linear.insert("round", "exact"); linear.insert("note", "keep relation");
+    const QJsonObject unused{{"omitFields", QJsonArray{"values"}}};
+    config.root.insert("mappings", QJsonArray{
+        QJsonObject{{"commandCode", "MOVE"}, {"operation", "MOTOR_FORWARD"}, {"input", unused}, {"parameters", QJsonObject{{"positionUm", presetRelation(1)}}}},
+        QJsonObject{{"commandCode", "XYZ"}, {"operation", "QUSHENG_C1"}, {"input", unused}, {"parameters", QJsonObject{
+            {"moduleIndex", QJsonObject{{"kind", "constant"}, {"value", 35}}}, {"xPosition", presetRelation(1)}, {"yPosition", presetRelation(2)}, {"zPosition", presetRelation(3)}}}},
+        QJsonObject{{"commandCode", "SCALE"}, {"operation", "MOTOR_FORWARD"}, {"input", unused}, {"parameters", QJsonObject{{"positionUm", linear}}}},
+        QJsonObject{{"commandCode", "INPUT"}, {"operation", "MOTOR_FORWARD"}, {"input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 1}}}}},
+            {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}}}}}}
+    });
+    return config;
+}
+
+void FrameworkTest::parameterPresetsSchemaAndRoundTrip()
+{
+    auto base = parameterPresetConfig(); TranslationError error;
+    QVERIFY2(base.validate(&error), qPrintable(error.message));
+    QTemporaryDir directory; const auto path = directory.filePath("presets.json");
+    QVERIFY(base.save(path, &error)); ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error));
+    QCOMPARE(restored.root, base.root);
+    const auto validRecord = base.root.value("parameterPresets").toArray().first().toObject();
+    auto sameName = validRecord; sameName.insert("id", "another-id");
+    for (const auto &bad : QList<QJsonValue>{QJsonValue(), QJsonValue("bad"), QJsonObject(),
+            QJsonArray{QJsonObject()}, QJsonArray{validRecord, validRecord}, QJsonArray{validRecord, sameName}}) {
+        auto invalid = base; invalid.root.insert("parameterPresets", bad);
+        QVERIFY(!invalid.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER_PRESET"));
+    }
+    for (const auto &badValues : QList<QJsonValue>{QJsonArray{}, QJsonArray{1, QJsonValue()}, QJsonArray{1, "2"},
+            QJsonArray{false}, QJsonArray{0.5}, QJsonArray{9007199254740992.0}}) {
+        auto record = validRecord; record.insert("values", badValues);
+        auto invalid = base; invalid.root.insert("parameterPresets", QJsonArray{record});
+        QVERIFY(!invalid.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER_PRESET"));
+    }
+    auto zero = validRecord; zero.insert("values", QJsonArray{0, 0, 0});
+    auto config = base; config.root.insert("parameterPresets", QJsonArray{zero}); QVERIFY(config.validate(&error));
+    // The limits constrain the optional presets themselves, including a format-only configuration.
+    config.root.insert("mappings", QJsonArray());
+    QJsonArray oversized; for (int i = 0; i < 65; ++i) oversized.append(i);
+    zero.insert("values", oversized); config.root.insert("parameterPresets", QJsonArray{zero});
+    QVERIFY(!config.validate(&error));
+    QJsonArray manyGroups;
+    for (int i = 0; i < 65; ++i) manyGroups.append(QJsonObject{{"id", QString::number(i)}, {"name", QString::number(i)}, {"values", QJsonArray{0}}});
+    config.root.insert("parameterPresets", manyGroups); QVERIFY(!config.validate(&error));
+    config.root.remove("parameterPresets"); QVERIFY(config.validate(&error));
+}
+
+void FrameworkTest::parameterPresetsMappingAndSnapshots()
+{
+    auto config = parameterPresetConfig(); TranslationError error; ConversionPreview result;
+    QVERIFY2(ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error), qPrintable(error.message));
+    QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11410003e8000050"));
+    QVERIFY(result.parameterTrace.value("positionUm").contains(QString::fromUtf8(u8"样品盘A首孔")));
+    const auto snapshot = result.command;
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error));
+    QCOMPARE(result.targetFrame.mid(8, 20), QByteArray::fromHex("012300005000043300001e0003e80003e80003e8"));
+    QVERIFY(ConversionEngine(config).convertBatch("!SCALE=999\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("positionUm").toInt(), 2155);
+    QVERIFY(result.parameterTrace.value("positionUm").contains(QString::fromUtf8(u8"第 2 项")));
+    auto records = config.root.value("parameterPresets").toArray(); auto record = records.first().toObject();
+    record.insert("values", QJsonArray{123, 1075, 30}); records[0] = record; config.root.insert("parameterPresets", records);
+    QVERIFY(ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("positionUm").toInt(), 123);
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("xPosition").toInt(), 123);
+    QCOMPARE(snapshot.parameters.value("positionUm").toInt(), 80);
+    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("positionUm").toInt(), 999);
+    auto mappings = config.root.value("mappings").toArray(); auto inputMapping = mappings.last().toObject();
+    auto inputExpression = inputMapping.value("parameters").toObject().value("positionUm").toObject(); inputExpression.insert("scope", "input");
+    inputMapping.insert("parameters", QJsonObject{{"positionUm", inputExpression}}); mappings[mappings.size() - 1] = inputMapping; config.root.insert("mappings", mappings);
+    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("positionUm").toInt(), 999);
+}
+
+void FrameworkTest::parameterPresetsFailuresAndScopeIsolation()
+{
+    const auto base = parameterPresetConfig(); TranslationError error; ConversionPreview result;
+    auto mapping = base.root.value("mappings").toArray().first().toObject();
+    auto config = base;
+    const auto runRelation = [&](const QJsonObject &relation) {
+        auto changed = mapping; changed.insert("parameters", QJsonObject{{"positionUm", relation}});
+        config = base; config.root.insert("mappings", QJsonArray{changed});
+        return ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error);
+    };
+    for (const auto &change : QList<QJsonObject>{QJsonObject{{"field", "missing"}}, QJsonObject{{"itemIndex", 0}},
+            QJsonObject{{"itemIndex", 4}}, QJsonObject{{"scope", "unknown"}}, QJsonObject{{"scope", QJsonValue()}}}) {
+        auto relation = presetRelation(1);
+        for (auto it = change.begin(); it != change.end(); ++it) relation.insert(it.key(), it.value());
+        QVERIFY(!runRelation(relation)); QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
+    }
+    auto noIndex = presetRelation(1); noIndex.remove("itemIndex"); QVERIFY(!runRelation(noIndex));
+    auto constant = QJsonObject{{"kind", "constant"}, {"scope", "preset"}, {"value", 80}}; QVERIFY(!runRelation(constant));
+    auto allowed = presetRelation(1); allowed.insert("allowedValues", QJsonArray{0, 1});
+    QVERIFY(!runRelation(allowed)); QCOMPARE(error.code, QString("EXPRESSION_VALUE")); QVERIFY(result.steps.isEmpty());
+    auto linear = presetRelation(1); linear.insert("kind", "linear"); linear.insert("numerator", 0); linear.insert("denominator", 1);
+    linear.insert("offset", 1); linear.insert("round", "exact"); linear.insert("allowedValues", QJsonArray{0, 1});
+    QVERIFY(runRelation(linear)); QCOMPARE(result.command.parameters.value("positionUm").toInt(), 1);
+    // A preset uses its own scope even when its id equals an omitted customer field.
+    QVERIFY(runRelation(presetRelation(1))); QCOMPARE(result.command.parameters.value("positionUm").toInt(), 80);
+    auto input = presetRelation(1); input.insert("scope", "input"); QVERIFY(!runRelation(input));
+    config = base; auto records = config.root.value("parameterPresets").toArray(); auto record = records.first().toObject();
+    record.insert("values", QJsonArray{80, 1075, -1}); records[0] = record; config.root.insert("parameterPresets", records);
+    auto first = QJsonObject{{"operation", "MOTOR_FORWARD"}, {"parameters", QJsonObject{{"positionUm", presetRelation(1)}}}};
+    auto second = first; second.insert("parameters", QJsonObject{{"positionUm", presetRelation(3)}});
+    auto group = mapping; group.remove("operation"); group.remove("parameters"); group.insert("steps", QJsonArray{first, second});
+    config.root.insert("mappings", QJsonArray{group}); QVERIFY(config.validate(&error));
+    QVERIFY(!ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error));
+    QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
+    // Independent format parsing still works when the optional preset table is incomplete.
+    config.root.insert("parameterPresets", QJsonValue());
+    QVERIFY(ConversionEngine(config).parsePreview("!MOVE=999\r", &result, &error));
+    QCOMPARE(result.fields.value("values").toList().first().toInt(), 999);
 }
 
 void FrameworkTest::valveStateParameterAndExpressionConstraints()

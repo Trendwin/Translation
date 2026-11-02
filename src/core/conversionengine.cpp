@@ -83,6 +83,7 @@ quint64 readUnsigned(const QByteArray &bytes, bool littleEndian)
 }
 
 bool evaluateValue(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
+              const QJsonArray &presets,
               QVariant *output, QString *trace, TranslationError *error)
 {
     // 表达式只求数值，不判断趋盛参数是否合法；字段约束在parse检查，目标范围在SDK检查。
@@ -94,17 +95,30 @@ bool evaluateValue(const QJsonObject &expression, const QMap<QString, QVariant> 
         return true;
     }
     const QString field = expression.value("field").toString();
-    if (!fields.contains(field))
-        return fail(error, "MISSING_FIELD", QString::fromUtf8(u8"参数关系引用了不存在的字段“%1”").arg(field));
-    QVariant source = fields.value(field);
+    QVariant source;
     QString sourceName = field;
+    if (expression.value("scope").toString("input") == "preset") {
+        for (const auto &value : presets) {
+            const auto preset = value.toObject();
+            if (preset.value("id").toString() != field) continue;
+            source = preset.value("values").toArray().toVariantList();
+            sourceName = QString::fromUtf8(u8"预设“%1”").arg(preset.value("name").toString());
+            break;
+        }
+        if (!source.isValid())
+            return fail(error, "MISSING_PRESET", QString::fromUtf8(u8"参数关系引用的位置预设不存在"));
+    } else {
+        if (!fields.contains(field))
+            return fail(error, "MISSING_FIELD", QString::fromUtf8(u8"参数关系引用了不存在的字段“%1”").arg(field));
+        source = fields.value(field);
+    }
     if (source.type() == QVariant::List) {
         const int index = expression.value("itemIndex").toInt();
         const QVariantList items = source.toList();
         if (index < 1 || index > items.size())
-            return fail(error, "ITEM_INDEX", QString::fromUtf8(u8"列表“%1”没有第%2项").arg(field).arg(index));
+            return fail(error, "ITEM_INDEX", QString::fromUtf8(u8"%1没有第%2项").arg(sourceName).arg(index));
         source = items.at(index - 1);
-        sourceName = QString::fromUtf8(u8"%1 · 第 %2 项").arg(field).arg(index);
+        sourceName = QString::fromUtf8(u8"%1 · 第 %2 项").arg(sourceName).arg(index);
     } else if (expression.contains("itemIndex"))
         return fail(error, "ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能选择列表项").arg(field));
     if (kind == "field") {
@@ -154,9 +168,10 @@ bool evaluateValue(const QJsonObject &expression, const QMap<QString, QVariant> 
 }
 
 bool evaluate(const QJsonObject &expression, const QMap<QString, QVariant> &fields,
+              const QJsonArray &presets,
               QVariant *output, QString *trace, TranslationError *error)
 {
-    if (!evaluateValue(expression, fields, output, trace, error)) return false;
+    if (!evaluateValue(expression, fields, presets, output, trace, error)) return false;
     if (!expression.contains("allowedValues")) return true;
     bool ok = false;
     const qint64 result = output->toLongLong(&ok);
@@ -356,7 +371,7 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
         if (!motor.isEmpty()) {
             QVariant value;
             QString trace;
-            if (!evaluate(motor, fields, &value, &trace, error)) return false;
+            if (!evaluate(motor, fields, m_config.root.value("parameterPresets").toArray(), &value, &trace, error)) return false;
             supplied.insert("devId", value);
             preview->parameterTrace.insert("devId", trace);
         }
@@ -376,7 +391,7 @@ bool ConversionEngine::map(const QMap<QString, QVariant> &fields, UnifiedCommand
     for (auto it = parameters.begin(); it != parameters.end(); ++it) {
         QVariant output;
         QString trace;
-        if (!evaluate(it.value().toObject(), fields, &output, &trace, error)) return false;
+        if (!evaluate(it.value().toObject(), fields, m_config.root.value("parameterPresets").toArray(), &output, &trace, error)) return false;
         command->parameters.insert(it.key(), output);
         preview->parameterTrace.insert(it.key(), trace);
     }
