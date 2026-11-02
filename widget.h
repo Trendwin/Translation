@@ -78,7 +78,12 @@ private:
     void updateMappingSummary(int row, const QJsonObject &mapping);
     void updateMappingSources(bool rebuildCounts = true);
     void updateMappingCounts();
-    void addNumericSources(QComboBox *box, const QJsonArray &omitted);
+    void addNumericSources(QComboBox *box, const QJsonArray &omitted, bool includeInput = true);
+    void addParameterPresetRow(const QJsonObject &preset = QJsonObject());
+    void parameterPresetsChanged();
+    QJsonArray parameterPresetRecords() const;
+    bool collectParameterPresets(QJsonArray *presets, QString *reason) const;
+    QString sourceName(const QJsonObject &expression) const;
     QJsonArray mappingOmittedFields() const;
     bool legacyMappedInput() const;
     void fieldFormatChanged();
@@ -123,6 +128,7 @@ private:
     QLineEdit *m_footer = nullptr;
     QLabel *m_byteOrderLabel = nullptr;
     QComboBox *m_byteOrder = nullptr;
+    QTableWidget *m_parameterPresets = nullptr;
     QTableWidget *m_fieldTable = nullptr;
     QTableWidget *m_mappingTable = nullptr;
     QGroupBox *m_mappingEditor = nullptr;

@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSaveFile>
+#include <QMap>
 #include <QSet>
 #include <QtMath>
 #include <QRegularExpression>
@@ -37,6 +38,9 @@ bool validHex(const QString &text)
 bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNames,
                      qint64 constantMin = 0, qint64 constantMax = 0xfffffe)
 {
+    const QString scope = expression.value("scope").toString("input");
+    if ((expression.contains("scope") && !expression.value("scope").isString())
+            || (scope != "input" && scope != "preset")) return false;
     if (expression.contains("allowedValues")) {
         const auto allowed = expression.value("allowedValues").toArray();
         if (!expression.value("allowedValues").isArray() || allowed.isEmpty()) return false;
@@ -45,7 +49,7 @@ bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNa
         if (expression.value("kind").toString() == "constant" && !allowed.contains(expression.value("value"))) return false;
     }
     const QString kind = expression.value("kind").toString();
-    if (kind == "constant") return !expression.contains("itemIndex") && integer(expression.value("value"), constantMin, constantMax);
+    if (kind == "constant") return scope == "input" && !expression.contains("itemIndex") && integer(expression.value("value"), constantMin, constantMax);
     if (kind == "field") return fieldNames.contains(expression.value("field").toString());
     if (kind != "linear" || !fieldNames.contains(expression.value("field").toString())) return false;
     return integer(expression.value("numerator"), -1000000000, 1000000000)
@@ -308,6 +312,27 @@ bool ProtocolConfig::validate(TranslationError *error) const
 {
     if (!validateFormat(error)) return false;
     if (!validateMotorIds(error)) return false;
+    QMap<QString, QJsonObject> parameterPresets;
+    QSet<QString> presetNames, presetIds;
+    if (root.contains("parameterPresets") && !root.value("parameterPresets").isArray())
+        return fail(error, "CONFIG_PARAMETER_PRESET", QString::fromUtf8(u8"位置与校准参数必须为列表"));
+    const auto presetRecords = root.value("parameterPresets").toArray();
+    if (presetRecords.size() > 64)
+        return fail(error, "CONFIG_PARAMETER_PRESET", QString::fromUtf8(u8"位置与校准参数最多64组"));
+    for (const auto &value : presetRecords) {
+        const auto record = value.toObject();
+        const QString id = record.value("id").toString(), name = record.value("name").toString();
+        if (!value.isObject() || id.isEmpty() || id != id.trimmed() || name.isEmpty() || name != name.trimmed()
+                || presetIds.contains(id) || presetNames.contains(name))
+            return fail(error, "CONFIG_PARAMETER_PRESET", QString::fromUtf8(u8"位置与校准参数的标识和名称必须为非空、不重复的文本，且不能带首尾空格"));
+        const auto values = record.value("values").toArray();
+        if (!record.value("values").isArray() || values.isEmpty() || values.size() > 64)
+            return fail(error, "CONFIG_PARAMETER_PRESET", QString::fromUtf8(u8"预设“%1”需填写1～64个整数，不能留空或自动补零").arg(name));
+        for (const auto &number : values)
+            if (!integer(number, -9007199254740991LL, 9007199254740991LL))
+                return fail(error, "CONFIG_PARAMETER_PRESET", QString::fromUtf8(u8"预设“%1”的值必须为JSON安全范围内的整数").arg(name));
+        parameterPresets.insert(id, record); presetIds.insert(id); presetNames.insert(name);
+    }
     const QJsonObject external = root.value("external").toObject();
     const QString encoding = external.value("encoding").toString();
     QByteArray headerBytes, footerBytes;
@@ -522,23 +547,32 @@ bool ProtocolConfig::validate(TranslationError *error) const
             const QString kind = expression.value("kind").toString();
             if (kind == "field" || kind == "linear") {
                 const QString source = expression.value("field").toString();
-                // 界面可追踪同一行字段的改名，但删除、类型变化或整体JSON替换不能猜替代字段。
-                // 在配置层统一核对引用与当前字段定义，防止不可见失效引用进入真实组帧。
-                if (!mappingNames.contains(source))
-                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”找不到客户字段“%3”；请重新选择来源").arg(code, parameterName, source));
-                if (!available.contains(source))
-                    return fail(error, "CONFIG_EXPRESSION", hasMappedCommand()
-                        ? QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source)
-                        : QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了本映射声明不使用的字段“%3”；字段仍按格式解析").arg(code, parameterName, source));
-                if (!numericParameters.contains(source))
-                    return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
-                if (listParameters.contains(source)) {
-                    if (!integer(expression.value("itemIndex"), 1, counts.value(source).toInt()))
-                        return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"命令“%1”引用列表“%2”须选择第1～%3项").arg(code, source).arg(counts.value(source).toInt()));
-                } else if (expression.contains("itemIndex"))
-                    return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能带列表项号").arg(source));
+                if (expression.value("scope").toString("input") == "preset") {
+                    if (!parameterPresets.contains(source))
+                        return fail(error, "CONFIG_PRESET_REFERENCE", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用的位置预设不存在；请重新选择预设").arg(code, parameterName));
+                    const auto preset = parameterPresets.value(source);
+                    const int count = preset.value("values").toArray().size();
+                    if (!integer(expression.value("itemIndex"), 1, count))
+                        return fail(error, "CONFIG_PRESET_REFERENCE", QString::fromUtf8(u8"命令“%1”引用预设“%2”须选择第1～%3项").arg(code, preset.value("name").toString()).arg(count));
+                } else {
+                    // 客户字段校验保持独立，不把预设项数当作线上输入项数。
+                    if (!mappingNames.contains(source))
+                        return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”找不到客户字段“%3”；请重新选择来源").arg(code, parameterName, source));
+                    if (!available.contains(source))
+                        return fail(error, "CONFIG_EXPRESSION", hasMappedCommand()
+                            ? QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了已省略的客户字段“%3”").arg(code, parameterName, source)
+                            : QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用了本映射声明不使用的字段“%3”；字段仍按格式解析").arg(code, parameterName, source));
+                    if (!numericParameters.contains(source))
+                        return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
+                    if (listParameters.contains(source)) {
+                        if (!integer(expression.value("itemIndex"), 1, counts.value(source).toInt()))
+                            return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"命令“%1”引用列表“%2”须选择第1～%3项").arg(code, source).arg(counts.value(source).toInt()));
+                    } else if (expression.contains("itemIndex"))
+                        return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能带列表项号").arg(source));
+                }
             }
-            if (!it.value().isObject() || !validExpression(expression, numericParameters, minimum, maximum))
+            const auto &sources = expression.value("scope").toString("input") == "preset" ? presetIds : numericParameters;
+            if (!it.value().isObject() || !validExpression(expression, sources, minimum, maximum))
                 return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”关系无效；请检查固定值范围或换算设置").arg(code, parameterName));
         }
         const int sdkCode = QushengCommandCatalog::commandCode(operation);
