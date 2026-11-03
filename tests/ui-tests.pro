@@ -12,6 +12,7 @@ SOURCES += tst_widget.cpp ../widget.cpp \
     ../src/core/requestmanager.cpp ../src/core/translationservice.cpp \
     ../src/qusheng/qushengprotocol.cpp ../src/transport/serialtransport.cpp
 HEADERS += ../widget.h ../src/core/requestmanager.h ../src/core/translationservice.h \
+    ../src/core/numericformula.h \
     ../src/config/draftstore.h \
     ../src/qusheng/qushengcommandcatalog.h \
     ../src/protocol/iinternalprotocol.h ../src/transport/itransport.h \

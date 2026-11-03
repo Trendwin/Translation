@@ -15,6 +15,7 @@ SOURCES += tst_framework.cpp \
     ../src/core/conversionengine.cpp \
     ../src/core/requestmanager.cpp
 HEADERS += ../src/model/translationtypes.h \
+    ../src/core/numericformula.h \
     ../src/protocol/iinternalprotocol.h \
     ../src/demo/demointernalprotocol.h \
     ../src/qusheng/qushengprotocol.h \

@@ -1,6 +1,7 @@
 #include "widget.h"
 
 #include "src/core/requestmanager.h"
+#include "src/core/numericformula.h"
 #include "src/core/translationservice.h"
 #include "src/qusheng/qushengprotocol.h"
 #include "src/qusheng/qushengcommandcatalog.h"
@@ -45,6 +46,7 @@
 #include <QTableWidgetItem>
 #include <QTextCursor>
 #include <QTimer>
+#include <QResizeEvent>
 #include <QUuid>
 #include <QTextEdit>
 #include <QVBoxLayout>
@@ -169,11 +171,47 @@ bool isListSource(const QComboBox *box)
 int sourceItemIndex(const QComboBox *box)
 { return box ? box->currentData(Qt::UserRole + 2).toInt() : 0; }
 
+bool isFormulaSource(const QComboBox *box)
+{ return box && box->currentData(Qt::UserRole + 4).toString() == "formula"; }
+
+bool formulaAxis(const QString &operation, const QString &key)
+{ return operation == "QUSHENG_C1" && QStringList({"xPosition", "yPosition", "zPosition"}).contains(key); }
+
+void addFormulaSource(QComboBox *box, const QString &operation, const QString &key)
+{
+    if (!formulaAxis(operation, key)) return;
+    box->addItem(QString::fromUtf8(u8"fx 公式"), "@formula");
+    box->setItemData(box->count() - 1, "formula", Qt::UserRole + 4);
+}
+
+class AxisFormulaEdit : public QLineEdit
+{
+public:
+    explicit AxisFormulaEdit(QWidget *parent) : QLineEdit(parent), button(new QPushButton("fx", this))
+    { button->hide(); }
+    QPushButton *button;
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    { QLineEdit::resizeEvent(event); button->setGeometry(qMax(0, width() - 32), 1, 30, qMax(18, height() - 2)); }
+};
+
+QJsonObject renameExpressionFields(QJsonObject expression, const QMap<QString, QString> &renames)
+{
+    if (expression.value("kind").toString() == "formula") {
+        auto variables = expression.value("variables").toObject();
+        for (auto it = variables.begin(); it != variables.end(); ++it) it.value() = renameExpressionFields(it.value().toObject(), renames);
+        expression.insert("variables", variables);
+    } else if (QStringList({"field", "linear"}).contains(expression.value("kind").toString())
+               && expression.value("scope").toString() != "preset" && renames.contains(expression.value("field").toString()))
+        expression.insert("field", renames.value(expression.value("field").toString()));
+    return expression;
+}
+
 bool isPresetSource(const QComboBox *box)
 { return box && box->currentData(Qt::UserRole + 4).toString() == "preset"; }
 
 QString sourceScope(const QComboBox *box)
-{ return isPresetSource(box) ? QStringLiteral("preset") : QStringLiteral("input"); }
+{ return isFormulaSource(box) ? QStringLiteral("formula") : isPresetSource(box) ? QStringLiteral("preset") : QStringLiteral("input"); }
 
 void applySourceScope(QJsonObject *expression, const QComboBox *box)
 {
@@ -202,7 +240,7 @@ void restoreSource(QComboBox *box, const QString &name, bool list, int itemIndex
     bool qualified = true;
     for (int i = 0; i < box->count(); ++i) {
         if (box->itemData(i).toString() != name || box->itemData(i, Qt::UserRole + 1).toBool() != list
-                || (box->itemData(i, Qt::UserRole + 4).toString() == "preset") != (scope == "preset")) continue;
+                || (box->itemData(i, Qt::UserRole + 4).toString().isEmpty() ? QStringLiteral("input") : box->itemData(i, Qt::UserRole + 4).toString()) != scope) continue;
         sameTypeAvailable = true;
         qualified = box->itemData(i, Qt::UserRole + 3).toBool();
         if (!list || box->itemData(i, Qt::UserRole + 2).toInt() == itemIndex) {
@@ -232,12 +270,7 @@ QJsonObject renameMappingFields(QJsonObject mapping, const QMap<QString, QString
     if (mapping.value("parameters").isObject()) {
         auto parameters = mapping.value("parameters").toObject();
         for (auto it = parameters.begin(); it != parameters.end(); ++it) {
-            auto expression = it.value().toObject();
-            const QString field = expression.value("field").toString();
-            const QString kind = expression.value("kind").toString();
-            if ((kind == "field" || kind == "linear") && expression.value("scope").toString() != "preset" && renames.contains(field)) {
-                expression.insert("field", renames.value(field)); it.value() = expression;
-            }
+            it.value() = renameExpressionFields(it.value().toObject(), renames);
         }
         mapping.insert("parameters", parameters);
     }
@@ -1339,6 +1372,7 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
     const QSignalBlocker blocker(m_mappingParameters);
     const QString operation = m_mappingOperation->currentData().toString();
     m_mappingParameters->setProperty("operation", operation); m_mappingParameters->setProperty("originalParameters", QVariant::fromValue(parameters));
+    m_mappingParameters->horizontalHeaderItem(2)->setText(operation == "QUSHENG_C1" ? QString::fromUtf8(u8"固定值 / 公式") : QString::fromUtf8(u8"固定值"));
     m_mappingParameters->setRowCount(0);
     if (isMotionEditor(operation)) return;
     for (const QJsonValue &value : QushengCommandCatalog::find(operation).value("parameters").toArray()) {
@@ -1355,14 +1389,23 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
         auto *source = new QComboBox(m_mappingParameters); source->addItem(parameterDefaultText(parameter, operation), "");
         addNumericSources(source, mappingOmittedFields());
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
-        const QString selected = expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
-        restoreSource(source, selected, expression.contains("itemIndex"), expression.value("itemIndex").toInt(), expression.value("scope").toString("input")); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
+        addFormulaSource(source, operation, key);
+        const bool formula = expression.value("kind").toString() == "formula";
+        const QString selected = formula ? "@formula" : expression.value("kind").toString() == "constant" ? "@constant" : expression.value("field").toString();
+        restoreSource(source, selected, !formula && expression.contains("itemIndex"), expression.value("itemIndex").toInt(), formula ? QStringLiteral("formula") : expression.value("scope").toString("input")); source->setProperty("previousIndex", source->currentIndex()); source->setToolTip(QString::fromUtf8(u8"客户字段或固定值。")); m_mappingParameters->setCellWidget(row, 1, source);
         const QString emptyHint = source->itemText(0).contains(QString::fromUtf8(u8"默认"))
             ? QString::fromUtf8(u8"无需填写") : QString::fromUtf8(u8"先选择来源");
-        auto *fixed = new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(!isPresetSource(source) && selected == "@constant" ? QString::fromUtf8(u8"填写整数")
+        auto *fixed = formulaAxis(operation, key) ? static_cast<QLineEdit *>(new AxisFormulaEdit(m_mappingParameters)) : new QLineEdit(m_mappingParameters); fixed->setText(expression.value("value").toVariant().toString()); fixed->setPlaceholderText(!isPresetSource(source) && selected == "@constant" ? QString::fromUtf8(u8"填写整数")
             : selected.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
         fixed->setEnabled(!isPresetSource(source) && selected == "@constant"); fixed->setToolTip(parameter.value("label").toString()); m_mappingParameters->setCellWidget(row, 2, fixed);
-        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint]() {
+        connect(source, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this, label, source, fixed, emptyHint, row]() {
+            if (isFormulaSource(source)) {
+                if (!editAxisFormula(row)) {
+                    const QSignalBlocker blocker(source); source->setCurrentIndex(source->property("previousIndex").toInt());
+                }
+                source->setProperty("previousIndex", source->currentIndex()); updateFormulaCell(row); return;
+            }
+            source->setProperty("previousIndex", source->currentIndex());
             if (!m_updatingValveState && m_mappingOperation->currentData().toString() == "QUSHENG_21"
                     && label->data(Qt::UserRole).toJsonObject().value("key").toString() == "mode") {
                 m_valveStatePending = false;
@@ -1376,17 +1419,124 @@ void Widget::loadCatalogParameters(const QJsonObject &parameters)
             fixed->setEnabled(!isPresetSource(source) && chosen == "@constant");
             fixed->setPlaceholderText(!isPresetSource(source) && chosen == "@constant" ? QString::fromUtf8(u8"填写整数")
                 : chosen.isEmpty() ? emptyHint : QString::fromUtf8(u8"无需填写"));
-            updateValveEditor();
+            updateValveEditor(); updateFormulaCell(row);
         });
         connect(fixed, &QLineEdit::textChanged, this, [this, label]() {
             label->setData(Qt::UserRole + 2, true);
             if (!m_loadingStep && !m_loadingMapping) { m_stepDirty = true; updateMappingStepState(); }
             updateValveEditor();
         });
+        if (formulaAxis(operation, key)) {
+            auto *edit = static_cast<AxisFormulaEdit *>(fixed); edit->button->setObjectName("axisFormulaButton_" + key);
+            connect(edit->button, &QPushButton::clicked, this, [this, row]() { editAxisFormula(row); });
+            updateFormulaCell(row);
+        }
     }
     // 少量参数不铺开大块空白；较多参数保留表内滚动，外层说明仍可继续滚动。
     m_mappingParameters->setFixedHeight(qMin(190, qMax(76, (m_mappingParameters->rowCount() + 1) * 30 + 6)));
     updateValveEditor();
+}
+
+void Widget::updateFormulaCell(int row)
+{
+    auto *label = m_mappingParameters->item(row, 0);
+    if (!label || !formulaAxis(m_mappingOperation->currentData().toString(), label->data(Qt::UserRole).toJsonObject().value("key").toString())) return;
+    auto *source = qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row, 1));
+    auto *edit = static_cast<AxisFormulaEdit *>(m_mappingParameters->cellWidget(row, 2));
+    const bool formula = isFormulaSource(source); const QSignalBlocker blocker(edit);
+    if (formula) edit->setText(label->data(Qt::UserRole + 1).toJsonObject().value("formula").toString());
+    else if (edit->property("showingFormula").toBool()) edit->clear();
+    edit->setProperty("showingFormula", formula);
+    edit->setReadOnly(formula); edit->setTextMargins(0,0,formula ? 34 : 0,0);
+    edit->setEnabled(formula || (!isPresetSource(source) && source->currentData().toString() == "@constant"));
+    edit->button->setVisible(formula);
+    edit->setToolTip(formula ? QString::fromUtf8(u8"公式：") + label->data(Qt::UserRole + 1).toJsonObject().value("formula").toString()
+                            : label->data(Qt::UserRole).toJsonObject().value("label").toString());
+}
+
+bool Widget::editAxisFormula(int row)
+{
+    auto *label = m_mappingParameters->item(row, 0);
+    if (!label || !formulaAxis(m_mappingOperation->currentData().toString(), label->data(Qt::UserRole).toJsonObject().value("key").toString())) return false;
+    const auto original = label->data(Qt::UserRole + 1).toJsonObject();
+    QDialog dialog(this); dialog.setObjectName("axisFormulaDialog"); dialog.setWindowTitle(QString::fromUtf8(u8"轴位置公式")); dialog.resize(620,500);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *formula = new QLineEdit(&dialog); formula->setObjectName("formulaText"); formula->setPlaceholderText("p1_1+(a-1)*90");
+    if (original.value("kind").toString() == "formula") formula->setText(original.value("formula").toString());
+    layout->addWidget(new QLabel(QString::fromUtf8(u8"公式（支持 + - * / 和括号）"), &dialog)); layout->addWidget(formula);
+    auto *round = new QComboBox(&dialog); round->setObjectName("formulaRounding");
+    for (const auto &entry : QList<QPair<QString,QString>>{{QString::fromUtf8(u8"四舍五入成整数"),"nearest"},{QString::fromUtf8(u8"要求整数（小数报错）"),"exact"},{QString::fromUtf8(u8"向下取整"),"floor"},{QString::fromUtf8(u8"向上取整"),"ceil"}}) round->addItem(entry.first,entry.second);
+    selectData(round, original.value("kind").toString() == "formula" ? original.value("round").toString("nearest") : QStringLiteral("nearest"));
+    auto *form = new QFormLayout; form->addRow(QString::fromUtf8(u8"结果处理"),round); layout->addLayout(form);
+    auto *variables = new QTableWidget(&dialog); variables->setObjectName("formulaVariables"); variables->setColumnCount(2);
+    variables->setHorizontalHeaderLabels({QString::fromUtf8(u8"变量"),QString::fromUtf8(u8"取值来源（双击插入）")});
+    variables->verticalHeader()->hide(); variables->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents); variables->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
+    variables->setSelectionBehavior(QAbstractItemView::SelectRows); variables->setSelectionMode(QAbstractItemView::SingleSelection); variables->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    layout->addWidget(variables,1);
+    QJsonObject input, counts;
+    for (int i=0;i<m_mappingCounts->rowCount();++i) counts.insert(m_mappingCounts->item(i,0)->text(),qobject_cast<QSpinBox *>(m_mappingCounts->cellWidget(i,1))->value());
+    if (!counts.isEmpty()) input.insert("parameterCounts",counts);
+    const auto omitted = mappingOmittedFields(); if (!omitted.isEmpty()) input.insert("omitFields",omitted);
+    auto referenceIssue = [&](const QJsonObject &binding) { return mappingFieldIssue(QJsonObject{{"parameters",QJsonObject{{"value",binding}}},{"input",input}}); };
+    auto identity = [](const QJsonObject &binding) { return QString::fromUtf8(QJsonDocument(QJsonObject{{"scope",binding.value("scope").toString("input")},{"field",binding.value("field")},{"itemIndex",binding.value("itemIndex")}}).toJson(QJsonDocument::Compact)); };
+    QSet<QString> aliases, bindings;
+    auto addVariable = [&](QString alias, const QJsonObject &binding) {
+        const auto key = identity(binding); if (bindings.contains(key)) return;
+        QString unique = alias; int suffix=2; while (aliases.contains(unique)) unique = alias+"_"+QString::number(suffix++);
+        aliases.insert(unique); bindings.insert(key);
+        const int i=variables->rowCount(); variables->insertRow(i);
+        auto *name = new QTableWidgetItem(unique); name->setData(Qt::UserRole,binding); variables->setItem(i,0,name);
+        const auto issue = referenceIssue(binding);
+        auto *description = new QTableWidgetItem(sourceName(binding)+(issue.isEmpty()?QString():QString::fromUtf8(u8"（失效）"))); description->setToolTip(issue); variables->setItem(i,1,description);
+    };
+    // Existing aliases always win over newly suggested names. Neither a preset
+    // rename nor a different list order is allowed to change an existing binding.
+    const auto existing = original.value("kind").toString() == "formula" ? original.value("variables").toObject() : QJsonObject();
+    for (auto it=existing.begin();it!=existing.end();++it) {
+        const int i=variables->rowCount(); variables->insertRow(i); aliases.insert(it.key()); bindings.insert(identity(it.value().toObject()));
+        auto *name=new QTableWidgetItem(it.key()); name->setData(Qt::UserRole,it.value().toObject()); variables->setItem(i,0,name);
+        const auto issue=referenceIssue(it.value().toObject()); auto *description=new QTableWidgetItem(sourceName(it.value().toObject())+(issue.isEmpty()?QString():QString::fromUtf8(u8"（失效）"))); description->setToolTip(issue); variables->setItem(i,1,description);
+    }
+    QComboBox available; addNumericSources(&available,omitted);
+    int inputIndex=0; QMap<QString,int> presetNumbers; int number=0;
+    for (const auto &entry:parameterPresetRecords()) presetNumbers.insert(entry.toObject().value("id").toString(),++number);
+    for (int i=0;i<available.count();++i) {
+        available.setCurrentIndex(i); QJsonObject binding{{"kind","field"},{"field",available.currentData().toString()}};
+        if (isListSource(&available)) binding.insert("itemIndex",sourceItemIndex(&available)); applySourceScope(&binding,&available);
+        QString alias;
+        if (isPresetSource(&available)) alias=QStringLiteral("p%1_%2").arg(presetNumbers.value(available.currentData().toString())).arg(sourceItemIndex(&available));
+        else { alias=QString(QChar('a'+inputIndex%26)); if(inputIndex>=26)alias+=QString::number(inputIndex/26); ++inputIndex; }
+        addVariable(alias,binding);
+    }
+    auto insertVariable = [&]() { const int i=variables->currentRow(); if(i>=0){formula->insert(variables->item(i,0)->text());formula->setFocus();} };
+    auto *insert = new QPushButton(QString::fromUtf8(u8"插入选中变量"),&dialog); insert->setObjectName("formulaInsert"); layout->addWidget(insert);
+    connect(insert,&QPushButton::clicked,&dialog,insertVariable); connect(variables,&QTableWidget::cellDoubleClicked,&dialog,[&](int,int){insertVariable();});
+    auto *error = new QLabel(&dialog); error->setObjectName("formulaError"); error->setWordWrap(true); error->setStyleSheet("color:#a32020;"); layout->addWidget(error);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog); buttons->button(QDialogButtonBox::Ok)->setObjectName("formulaAccept"); buttons->button(QDialogButtonBox::Cancel)->setObjectName("formulaCancel");
+    buttons->button(QDialogButtonBox::Ok)->setText(QString::fromUtf8(u8"确定")); buttons->button(QDialogButtonBox::Cancel)->setText(QString::fromUtf8(u8"取消")); layout->addWidget(buttons);
+    QJsonObject accepted;
+    connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
+    connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]() {
+        QSet<QString> used; QString issue;
+        if(!NumericFormula::inspect(formula->text(),&used,&issue)){error->setText(issue);return;}
+        QJsonObject selected;
+        for (const auto &alias:used) {
+            QJsonObject binding; bool found=false;
+            for(int i=0;i<variables->rowCount();++i)if(variables->item(i,0)->text()==alias){binding=variables->item(i,0)->data(Qt::UserRole).toJsonObject();found=true;break;}
+            if(!found){error->setText(QString::fromUtf8(u8"变量“%1”未绑定，请从表中插入变量。").arg(alias));return;}
+            issue=referenceIssue(binding); if(!issue.isEmpty()){error->setText(QString::fromUtf8(u8"变量“%1”的来源失效：%2").arg(alias,issue));return;} selected.insert(alias,binding);
+        }
+        accepted=original;
+        for(const QString &key:{"field","scope","itemIndex","value","numerator","denominator","offset"})accepted.remove(key);
+        accepted.insert("kind","formula"); accepted.insert("formula",formula->text()); accepted.insert("variables",selected); accepted.insert("round",round->currentData().toString()); dialog.accept();
+    });
+    if(dialog.exec()!=QDialog::Accepted)return false;
+    label->setData(Qt::UserRole+1,accepted);label->setData(Qt::UserRole+2,true);
+    auto *source=qobject_cast<QComboBox *>(m_mappingParameters->cellWidget(row,1));
+    {const QSignalBlocker blocker(source);restoreSource(source,"@formula",false,0,"formula");}
+    source->setProperty("previousIndex",source->currentIndex()); updateFormulaCell(row);
+    if(!m_loadingStep&&!m_loadingMapping){m_stepDirty=true;updateMappingStepState();}
+    return true;
 }
 
 bool Widget::valveValue(const QString &key, quint32 *value, QString *origin) const
@@ -1610,6 +1760,12 @@ bool Widget::catalogParameters(QJsonObject *parameters, QString *reason) const
         const QString selected = source->currentData().toString();
         if (selected.isEmpty()) { parameters->remove(key); continue; }
         QJsonObject expression = label->data(Qt::UserRole + 1).toJsonObject();
+        if (isFormulaSource(source)) {
+            parameters->insert(key, expression); continue;
+        }
+        if (expression.value("kind").toString() == "formula") {
+            expression.remove("formula"); expression.remove("variables"); expression.remove("round");
+        }
         if (!isPresetSource(source) && selected == "@constant") {
             bool ok = false; const qlonglong number = fixed->text().trimmed().toLongLong(&ok);
             if (!ok || (definition.contains("min") && number < definition.value("min").toDouble())
@@ -1867,7 +2023,7 @@ bool Widget::synchronizeFieldNames()
         const bool previousLoading=m_loadingMapping; m_loadingMapping=true;
         auto renameSource=[&renames](QComboBox *box) {
             const QString old=box->currentData().toString();
-            if (isPresetSource(box) || !renames.contains(old)) return;
+            if (sourceScope(box) != "input" || !renames.contains(old)) return;
             const QString name=renames.value(old);
             box->setItemData(box->currentIndex(), name);
             box->setItemText(box->currentIndex(), name);
@@ -1931,6 +2087,19 @@ QString Widget::mappingFieldIssue(const QJsonObject &mapping) const
     const QJsonObject parameters = mapping.value("parameters").toObject();
     for (const QJsonValue &value : parameters) {
         const QJsonObject expression = value.toObject(); const QString kind = expression.value("kind").toString();
+        if (kind == "formula") {
+            QSet<QString> used; QString error;
+            if (!NumericFormula::inspect(expression.value("formula").toString(), &used, &error)) return error;
+            const auto variables = expression.value("variables").toObject(); QJsonObject references;
+            for (const auto &alias : used) {
+                const auto binding = variables.value(alias).toObject();
+                if (binding.value("kind").toString() != "field") return QString::fromUtf8(u8"公式变量“%1”缺少有效来源。").arg(alias);
+                references.insert(alias, binding);
+            }
+            const QString issue = mappingFieldIssue(QJsonObject{{"parameters", references}, {"input", mapping.value("input")}});
+            if (!issue.isEmpty()) return QString::fromUtf8(u8"公式来源失效：") + issue;
+            continue;
+        }
         if ((kind == "field" || kind == "linear") && expression.value("scope").toString() == "preset") {
             bool found = false;
             for (const auto &value : parameterPresetRecords()) {
@@ -2043,6 +2212,7 @@ bool Widget::collectParameterPresets(QJsonArray *presets, QString *reason) const
 
 QString Widget::sourceName(const QJsonObject &expression) const
 {
+    if (expression.value("kind").toString() == "formula") return QStringLiteral("fx(%1)").arg(expression.value("formula").toString());
     QString field = expression.value("field").toString();
     if (expression.value("scope").toString() == "preset") {
         bool found = false;
@@ -2137,7 +2307,10 @@ void Widget::updateMappingSources(bool rebuildCounts)
             m_mappingOperation->currentData().toString()), "");
         addNumericSources(source, omitted);
         source->addItem(QString::fromUtf8(u8"固定值"), "@constant");
+        addFormulaSource(source, m_mappingOperation->currentData().toString(), m_mappingParameters->item(row, 0)->data(Qt::UserRole).toJsonObject().value("key").toString());
         restoreSource(source, chosen, list, itemIndex, scope);
+        source->setProperty("previousIndex", source->currentIndex());
+        updateFormulaCell(row);
     }
     updateMappingControls();
 }

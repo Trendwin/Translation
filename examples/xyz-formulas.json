@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "name": "XYZ公式演示（数值与间距仅作示例）",
+  "external": {
+    "encoding": "ascii",
+    "header": "!",
+    "footer": "\\r",
+    "fields": [
+      {"name": "command", "role": "command", "type": "ascii", "lengthMode": "delimited", "delimiter": "="},
+      {"name": "values", "role": "parameter", "type": "integerList", "lengthMode": "toFooter", "min": 0, "max": 8388607}
+    ]
+  },
+  "parameterPresets": [
+    {"id": "plate-a", "name": "盘A首孔", "values": [80, 1075, 30], "note": "仅作演示，非实际设备校准值"},
+    {"id": "plate-b", "name": "盘B首孔", "values": [100, 1200, 40], "note": "另一组独立参数，未被MOVE引用"}
+  ],
+  "mappings": [
+    {
+      "commandCode": "MOVE",
+      "operation": "QUSHENG_C1",
+      "input": {"parameterCounts": {"values": 3}},
+      "parameters": {
+        "moduleIndex": {"kind": "constant", "value": 35},
+        "xPosition": {
+          "kind": "formula", "formula": "p1_1 + (a - 1) * 90", "round": "nearest",
+          "variables": {
+            "a": {"kind": "field", "field": "values", "itemIndex": 1},
+            "p1_1": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 1}
+          }
+        },
+        "yPosition": {
+          "kind": "formula", "formula": "p1_2 + (b - 1) * 90", "round": "nearest",
+          "variables": {
+            "b": {"kind": "field", "field": "values", "itemIndex": 2},
+            "p1_2": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 2}
+          }
+        },
+        "zPosition": {
+          "kind": "formula", "formula": "p1_3 + c", "round": "nearest",
+          "variables": {
+            "c": {"kind": "field", "field": "values", "itemIndex": 3},
+            "p1_3": {"kind": "field", "scope": "preset", "field": "plate-a", "itemIndex": 3}
+          }
+        }
+      }
+    }
+  ],
+  "device": {"destination": 2, "source": 1, "devId": 17, "speedUmPerS": 1000, "minPositionUm": 0, "maxPositionUm": 60000}
+}

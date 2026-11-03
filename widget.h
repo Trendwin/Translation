@@ -94,6 +94,8 @@ private:
     void scheduleMappingLayout();
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
+    bool editAxisFormula(int row);
+    void updateFormulaCell(int row);
     void updateValveEditor();
     void updateCatalogParameterVisibility();
     void setValveConstant(const QString &key, quint32 value);

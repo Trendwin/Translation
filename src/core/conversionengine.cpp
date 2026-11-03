@@ -1,4 +1,5 @@
 #include "conversionengine.h"
+#include "numericformula.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
@@ -92,6 +93,30 @@ bool evaluateValue(const QJsonObject &expression, const QMap<QString, QVariant> 
     if (kind == "constant") {
         *output = expression.value("value").toVariant();
         if (trace) *trace = QString::fromUtf8(u8"固定值 %1").arg(output->toString());
+        return true;
+    }
+    if (kind == "formula") {
+        QMap<QString, qint64> values; QStringList sources;
+        const auto variables = expression.value("variables").toObject();
+        for (auto it = variables.begin(); it != variables.end(); ++it) {
+            QVariant value; QString variableTrace;
+            if (!evaluateValue(it.value().toObject(), fields, presets, &value, &variableTrace, error)) return false;
+            bool ok = false; const qint64 number = value.toLongLong(&ok);
+            if (!ok) return fail(error, "CONVERSION_TYPE", QString::fromUtf8(u8"公式变量“%1”不是整数").arg(it.key()));
+            values.insert(it.key(), number);
+            sources.append(QString::fromUtf8(u8"%1=%2（%3）").arg(it.key()).arg(number).arg(variableTrace));
+        }
+        qint64 result; QString reason;
+        if (!NumericFormula::evaluate(expression.value("formula").toString(), values,
+                expression.value("round").toString("nearest"), &result, &reason))
+            return fail(error, "FORMULA_EVALUATION", reason);
+        *output = result;
+        if (trace) {
+            const QMap<QString, QString> modes{{"nearest", QString::fromUtf8(u8"四舍五入")}, {"exact", QString::fromUtf8(u8"必须为整数")},
+                {"floor", QString::fromUtf8(u8"向下取整")}, {"ceil", QString::fromUtf8(u8"向上取整")}};
+            *trace = QString::fromUtf8(u8"公式 %1 = %2（%3）；%4").arg(expression.value("formula").toString()).arg(result)
+                .arg(modes.value(expression.value("round").toString("nearest")), sources.join(QString::fromUtf8(u8"；")));
+        }
         return true;
     }
     const QString field = expression.value("field").toString();

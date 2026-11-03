@@ -7,6 +7,7 @@
 
 #include "config/protocolconfig.h"
 #include "core/conversionengine.h"
+#include "core/numericformula.h"
 #include "core/requestmanager.h"
 #include "demo/demointernalprotocol.h"
 #include "qusheng/qushengprotocol.h"
@@ -34,6 +35,9 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void formulaArithmeticAndBounds();
+    void formulaMappingReferencesAndSnapshots();
+    void formulaValidationAndBatchFailures();
     void parameterPresetsSchemaAndRoundTrip();
     void parameterPresetsMappingAndSnapshots();
     void parameterPresetsFailuresAndScopeIsolation();
@@ -150,6 +154,140 @@ static ProtocolConfig parameterPresetConfig()
             {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}}}}}}
     });
     return config;
+}
+
+static QJsonObject formulaRelation(const QString &formula, const QJsonObject &variables = QJsonObject())
+{
+    return {{"kind", "formula"}, {"formula", formula}, {"variables", variables}, {"round", "nearest"}};
+}
+
+static ProtocolConfig formulaConfig()
+{
+    auto config = parameterPresetConfig();
+    const auto a = QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}};
+    auto b = a; b.insert("itemIndex", 2); auto c = a; c.insert("itemIndex", 3);
+    const QJsonObject parameters{
+        {"moduleIndex", QJsonObject{{"kind", "constant"}, {"value", 35}}},
+        {"xPosition", formulaRelation("p + (a - 1) * b", {{"p", presetRelation(1)}, {"a", a}, {"b", b}})},
+        {"yPosition", formulaRelation("p + c", {{"p", presetRelation(2)}, {"c", c}})},
+        {"zPosition", formulaRelation("p / 2", {{"p", presetRelation(3)}})}
+    };
+    config.root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "XYZ"}, {"operation", "QUSHENG_C1"},
+        {"input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 3}}}}}, {"parameters", parameters}}});
+    return config;
+}
+
+void FrameworkTest::formulaArithmeticAndBounds()
+{
+    QString error; qint64 result; QSet<QString> used;
+    QVERIFY(NumericFormula::inspect("p + (a - 1) * b", &used, &error));
+    QCOMPARE(used, QSet<QString>({"a", "b", "p"}));
+    QVERIFY(NumericFormula::evaluate("p + (a - 1) * b", {{"a", 3}, {"b", 4}, {"p", 80}}, "exact", &result, &error));
+    QCOMPARE(result, qint64(88));
+    const QMap<QString, qint64> noValues;
+    for (const auto &entry : QList<QPair<QString, qint64>>{
+             {"(0.1 + 0.2) * 10", 3}, {"1 / 3 * 3", 1}, {"-(-2) + +3 * 4", 14},
+             {"1.5", 2}, {"-1.5", -2}, {"2.49", 2}, {"-2.49", -2},
+             {"9007199254740991 / 3 * 3", 9007199254740991LL},
+             {"9223372036854775807 / 9223372036854775807", 1}, {".5 + .5", 1}}) {
+        QVERIFY2(NumericFormula::evaluate(entry.first, noValues, "nearest", &result, &error), qPrintable(error));
+        QCOMPARE(result, entry.second);
+    }
+    QVERIFY(NumericFormula::evaluate("1.5", noValues, QString(), &result, &error)); QCOMPARE(result, qint64(2));
+    QVERIFY(NumericFormula::evaluate("-1.1", noValues, "floor", &result, &error)); QCOMPARE(result, qint64(-2));
+    QVERIFY(NumericFormula::evaluate("-1.1", noValues, "ceil", &result, &error)); QCOMPARE(result, qint64(-1));
+    QVERIFY(!NumericFormula::evaluate("1.5", noValues, "exact", &result, &error));
+    QVERIFY(NumericFormula::evaluate("(0.1+0.2)*10", noValues, "exact", &result, &error)); QCOMPARE(result, qint64(3));
+    for (const auto &text : QStringList{"", "a +", "(1+2", "1;2", "abs(a)", "1e3", "1**2", "foo.bar", "a[1]", "1..0", ".", QString(33, '(') + "1" + QString(33, ')'), QString(1025, '1')})
+        QVERIFY2(!NumericFormula::inspect(text, &used, &error), qPrintable(text));
+    for (const auto &text : QStringList{"1 / 0", "1 / (2 - 2)", "9223372036854775807 + 1", "-9223372036854775807 - 1",
+             "9007199254740991 * 9007199254740991", "9007199254740991 + 1", "0.0000000000000000001", "unknown"})
+        QVERIFY2(!NumericFormula::evaluate(text, noValues, "nearest", &result, &error), qPrintable(text));
+    QVERIFY(!NumericFormula::evaluate("a", {{"a", (std::numeric_limits<qint64>::min)()}}, "nearest", &result, &error));
+    QVERIFY(!NumericFormula::evaluate("1", noValues, "invalid", &result, &error));
+    QString many = "1"; for (int i = 0; i < 129; ++i) many += "+1";
+    QVERIFY(!NumericFormula::inspect(many, &used, &error));
+    many.clear(); for (int i = 0; i < 65; ++i) many += (i ? "+" : "") + QString("v%1").arg(i);
+    QVERIFY(!NumericFormula::inspect(many, &used, &error));
+}
+
+void FrameworkTest::formulaMappingReferencesAndSnapshots()
+{
+    auto config = formulaConfig(); TranslationError error; ConversionPreview result;
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QTemporaryDir directory; const auto path = directory.filePath("formula.json");
+    QVERIFY(config.save(path, &error)); ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error));
+    QCOMPARE(restored.root, config.root);
+    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error), qPrintable(error.message));
+    QCOMPARE(result.command.parameters.value("xPosition").toInt(), 88);
+    QCOMPARE(result.command.parameters.value("yPosition").toInt(), 1080);
+    QCOMPARE(result.command.parameters.value("zPosition").toInt(), 15);
+    QCOMPARE(result.targetFrame.mid(8, 20), QByteArray::fromHex("012300005800043800000f0003e80003e80003e8"));
+    QVERIFY(result.parameterTrace.value("xPosition").contains("a=3"));
+    QVERIFY(result.parameterTrace.value("xPosition").contains(QString::fromUtf8(u8"样品盘A首孔")));
+    const auto snapshot = result.command;
+    auto records = config.root.value("parameterPresets").toArray(); auto record = records.first().toObject();
+    record.insert("name", "renamed"); record.insert("values", QJsonArray{180, 1075, 30}); records[0] = record; config.root.insert("parameterPresets", records);
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error));
+    QCOMPARE(result.command.parameters.value("xPosition").toInt(), 188);
+    QCOMPARE(snapshot.parameters.value("xPosition").toInt(), 88);
+    auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings.first().toObject();
+    mapping.insert("input", QJsonObject{{"omitFields", QJsonArray{"values"}}});
+    mapping.insert("parameters", QJsonObject{{"moduleIndex", QJsonObject{{"kind", "constant"}, {"value", 35}}},
+        {"xPosition", formulaRelation("p+1", {{"p", presetRelation(1)}})},
+        {"yPosition", formulaRelation("0")}, {"zPosition", formulaRelation("0")}});
+    config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error), qPrintable(error.message));
+    QCOMPARE(result.command.parameters.value("xPosition").toInt(), 181);
+    QCOMPARE(result.fields.value("values").toList().first().toInt(), 999);
+    // Existing explicit constraints apply to the final formula result, after rounding.
+    auto p = mapping.value("parameters").toObject(); auto expression = formulaRelation("0.5"); expression.insert("allowedValues", QJsonArray{0, 1});
+    p.insert("xPosition", expression); mapping.insert("parameters", p); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error)); QCOMPARE(result.command.parameters.value("xPosition").toInt(), 1);
+    expression.insert("allowedValues", QJsonArray{0}); p.insert("xPosition", expression); mapping.insert("parameters", p); config.root.insert("mappings", QJsonArray{mapping});
+    QVERIFY(!ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
+    QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
+}
+
+void FrameworkTest::formulaValidationAndBatchFailures()
+{
+    const auto base = formulaConfig(); TranslationError error; ConversionPreview result;
+    const auto originalMapping = base.root.value("mappings").toArray().first().toObject();
+    const auto input = QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}};
+    const auto run = [&](const QJsonObject &expression, const QJsonObject &inputSettings = QJsonObject()) {
+        auto config = base; auto mapping = originalMapping; auto parameters = mapping.value("parameters").toObject();
+        parameters.insert("xPosition", expression); mapping.insert("parameters", parameters);
+        if (!inputSettings.isEmpty()) mapping.insert("input", inputSettings);
+        config.root.insert("mappings", QJsonArray{mapping});
+        return ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error);
+    };
+    for (const auto &bad : QList<QJsonObject>{formulaRelation("a", {}), formulaRelation("1", {{"unused", input}}),
+             formulaRelation("a[1]", {{"a", input}}), formulaRelation("a", {{"a", QJsonObject{{"kind", "constant"}, {"value", 1}}}}),
+             formulaRelation("a", {{"a", formulaRelation("1")}})}) {
+        QVERIFY(!run(bad)); QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
+    }
+    for (const auto &patch : QList<QJsonObject>{QJsonObject{{"field", "missing"}}, QJsonObject{{"scope", "unknown"}},
+             QJsonObject{{"itemIndex", 4}}, QJsonObject{{"itemIndex", 0}}, QJsonObject{{"itemIndex", 1.5}},
+             QJsonObject{{"scope", "preset"}, {"itemIndex", 4}}, QJsonObject{{"scope", "preset"}, {"field", "missing"}}}) {
+        auto reference = input; for (auto it = patch.begin(); it != patch.end(); ++it) reference.insert(it.key(), it.value());
+        QVERIFY(!run(formulaRelation("a", {{"a", reference}})));
+    }
+    QVERIFY(!run(formulaRelation("a", {{"a", input}}), {{"omitFields", QJsonArray{"values"}}, {"parameterCounts", QJsonObject{{"values", 3}}}}));
+    auto invalidShape = formulaRelation("1"); invalidShape.insert("variables", QJsonArray{}); QVERIFY(!run(invalidShape));
+    invalidShape = formulaRelation("1"); invalidShape.insert("round", "bad"); QVERIFY(!run(invalidShape));
+    invalidShape = formulaRelation("1"); invalidShape.insert("scope", "preset"); QVERIFY(!run(invalidShape));
+    auto exact = formulaRelation("a / 2", {{"a", input}}); exact.insert("round", "exact"); QVERIFY(!run(exact));
+    QVERIFY(run(formulaRelation("a / 2", {{"a", input}}))); QCOMPARE(result.command.parameters.value("xPosition").toInt(), 2);
+    QVERIFY(!run(formulaRelation("-1"))); QVERIFY(!run(formulaRelation("16777215")));
+    // One failing later step must discard the successfully converted earlier step as well.
+    auto grouped = base; auto finalStep = originalMapping; finalStep.remove("commandCode"); finalStep.remove("input");
+    auto parameters = finalStep.value("parameters").toObject(); parameters.insert("xPosition", formulaRelation("a / (a - a)", {{"a", input}})); finalStep.insert("parameters", parameters);
+    const QJsonObject firstStep{{"operation", "MOTOR_FORWARD"}, {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "constant"}, {"value", 80}}}}}};
+    grouped.root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "XYZ"}, {"input", originalMapping.value("input")}, {"steps", QJsonArray{firstStep, finalStep}}}});
+    QVERIFY2(grouped.validate(&error), qPrintable(error.message));
+    QVERIFY(!ConversionEngine(grouped).convertBatch("!XYZ=3,4,5\r", false, &result, &error));
+    QCOMPARE(error.code, QString("FORMULA_EVALUATION")); QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
+    QVERIFY(ConversionEngine(grouped).parsePreview("!XYZ=3,4,5\r", &result, &error)); QCOMPARE(result.fields.value("values").toList().size(), 3);
 }
 
 void FrameworkTest::parameterPresetsSchemaAndRoundTrip()
