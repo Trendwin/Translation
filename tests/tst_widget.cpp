@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <QSignalBlocker>
 #include <QCheckBox>
 #include <QAction>
 #include <QComboBox>
@@ -44,6 +45,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void xyzFormulaEditorLifecycle();
+    void xyzFormulaBindingsAndInvalidSources();
     void calibrationPresetTableRoundTripAndInvalidValues();
     void calibrationPresetReferencesAndInputScope();
     void calibrationPresetReservedIdsAndDamagedStructure();
@@ -1837,6 +1840,110 @@ void WidgetTest::mappingLayoutFitsContentAndRespectsManualSplit()
     operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
     widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2"); pump();
     QCOMPARE(splitter->sizes(), manualSizes);
+}
+
+static QJsonObject xyzFormulaRoot()
+{
+    auto root = listExample(); root.insert("parameterPresets",QJsonArray{
+        QJsonObject{{"id","plate-a"},{"name",QString::fromUtf8(u8"盘A")},{"values",QJsonArray{80,1075,30}}},
+        QJsonObject{{"id","plate-b"},{"name",QString::fromUtf8(u8"盘B")},{"values",QJsonArray{90,1080,40}}}});
+    return root;
+}
+
+static void prepareFormulaMapping(Widget &widget)
+{
+    applyRoot(widget,xyzFormulaRoot()); widget.findChild<QLineEdit *>("mappingCode")->setText("FX");
+    auto *operation=widget.findChild<QComboBox *>("mappingOperation"); operation->setCurrentIndex(operation->findData("QUSHENG_C1"));
+    qobject_cast<QSpinBox *>(widget.findChild<QTableWidget *>("mappingParameterCounts")->cellWidget(0,1))->setValue(3);
+    auto *parameters=widget.findChild<QTableWidget *>("mappingParameters"); const int module=parameterRow(parameters,"moduleIndex");
+    auto *source=qobject_cast<QComboBox *>(parameters->cellWidget(module,1)); source->setCurrentIndex(source->findData("@constant"));
+    qobject_cast<QLineEdit *>(parameters->cellWidget(module,2))->setText("35");
+}
+
+static bool changeAxisFormula(Widget &widget,const QString &key,const QString &text,bool accept=true,QString *round=nullptr,bool expectError=false)
+{
+    bool entered=false, accepted=false, errorSeen=false;
+    QTimer::singleShot(0,&widget,[&]() {
+        auto *dialog=widget.findChild<QDialog *>("axisFormulaDialog"); if(!dialog)return; entered=true;
+        if(round)*round=dialog->findChild<QComboBox *>("formulaRounding")->currentData().toString();
+        dialog->findChild<QLineEdit *>("formulaText")->setText(text);
+        const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+        if(!render.isEmpty()&&key=="xPosition"&&text=="p1_1+(a-1)*90"){
+            QDir().mkpath(render);dialog->grab().save(QDir(render).filePath("xyz-formula-dialog.png"));
+        }
+        dialog->findChild<QPushButton *>(accept?"formulaAccept":"formulaCancel")->click();
+        accepted=dialog->result()==QDialog::Accepted;
+        errorSeen=!dialog->findChild<QLabel *>("formulaError")->text().isEmpty();
+        if(accept&&!accepted&&!expectError) qWarning() << dialog->findChild<QLabel *>("formulaError")->text();
+        if(!accepted)dialog->reject();
+    });
+    auto *parameters=widget.findChild<QTableWidget *>("mappingParameters");auto *source=qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,key),1));
+    if(source->currentData(Qt::UserRole+4).toString()=="formula")widget.findChild<QPushButton *>("axisFormulaButton_"+key)->click();
+    else {int choice=-1;for(int i=0;i<source->count();++i)if(source->itemData(i,Qt::UserRole+4).toString()=="formula")choice=i;if(choice<0)return false;source->setCurrentIndex(choice);}
+    return entered&&(expectError?errorSeen&&!accepted:accept?accepted:!accepted);
+}
+
+void WidgetTest::xyzFormulaEditorLifecycle()
+{
+    const auto path=freshDraftPath();Widget widget(nullptr,path);prepareFormulaMapping(widget);
+    auto *parameters=widget.findChild<QTableWidget *>("mappingParameters");
+    const auto before=widget.findChild<QLabel *>("mappingStepState")->text();
+    auto *x=qobject_cast<QComboBox *>(parameters->cellWidget(parameterRow(parameters,"xPosition"),1));const auto prior=x->currentData();
+    QVERIFY(changeAxisFormula(widget,"xPosition","a+1",false));QCOMPARE(x->currentData(),prior);QCOMPARE(widget.findChild<QLabel *>("mappingStepState")->text(),before);
+    auto count = [&widget]() { return qobject_cast<QSpinBox *>(widget.findChild<QTableWidget *>("mappingParameterCounts")->cellWidget(0,1))->value(); };
+    QCOMPARE(count(),3);
+    QString round;QVERIFY(changeAxisFormula(widget,"xPosition","p1_1+(a-1)*90",true,&round));QCOMPARE(round,QString("nearest"));QCOMPARE(count(),3);
+    QVERIFY(changeAxisFormula(widget,"yPosition","p1_2+(b-1)*90"));QCOMPARE(count(),3);
+    QVERIFY(changeAxisFormula(widget,"zPosition","p1_3+c"));QCOMPARE(count(),3);
+    for(const QString &key:{QString("xPosition"),QString("yPosition"),QString("zPosition")}){
+        const int row=parameterRow(parameters,key);auto *fixed=qobject_cast<QLineEdit *>(parameters->cellWidget(row,2));QVERIFY(fixed->isReadOnly());QVERIFY(!fixed->text().isEmpty());
+    }
+    const int oldCount=mappingRows(widget).size();button(widget,"saveMappingStep")->click();
+    QVERIFY(changeAxisFormula(widget,"yPosition","p1_2+b"));button(widget,"addMapping")->click();QCOMPARE(mappingRows(widget).size(),oldCount);
+    button(widget,"discardMappingStep")->click();
+    const QString render=qEnvironmentVariable("TRANSLATION_RENDER_DIR");if(!render.isEmpty()){
+        widget.resize(1100,770);widget.show();widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);QCoreApplication::processEvents();
+        widget.findChild<QScrollArea *>("mappingEditorScroll")->ensureWidgetVisible(parameters);QCoreApplication::processEvents();QDir().mkpath(render);QVERIFY(widget.grab().save(QDir(render).filePath("xyz-formula-mapping.png")));
+    }
+    button(widget,"addMapping")->click();button(widget,"saveConfig")->click();QCOMPARE(mappingRows(widget).size(),oldCount+1);
+    const auto mapping=mappingRows(widget).last().toObject();const auto saved=mapping.value("parameters").toObject();
+    QCOMPARE(saved.value("xPosition").toObject().value("formula").toString(),QString("p1_1+(a-1)*90"));
+    QCOMPARE(saved.value("yPosition").toObject().value("formula").toString(),QString("p1_2+(b-1)*90"));
+    QCOMPARE(saved.value("zPosition").toObject().value("variables").toObject().size(),2);
+    QCOMPARE(saved.value("xPosition").toObject().value("variables").toObject().value("p1_1").toObject().value("field").toString(),QString("plate-a"));
+    Widget restored(nullptr,path);QCOMPARE(mappingRows(restored).last().toObject(),mapping);
+    // Constant-only formulas need no bindings, and opening a formula with omitted
+    // round must use the same nearest default as the engine.
+    Widget constant(nullptr,freshDraftPath());prepareFormulaMapping(constant);QVERIFY(changeAxisFormula(constant,"xPosition","5/2"));
+    auto *table=constant.findChild<QTableWidget *>("mappingParameters");auto *label=table->item(parameterRow(table,"xPosition"),0);auto expression=label->data(Qt::UserRole+1).toJsonObject();
+    QVERIFY(expression.value("variables").toObject().isEmpty());expression.remove("round");label->setData(Qt::UserRole+1,expression);
+    QVERIFY(changeAxisFormula(constant,"xPosition","5/2",true,&round));QCOMPARE(round,QString("nearest"));
+    auto *source=qobject_cast<QComboBox *>(table->cellWidget(parameterRow(table,"xPosition"),1));source->setCurrentIndex(parameterChoice(source,"values",1));
+    for(const QString &key:{QString("yPosition"),QString("zPosition")})QVERIFY(changeAxisFormula(constant,key,"1"));
+    button(constant,"addMapping")->click();const auto reverted=mappingRows(constant).last().toObject().value("parameters").toObject().value("xPosition").toObject();
+    QCOMPARE(reverted.value("kind").toString(),QString("field"));QVERIFY(!reverted.contains("formula"));QVERIFY(!reverted.contains("variables"));QVERIFY(!reverted.contains("round"));
+}
+
+void WidgetTest::xyzFormulaBindingsAndInvalidSources()
+{
+    Widget widget(nullptr,freshDraftPath());prepareFormulaMapping(widget);QVERIFY(changeAxisFormula(widget,"xPosition","p1_1+a"));
+    QVERIFY(changeAxisFormula(widget,"yPosition","b"));QVERIFY(changeAxisFormula(widget,"zPosition","c"));button(widget,"saveMappingStep")->click();
+    auto *parameters=widget.findChild<QTableWidget *>("mappingParameters");auto *presets=widget.findChild<QTableWidget *>("parameterPresetsTable");
+    const auto clean=widget.findChild<QLabel *>("mappingStepState")->text();presets->item(0,0)->setText(QString::fromUtf8(u8"新盘A"));QCOMPARE(widget.findChild<QLabel *>("mappingStepState")->text(),clean);
+    {const QSignalBlocker blocker(presets);for(int col=0;col<2;++col){auto *a=presets->takeItem(0,col),*b=presets->takeItem(1,col);presets->setItem(0,col,b);presets->setItem(1,col,a);}}
+    QMetaObject::invokeMethod(presets,"cellChanged",Qt::DirectConnection,Q_ARG(int,0),Q_ARG(int,0));
+    QVERIFY(changeAxisFormula(widget,"xPosition","p1_1+a"));
+    auto expression=parameters->item(parameterRow(parameters,"xPosition"),0)->data(Qt::UserRole+1).toJsonObject();
+    QCOMPARE(expression.value("variables").toObject().value("p1_1").toObject().value("field").toString(),QString("plate-a"));button(widget,"saveMappingStep")->click();
+    widget.findChild<QTableWidget *>("fieldTable")->item(1,1)->setText("renamedValues");
+    expression=parameters->item(parameterRow(parameters,"xPosition"),0)->data(Qt::UserRole+1).toJsonObject();
+    QCOMPARE(expression.value("variables").toObject().value("a").toObject().value("field").toString(),QString("renamedValues"));
+    qobject_cast<QSpinBox *>(widget.findChild<QTableWidget *>("mappingParameterCounts")->cellWidget(0,1))->setValue(1);
+    QVERIFY(changeAxisFormula(widget,"yPosition","b",true,nullptr,true));
+    QVERIFY(changeAxisFormula(widget,"xPosition","unknown+1",true,nullptr,true));
+    presets->setCurrentCell(1,0);button(widget,"removeParameterPreset")->click();
+    QVERIFY(changeAxisFormula(widget,"xPosition","p1_1+a",true,nullptr,true));
+    const auto originalCount=mappingRows(widget).size();button(widget,"addMapping")->click();QCOMPARE(mappingRows(widget).size(),originalCount);
 }
 
 static int presetChoice(QComboBox *box, const QString &id, int item)

@@ -30,6 +30,7 @@ SOURCES += \
     src/transport/serialtransport.cpp
 
 HEADERS += \
+    src/core/numericformula.h \
     src/config/draftstore.h \
     widget.h \
     src/model/translationtypes.h \

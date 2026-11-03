@@ -1,4 +1,5 @@
 #include "protocolconfig.h"
+#include "core/numericformula.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
 
@@ -49,6 +50,25 @@ bool validExpression(const QJsonObject &expression, const QSet<QString> &fieldNa
         if (expression.value("kind").toString() == "constant" && !allowed.contains(expression.value("value"))) return false;
     }
     const QString kind = expression.value("kind").toString();
+    if (kind == "formula") {
+        if (scope != "input" || expression.contains("itemIndex") || expression.contains("field")
+                || !expression.value("formula").isString() || !expression.value("variables").isObject()
+                || (expression.contains("round") && !QStringList({"exact", "floor", "ceil", "nearest"}).contains(expression.value("round").toString()))) return false;
+        QSet<QString> used;
+        if (!NumericFormula::inspect(expression.value("formula").toString(), &used, nullptr)) return false;
+        const auto variables = expression.value("variables").toObject();
+        if (variables.size() > 64 || variables.size() != used.size()) return false;
+        for (auto it = variables.begin(); it != variables.end(); ++it) {
+            if (!used.contains(it.key()) || !it.value().isObject()) return false;
+            const auto source = it.value().toObject();
+            const auto sourceScope = source.value("scope").toString("input");
+            if (source.value("kind").toString() != "field" || !source.value("field").isString()
+                    || source.value("field").toString().isEmpty() || source.contains("allowedValues")
+                    || (source.contains("scope") && !source.value("scope").isString())
+                    || (sourceScope != "input" && sourceScope != "preset")) return false;
+        }
+        return true;
+    }
     if (kind == "constant") return scope == "input" && !expression.contains("itemIndex") && integer(expression.value("value"), constantMin, constantMax);
     if (kind == "field") return fieldNames.contains(expression.value("field").toString());
     if (kind != "linear" || !fieldNames.contains(expression.value("field").toString())) return false;
@@ -545,14 +565,21 @@ bool ProtocolConfig::validate(TranslationError *error) const
             }
             const QJsonObject expression = it.value().toObject();
             const QString kind = expression.value("kind").toString();
-            if (kind == "field" || kind == "linear") {
-                const QString source = expression.value("field").toString();
-                if (expression.value("scope").toString("input") == "preset") {
+            QJsonArray references;
+            if (kind == "field" || kind == "linear") references.append(expression);
+            else if (kind == "formula") {
+                const auto variables = expression.value("variables").toObject();
+                for (const auto &variable : variables) references.append(variable);
+            }
+            for (const auto &reference : references) {
+                const auto sourceExpression = reference.toObject();
+                const QString source = sourceExpression.value("field").toString();
+                if (sourceExpression.value("scope").toString("input") == "preset") {
                     if (!parameterPresets.contains(source))
                         return fail(error, "CONFIG_PRESET_REFERENCE", QString::fromUtf8(u8"命令映射“%1”的参数“%2”引用的位置预设不存在；请重新选择预设").arg(code, parameterName));
                     const auto preset = parameterPresets.value(source);
                     const int count = preset.value("values").toArray().size();
-                    if (!integer(expression.value("itemIndex"), 1, count))
+                    if (!integer(sourceExpression.value("itemIndex"), 1, count))
                         return fail(error, "CONFIG_PRESET_REFERENCE", QString::fromUtf8(u8"命令“%1”引用预设“%2”须选择第1～%3项").arg(code, preset.value("name").toString()).arg(count));
                 } else {
                     // 客户字段校验保持独立，不把预设项数当作线上输入项数。
@@ -565,9 +592,9 @@ bool ProtocolConfig::validate(TranslationError *error) const
                     if (!numericParameters.contains(source))
                         return fail(error, "CONFIG_EXPRESSION", QString::fromUtf8(u8"命令映射“%1”的参数“%2”来源“%3”必须是整数参数字段").arg(code, parameterName, source));
                     if (listParameters.contains(source)) {
-                        if (!integer(expression.value("itemIndex"), 1, counts.value(source).toInt()))
+                        if (!integer(sourceExpression.value("itemIndex"), 1, counts.value(source).toInt()))
                             return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"命令“%1”引用列表“%2”须选择第1～%3项").arg(code, source).arg(counts.value(source).toInt()));
-                    } else if (expression.contains("itemIndex"))
+                    } else if (sourceExpression.contains("itemIndex"))
                         return fail(error, "CONFIG_ITEM_INDEX", QString::fromUtf8(u8"标量字段“%1”不能带列表项号").arg(source));
                 }
             }
