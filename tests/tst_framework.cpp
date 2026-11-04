@@ -13,6 +13,7 @@
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
+#include "transport/virtualcomprovider.h"
 
 class FakeTransport : public ITransport
 {
@@ -35,6 +36,8 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void virtualComStateAndOwnership();
+    void virtualComPortAllocationAndFailureBoundaries();
     void formulaArithmeticAndBounds();
     void formulaMappingReferencesAndSnapshots();
     void formulaValidationAndBatchFailures();
@@ -129,6 +132,108 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+void FrameworkTest::virtualComStateAndOwnership()
+{
+    VirtualComProvider::Snapshot system;
+    system.machineId = "test-machine";
+    system.occupiedPorts = {"COM1", "CNCA0", "CNCB0", "COM10"};
+    system.pairs.insert(0, {"CNCA0", "CNCB0", true});
+    system.pairs.insert(1, {"COM#", "COM#", false});
+    auto state = VirtualComProvider::newState(system);
+    QString reason;
+    QVERIFY(VirtualComProvider::validState(state, &reason));
+    QCOMPARE(state.value("pairId").toInt(), 2);
+    QCOMPARE(state.value("publicPort").toString(), QString("COM11"));
+    QVERIFY(state.value("internalPort").toString().startsWith("TWV"));
+    QCOMPARE(VirtualComProvider::matchingPair(state, system), -1);
+    system.pairs.insert(2, {"COM11", state.value("internalPort").toString(), true});
+    QCOMPARE(VirtualComProvider::matchingPair(state, system), 2);
+    auto anotherMachine = system; anotherMachine.machineId = "other-machine";
+    QCOMPARE(VirtualComProvider::matchingPair(state, anotherMachine), -1);
+    auto foreignPair = system; foreignPair.pairs[2].internalPort = "TWV12345678";
+    if (foreignPair.pairs[2].internalPort == state.value("internalPort").toString()) foreignPair.pairs[2].internalPort = "TWV87654321";
+    QCOMPARE(VirtualComProvider::matchingPair(state, foreignPair), -1);
+    auto publicChanged = system; publicChanged.pairs[2].publicPort = "COM12";
+    QCOMPARE(VirtualComProvider::matchingPair(state, publicChanged), -1);
+
+    for (const auto &patch : QList<QJsonObject>{
+             {{"version", 1.5}}, {{"machineId", ""}}, {{"pairId", -1}}, {{"pairId", 0.5}},
+             {{"publicPort", "COM#"}}, {{"publicPort", "COM9"}}, {{"publicPort", "COM256"}},
+             {{"internalPort", "CNCA0"}}, {{"status", "wrong"}}, {{"creationAttempted", 1}}}) {
+        auto invalid = state;
+        for (auto it = patch.begin(); it != patch.end(); ++it) invalid.insert(it.key(), it.value());
+        QVERIFY(!VirtualComProvider::validState(invalid, &reason));
+    }
+    QTemporaryDir temporary;
+    const auto path = temporary.filePath("config/upstream-port.json");
+    state.insert("extension", "retained");
+    QVERIFY(VirtualComProvider::saveState(path, state, &reason));
+    QJsonObject restored;
+    QVERIFY(VirtualComProvider::readState(path, &restored, &reason));
+    QCOMPARE(restored, state);
+    QFile malformed(path); QVERIFY(malformed.open(QIODevice::WriteOnly)); malformed.write("{broken"); malformed.close();
+    VirtualComProvider provider(nullptr, path);
+    QSignalSpy needsSetup(&provider, &VirtualComProvider::needsInitialization);
+    QSignalSpy ready(&provider, &VirtualComProvider::ready);
+    provider.refresh();
+    QCOMPARE(needsSetup.size(), 1);
+    QVERIFY(needsSetup.first().first().toBool());
+    QCOMPARE(ready.size(), 0);
+    QVERIFY(!provider.isBusy());
+    QVERIFY(malformed.open(QIODevice::ReadOnly)); QCOMPARE(malformed.readAll(), QByteArray("{broken")); malformed.close();
+}
+
+void FrameworkTest::virtualComPortAllocationAndFailureBoundaries()
+{
+    VirtualComProvider::Snapshot system;
+    system.machineId = "machine";
+    system.occupiedPorts = {"COM10", "COM12"};
+    system.comDatabase = QByteArray(32, char(0));
+    system.comDatabase[1] = char(1 << 2); // COM11 is reserved, despite being absent from active devices.
+    QVERIFY(!VirtualComProvider::publicPortAvailable(system, "COM11"));
+    QVERIFY(VirtualComProvider::publicPortAvailable(system, "COM13"));
+    QCOMPARE(VirtualComProvider::selectPublicPort(system), QString("COM13"));
+    system.comDatabase.fill(char(0xff));
+    QVERIFY(VirtualComProvider::selectPublicPort(system).isEmpty());
+    QString reason;
+    QVERIFY(!VirtualComProvider::validState(VirtualComProvider::newState(system), &reason));
+
+    QTemporaryDir temporary;
+    const auto statePath = temporary.filePath("nested directory with spaces/upstream-port.json");
+    VirtualComProvider provider(nullptr, statePath);
+    provider.m_busy = true;
+    provider.initialize(); // Repeated initialization cannot start an elevated process.
+    QVERIFY(!QFile::exists(statePath));
+    provider.m_busy = false;
+    provider.refresh(); // Startup without a record only reports initialization is needed.
+    QVERIFY(!QFile::exists(statePath));
+    QCOMPARE(provider.publicPort(), QString());
+    QCOMPARE(provider.internalPort(), QString());
+    const auto blockerPath = temporary.filePath("blocked");
+    QFile blocker(blockerPath); QVERIFY(blocker.open(QIODevice::WriteOnly)); blocker.write("keep"); blocker.close();
+    system.comDatabase.fill(char(0));
+    QVERIFY(!VirtualComProvider::saveState(blockerPath + "/upstream-port.json", VirtualComProvider::newState(system), &reason));
+    QVERIFY(blocker.open(QIODevice::ReadOnly)); QCOMPARE(blocker.readAll(), QByteArray("keep"));
+#ifdef Q_OS_WIN
+    // Failure before process startup cannot have created a pair. Preserve a retryable
+    // pending record rather than permanently treating the pair as partially created.
+    auto pending = VirtualComProvider::newState(system);
+    const auto arguments = VirtualComProvider::pairArguments(pending);
+    QCOMPARE(arguments.size(), 5);
+    QCOMPARE(arguments.at(0), QString("--silent"));
+    QCOMPARE(arguments.at(1), QString("install"));
+    QVERIFY(!arguments.contains("--output"));
+    QVERIFY(!arguments.contains("--wait"));
+    for (const auto &argument : arguments) QVERIFY(!argument.contains(' '));
+    QVERIFY(!VirtualComProvider::installPair(temporary.filePath("missing-setupc.exe"), statePath, &pending, &reason));
+    QVERIFY(!pending.value("creationAttempted").toBool());
+    QJsonObject retry;
+    QVERIFY(VirtualComProvider::readState(statePath, &retry, &reason));
+    QVERIFY(!retry.value("creationAttempted").toBool());
+    QCOMPARE(retry.value("internalPort"), pending.value("internalPort"));
+#endif
 }
 
 static QJsonObject presetRelation(int item)

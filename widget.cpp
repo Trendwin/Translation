@@ -7,6 +7,8 @@
 #include "src/qusheng/qushengcommandcatalog.h"
 #include "src/qusheng/sdk/qushengsdk.h"
 #include "src/transport/serialtransport.h"
+#include "src/transport/upstreamserialreceiver.h"
+#include "src/transport/virtualcomprovider.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -32,6 +34,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QPlainTextEdit>
 #include <QSerialPortInfo>
 #include <QSpinBox>
 #include <QSplitter>
@@ -71,6 +74,28 @@ QString visibleBytes(const QByteArray &bytes)
         else result += QChar::fromLatin1(byte);
     }
     return result;
+}
+
+QJsonObject receiveFormatKey(const ProtocolConfig &config)
+{
+    QJsonObject key{{"external", config.root.value("external")}};
+    if (config.hasMappedCommand()) {
+        QJsonArray commands;
+        for (const auto &value : config.root.value("mappings").toArray()) {
+            const auto mapping = value.toObject();
+            commands.append(QJsonObject{{"commandCode", mapping.value("commandCode")},
+                                        {"format", config.inputFormat(mapping)}});
+        }
+        key.insert("commands", commands);
+    }
+    return key;
+}
+
+QString normalizedPortName(QString name)
+{
+    name = name.trimmed();
+    if (name.startsWith(QStringLiteral("\\\\.\\"))) name.remove(0, 4);
+    return name.toUpper();
 }
 
 QScrollArea *scrollPage(QWidget *page)
@@ -374,10 +399,13 @@ bool decimalRatio(const QString &text, qlonglong *numerator, qlonglong *denomina
 }
 }
 
-Widget::Widget(QWidget *parent, const QString &draftFilePath)
+Widget::Widget(QWidget *parent, const QString &draftFilePath, const QString &virtualStatePath)
     : QWidget(parent),
       m_protocol(new QushengProtocol(this)),
       m_transport(new SerialTransport(this)),
+      m_upstream(new UpstreamSerialReceiver(this)),
+      m_virtualCom(new VirtualComProvider(this, virtualStatePath.isEmpty() && !draftFilePath.isEmpty()
+                                         ? draftFilePath + QStringLiteral(".upstream-port.json") : virtualStatePath)),
       m_requests(new RequestManager(m_protocol, m_transport, this)),
       m_service(new TranslationService(m_requests, this)),
       m_draftStore(draftFilePath)
@@ -388,6 +416,7 @@ Widget::Widget(QWidget *parent, const QString &draftFilePath)
     loadInitialDraft();
     filterMappingCommands();
     updateConnectionUi(false, QString::fromUtf8(u8"下游串口未连接"));
+    QTimer::singleShot(0, m_virtualCom, &VirtualComProvider::refresh);
 }
 
 void Widget::buildUi()
@@ -787,6 +816,7 @@ void Widget::buildUi()
     serialGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     auto *serialLayout = new QHBoxLayout(serialGroup);
     m_port = new QComboBox(this);
+    m_port->setObjectName("downstreamPort");
     m_port->setToolTip(QString::fromUtf8(u8"选择连接趋盛控制板的串口。"));
     auto *refreshPort = new QPushButton(QString::fromUtf8(u8"刷新串口"), this);
     refreshPort->setToolTip(QString::fromUtf8(u8"重新枚举本机可用串口。"));
@@ -900,7 +930,109 @@ void Widget::buildUi()
     m_requestState = new QLabel(QString::fromUtf8(u8"执行状态：空闲"), this);
     m_requestState->setObjectName("requestState");
     debugLayout->addWidget(m_requestState);
-    tabs->insertTab(2, scrollPage(debugGroup), QString::fromUtf8(u8"报文调试"));
+    auto *communicationTabs = new QTabWidget(this); communicationTabs->setObjectName("communicationTabs");
+    communicationTabs->addTab(scrollPage(debugGroup), QString::fromUtf8(u8"手动调试"));
+    auto *upstreamPage = new QWidget(this);
+    auto *upstreamLayout = new QVBoxLayout(upstreamPage);
+    auto *upstreamPorts = new QHBoxLayout;
+    m_providedPort = new QLabel(QString::fromUtf8(u8"提供给上游的串口：尚未初始化"), this);
+    m_providedPort->setObjectName("providedUpstreamPort"); m_providedPort->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_virtualComAction = new QPushButton(QString::fromUtf8(u8"重试"), this); m_virtualComAction->setObjectName("virtualComAction");
+    m_virtualComAction->setToolTip(QString::fromUtf8(u8"首次初始化需授权安装虚拟串口驱动，并创建软件专用的一对端口。"));
+    m_upstreamState = new QLabel(QString::fromUtf8(u8"正在检查虚拟串口"), this); m_upstreamState->setObjectName("upstreamState"); m_upstreamState->setWordWrap(true);
+    upstreamPorts->addWidget(m_providedPort, 1); upstreamPorts->addWidget(m_virtualComAction);
+    upstreamLayout->addLayout(upstreamPorts);
+    upstreamLayout->addWidget(m_upstreamState);
+    auto *upstreamHint = new QLabel(QString::fromUtf8(u8"上游软件选择上面提供的串口。115200 · 8 数据位 · 无校验 · 1 停止位 · 无流控\n按已保存的客户格式接收与解析。"), this);
+    upstreamHint->setWordWrap(true); upstreamLayout->addWidget(upstreamHint);
+    auto *upstreamStats = new QHBoxLayout;
+    m_upstreamCounters = new QLabel(this); m_upstreamCounters->setObjectName("upstreamCounters"); upstreamStats->addWidget(m_upstreamCounters, 1);
+    auto *upstreamClear = new QPushButton(QString::fromUtf8(u8"清空接收"), this); upstreamClear->setObjectName("upstreamClear"); upstreamStats->addWidget(upstreamClear);
+    upstreamLayout->addLayout(upstreamStats);
+    auto *receiveResults = new QTabWidget(this); receiveResults->setObjectName("upstreamResults");
+    m_upstreamRaw = new QPlainTextEdit(this); m_upstreamRaw->setObjectName("upstreamRaw"); m_upstreamRaw->setReadOnly(true); m_upstreamRaw->setMaximumBlockCount(500);
+    m_upstreamFrames = new QPlainTextEdit(this); m_upstreamFrames->setObjectName("upstreamFrames"); m_upstreamFrames->setReadOnly(true); m_upstreamFrames->setMaximumBlockCount(500);
+    receiveResults->addTab(m_upstreamRaw, QString::fromUtf8(u8"原始数据 · ASCII / HEX"));
+    receiveResults->addTab(m_upstreamFrames, QString::fromUtf8(u8"完整报文与字段"));
+    upstreamLayout->addWidget(receiveResults, 1);
+    communicationTabs->addTab(upstreamPage, QString::fromUtf8(u8"上游虚拟串口"));
+    tabs->insertTab(2, communicationTabs, QString::fromUtf8(u8"报文调试"));
+    updateUpstreamCounters();
+    connect(upstreamClear, &QPushButton::clicked, this, [this]() {
+        m_upstream->clear(); m_upstreamBytes = m_upstreamFramesCount = m_upstreamErrors = 0;
+        m_upstreamRaw->clear(); m_upstreamFrames->clear(); updateUpstreamCounters();
+    });
+    connect(m_virtualComAction, &QPushButton::clicked, this, [this]() {
+        if (m_virtualCom->isBusy()) return;
+        if (m_virtualNeedsInitialization) m_virtualCom->initialize();
+        else m_virtualCom->refresh();
+    });
+    connect(m_virtualCom, &VirtualComProvider::needsInitialization, this, [this](bool needed) {
+        m_virtualNeedsInitialization = needed;
+        if (needed) {
+            m_upstream->close();
+            m_providedPublicPort.clear(); m_providedInternalPort.clear();
+            m_providedPort->setText(QString::fromUtf8(u8"提供给上游的串口：尚未初始化"));
+            m_upstreamState->setText(QString::fromUtf8(u8"请初始化虚拟串口"));
+            refreshPorts();
+        }
+        m_virtualComAction->setText(needed ? QString::fromUtf8(u8"初始化虚拟串口") : QString::fromUtf8(u8"重试"));
+        m_virtualComAction->setVisible(needed || !m_upstream->isConnected());
+    });
+    connect(m_virtualCom, &VirtualComProvider::busyChanged, this, [this](bool busy) {
+        m_virtualComAction->setEnabled(!busy);
+    });
+    connect(m_virtualCom, &VirtualComProvider::statusChanged, this, [this](const QString &message) {
+        m_upstreamState->setText(message);
+    });
+    connect(m_virtualCom, &VirtualComProvider::ready, this, [this](const QString &publicPort, const QString &internalPort) {
+        m_providedPublicPort = publicPort; m_providedInternalPort = internalPort;
+        m_providedPort->setText(QString::fromUtf8(u8"提供给上游的串口：%1").arg(publicPort));
+        refreshPorts();
+        const QString downstream = normalizedPortName(m_port->currentData().toString());
+        if (m_transport->isConnected() && (downstream == normalizedPortName(publicPort) || downstream == normalizedPortName(internalPort))) {
+            m_upstreamState->setText(QString::fromUtf8(u8"虚拟串口正用于下游连接，请先断开该下游连接后重试"));
+            m_virtualComAction->show(); return;
+        }
+        if (!m_upstream->isConnected() || normalizedPortName(m_upstream->portName()) != normalizedPortName(internalPort))
+            m_upstream->open(internalPort, 115200);
+    });
+    connect(m_upstream, &UpstreamSerialReceiver::connectionChanged, this, [this](bool connected, const QString &reason) {
+        m_virtualComAction->setVisible(!connected);
+        m_upstreamState->setText(connected ? QString::fromUtf8(u8"等待上游报文") : reason);
+    });
+    connect(m_upstream, &UpstreamSerialReceiver::rawReceived, this, [this](const QByteArray &bytes) {
+        m_upstreamState->setText(QString::fromUtf8(u8"接收中"));
+        m_upstreamBytes += quint64(bytes.size()); updateUpstreamCounters();
+        const QByteArray shown = bytes.left(2048);
+        m_upstreamRaw->appendPlainText(QString::fromUtf8(u8"收到 %1 字节\nASCII  %2\nHEX    %3")
+            .arg(bytes.size()).arg(visibleBytes(shown), QString::fromLatin1(shown.toHex(' ').toUpper())));
+        if (bytes.size() > shown.size()) m_upstreamRaw->appendPlainText(QString::fromUtf8(u8"本次显示前 %1 字节，字节统计包含全部数据").arg(shown.size()));
+    });
+    connect(m_upstream, &UpstreamSerialReceiver::frameReceived, this, [this](const QByteArray &frame) {
+        ConversionPreview parsed; TranslationError error;
+        if (!ConversionEngine(m_upstreamConfig).parsePreview(frame, &parsed, &error)) {
+            ++m_upstreamErrors; updateUpstreamCounters();
+            m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"解析失败：%1").arg(error.message)); return;
+        }
+        ++m_upstreamFramesCount; updateUpstreamCounters();
+        QStringList lines{QString::fromUtf8(u8"完整有效帧 %1 · %2 字节").arg(m_upstreamFramesCount).arg(frame.size()),
+                          visibleBytes(frame.left(2048))};
+        for (const QString &name : parsed.fieldOrder) {
+            const QVariant value = parsed.fields.value(name);
+            lines += fieldPreview(name, value);
+            if (value.type() == QVariant::List)
+                lines += QString::fromUtf8(u8"  实际项数：%1").arg(value.toList().size());
+        }
+        lines += parsed.notices;
+        const QString text = lines.join('\n');
+        m_upstreamFrames->appendPlainText(text.left(8192));
+        if (text.size() > 8192) m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"本帧显示已截断"));
+    });
+    connect(m_upstream, &UpstreamSerialReceiver::errorOccurred, this, [this](const QString &reason) {
+        ++m_upstreamErrors; updateUpstreamCounters(); m_upstreamState->setText(reason);
+        m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"接收提示：%1").arg(reason.left(2048)));
+    });
 
     m_log = new QTextEdit(this); m_log->setObjectName("runLog"); m_log->setReadOnly(true);
     deviceOutputs->addTab(m_log, QString::fromUtf8(u8"日志"));
@@ -1033,6 +1165,10 @@ void Widget::connectSignals()
     });
     connect(m_connectButton, &QPushButton::clicked, this, [this]() {
         if (m_transport->isConnected()) m_transport->close();
+        else if (!m_port->currentData().toString().isEmpty()
+                 && (normalizedPortName(m_port->currentData().toString()) == normalizedPortName(m_providedPublicPort)
+                     || normalizedPortName(m_port->currentData().toString()) == normalizedPortName(m_providedInternalPort)))
+            m_validationState->setText(QString::fromUtf8(u8"此串口属于上游虚拟串口，请选择其他下游串口"));
         else if (!m_port->currentData().toString().isEmpty())
             m_transport->open(m_port->currentData().toString(), m_baud->currentData().toInt());
     });
@@ -2769,6 +2905,7 @@ void Widget::updateTableControls()
 
 void Widget::activateSavedConfiguration()
 {
+    refreshUpstreamConfig();
     ProtocolConfig config;
     TranslationError error;
     if (!ProtocolConfig::fromJson(QJsonDocument(m_draftRoot).toJson(), &config, &error)) {
@@ -2914,12 +3051,38 @@ void Widget::exportDraft()
 
 void Widget::refreshPorts()
 {
+    const auto ports = QSerialPortInfo::availablePorts();
+    const QSignalBlocker blocker(m_port);
     const QString selected = m_port->currentData().toString();
+    const QString label = m_port->currentText();
     m_port->clear();
-    for (const QSerialPortInfo &port : QSerialPortInfo::availablePorts())
+    for (const QSerialPortInfo &port : ports) {
+        const QString name = normalizedPortName(port.portName());
+        if (name == normalizedPortName(m_providedPublicPort) || name == normalizedPortName(m_providedInternalPort)) continue;
         m_port->addItem(QStringLiteral("%1 - %2").arg(port.portName(), port.description()), port.portName());
+    }
+    const bool reserved = normalizedPortName(selected) == normalizedPortName(m_providedPublicPort)
+        || normalizedPortName(selected) == normalizedPortName(m_providedInternalPort);
+    if (!selected.isEmpty() && m_port->findData(selected) < 0 && (!reserved || m_transport->isConnected())) m_port->addItem(label, selected);
     const int index = m_port->findData(selected);
     if (index >= 0) m_port->setCurrentIndex(index);
+}
+
+void Widget::updateUpstreamCounters()
+{
+    m_upstreamCounters->setText(QString::fromUtf8(u8"总字节 %1 · 完整有效帧 %2 · 错误 %3")
+        .arg(m_upstreamBytes).arg(m_upstreamFramesCount).arg(m_upstreamErrors));
+}
+
+void Widget::refreshUpstreamConfig()
+{
+    ProtocolConfig updated; updated.root = m_draftRoot;
+    const bool changed = m_upstreamConfig.root.isEmpty() || receiveFormatKey(m_upstreamConfig) != receiveFormatKey(updated);
+    m_upstreamConfig = updated;
+    if (!changed) return;
+    const bool valid = m_upstream->setConfig(m_upstreamConfig);
+    m_upstreamFrames->appendPlainText(valid ? QString::fromUtf8(u8"已更新为保存的客户格式，接收缓冲已清空")
+                                          : QString::fromUtf8(u8"保存的客户格式不可用，请检查配置"));
 }
 
 void Widget::updateConnectionUi(bool connected, const QString &reason)

@@ -27,7 +27,9 @@ SOURCES += \
     src/config/draftstore.cpp \
     src/qusheng/qushengprotocol.cpp \
     src/qusheng/qushengcommandcatalog.cpp \
-    src/transport/serialtransport.cpp
+    src/transport/serialtransport.cpp \
+    src/transport/upstreamserialreceiver.cpp \
+    src/transport/virtualcomprovider.cpp
 
 HEADERS += \
     src/core/numericformula.h \
@@ -42,7 +44,11 @@ HEADERS += \
     src/config/protocolconfig.h \
     src/qusheng/qushengprotocol.h \
     src/qusheng/qushengcommandcatalog.h \
-    src/transport/serialtransport.h
+    src/transport/serialtransport.h \
+    src/transport/upstreamserialreceiver.h \
+    src/transport/virtualcomprovider.h
+
+win32: LIBS += -lshell32 -ladvapi32 -lwintrust -lcrypt32
 
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
