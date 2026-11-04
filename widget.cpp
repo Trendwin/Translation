@@ -13,7 +13,6 @@
 #include <QCloseEvent>
 #include <QCheckBox>
 #include <QComboBox>
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QEvent>
@@ -831,7 +830,8 @@ void Widget::buildUi()
     auto *configButtons = new QHBoxLayout;
     auto *saveConfig = new QPushButton(QString::fromUtf8(u8"保存配置"), this);
     saveConfig->setObjectName("saveConfig");
-    saveConfig->setToolTip(QString::fromUtf8(u8"保存各页配置到本地，下次打开自动恢复。"));
+    saveConfig->setToolTip(QString::fromUtf8(u8"保存各页配置，下次打开自动恢复。\n%1")
+                           .arg(QDir::toNativeSeparators(m_draftStore.filePath())));
     auto *importButton = new QPushButton(QString::fromUtf8(u8"导入配置"), this);
     importButton->setObjectName("importConfig");
     auto *exportButton = new QPushButton(QString::fromUtf8(u8"导出配置"), this);
@@ -1140,35 +1140,23 @@ void Widget::loadInitialDraft()
         QJsonObject draft;
         if (m_draftStore.load(&draft, &restoreError)) {
             m_draftRoot = draft; loadUiFromDraft(); activateSavedConfiguration();
-            appendLog(QString::fromUtf8(u8"已恢复本地配置：") + m_draftStore.filePath());
+            appendLog(QString::fromUtf8(u8"已恢复本地配置：") + QDir::toNativeSeparators(m_draftStore.filePath()));
             return;
         }
     }
-    const QStringList candidates = {
-        QDir(QCoreApplication::applicationDirPath()).filePath("examples/dt-simple-commands.json"),
-        QDir(QCoreApplication::applicationDirPath()).filePath("../../examples/dt-simple-commands.json"),
-        QDir::current().filePath("examples/dt-simple-commands.json")
-    };
-    for (const QString &path : candidates) {
-        QFile file(path);
-        if (!file.open(QIODevice::ReadOnly)) continue;
-        const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-        if (document.isObject()) {
-            m_draftRoot = document.object();
-            loadUiFromDraft();
-            if (!restoreError.isValid()) activateSavedConfiguration();
-            m_input->setText(QStringLiteral("/1A2000R\\r"));
-            appendLog(QString::fromUtf8(u8"已载入 DT 风格单条命令验证配置，默认按数值直接转换；DT 不是程序内置协议。"));
-            if (restoreError.isValid()) {
-                m_validationState->setText(QString::fromUtf8(u8"恢复失败：%1；原文件已保留").arg(restoreError.message));
-                appendLog(m_validationState->text());
-            }
-            return;
-        }
+    QJsonObject example;
+    if (DraftStore(QStringLiteral(":/examples/dt-simple-commands.json")).load(&example, nullptr)) {
+        m_draftRoot = example;
+        loadUiFromDraft();
+        if (!restoreError.isValid()) activateSavedConfiguration();
+        m_input->setText(QStringLiteral("/1A2000R\\r"));
+        appendLog(QString::fromUtf8(u8"已载入 DT 风格单条命令验证配置，默认按数值直接转换；DT 不是程序内置协议。"));
+    } else {
+        appendLog(QString::fromUtf8(u8"未找到示例配置，请导入 JSON 配置。"));
     }
-    appendLog(QString::fromUtf8(u8"未找到示例配置，请导入 JSON 配置。"));
     if (restoreError.isValid()) {
-        m_validationState->setText(QString::fromUtf8(u8"恢复失败：%1；原文件已保留").arg(restoreError.message));
+        m_validationState->setText(QString::fromUtf8(u8"恢复失败：%1；原文件已保留\n%2")
+                                   .arg(restoreError.message, QDir::toNativeSeparators(m_draftStore.filePath())));
         appendLog(m_validationState->text());
     }
 }
@@ -1180,7 +1168,8 @@ bool Widget::persistDraft(const QJsonObject &draft)
     // 写盘失败不得显示“已保存”，也不得校验旧内存值来掩盖当前未保存的编辑。
     if (!m_jsonDirty) m_formDirty = true;
     m_draftVersion->setText(QString::fromUtf8(u8"配置：未保存"));
-    m_validationState->setText(QString::fromUtf8(u8"保存失败：") + error.message);
+    m_validationState->setText(QString::fromUtf8(u8"保存失败：%1\n%2")
+                               .arg(error.message, QDir::toNativeSeparators(m_draftStore.filePath())));
     appendLog(m_validationState->text()); updateLiveState();
     return false;
 }

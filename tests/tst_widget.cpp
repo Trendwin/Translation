@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -107,6 +108,7 @@ private slots:
     void savedConfigActivatesAndInvalidConfigDoesNot();
     void saveKeepsPendingReplyAndSequence();
     void savedDraftSurvivesRestart();
+    void portableDraftPathAndEmbeddedExample();
     void incompleteDraftSurvivesRestart();
     void draftWriteFailureIsVisibleAndRetryable();
     void damagedLocalDraftIsNotOverwritten();
@@ -424,6 +426,51 @@ void WidgetTest::debugSendNeedsNoWorkflowOrSavedDraft()
     QVERIFY(widget.findChild<QTextEdit *>("previewOutput")->toPlainText().contains(QString::fromUtf8(u8"JSON")));
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
     QVERIFY(send->isEnabled()); QVERIFY(!QFile::exists(path));
+}
+
+void WidgetTest::portableDraftPathAndEmbeddedExample()
+{
+    QTemporaryDir workspace;
+    QVERIFY(workspace.isValid());
+    const QString originalDirectory = QDir::currentPath();
+    const auto restoreWorkingDirectory = qScopeGuard([originalDirectory]() { QDir::setCurrent(originalDirectory); });
+    const QString expectedDefaultPath = QDir(QCoreApplication::applicationDirPath()).filePath("config/draft.json");
+    QCOMPARE(DraftStore().filePath(), expectedDefaultPath);
+
+    QDir unrelated(workspace.filePath("unrelated working directory"));
+    QVERIFY(unrelated.mkpath("examples"));
+    QFile decoy(unrelated.filePath("examples/dt-simple-commands.json"));
+    QVERIFY(decoy.open(QIODevice::WriteOnly));
+    QCOMPARE(decoy.write("{}"), qint64(2));
+    decoy.close();
+    QVERIFY(QDir::setCurrent(unrelated.absolutePath()));
+    QCOMPARE(DraftStore().filePath(), expectedDefaultPath);
+
+    const QString firstPath = workspace.filePath("first package/config/draft.json");
+    const QString secondPath = workspace.filePath("second package/config/draft.json");
+    Widget first(nullptr, firstPath);
+    auto *firstHeader = first.findChild<QLineEdit *>("formatHeader");
+    QCOMPARE(firstHeader->text(), QString("/"));
+    QVERIFY(first.findChild<QTableWidget *>("mappingTable")->rowCount() > 0);
+    QVERIFY(!QFile::exists(firstPath));
+    QVERIFY(button(first, "saveConfig")->toolTip().contains(QDir::toNativeSeparators(firstPath)));
+    firstHeader->setText("!");
+    button(first, "saveConfig")->click();
+    QVERIFY(QFile::exists(firstPath));
+    QVERIFY(!QFile::exists(secondPath));
+
+    Widget second(nullptr, secondPath);
+    auto *secondHeader = second.findChild<QLineEdit *>("formatHeader");
+    QCOMPARE(secondHeader->text(), QString("/"));
+    secondHeader->setText("@");
+    button(second, "saveConfig")->click();
+    QVERIFY(QFile::exists(secondPath));
+
+    QVERIFY(QDir::setCurrent(workspace.path()));
+    QCOMPARE(DraftStore().filePath(), expectedDefaultPath);
+    Widget restoredFirst(nullptr, firstPath), restoredSecond(nullptr, secondPath);
+    QCOMPARE(restoredFirst.findChild<QLineEdit *>("formatHeader")->text(), QString("!"));
+    QCOMPARE(restoredSecond.findChild<QLineEdit *>("formatHeader")->text(), QString("@"));
 }
 
 void WidgetTest::draftLifecycleAndVisibleFailures()

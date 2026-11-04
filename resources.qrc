@@ -8,4 +8,7 @@
   <qresource prefix="/appearance">
     <file alias="translation.qss">appearance/translation.qss</file>
   </qresource>
+  <qresource prefix="/examples">
+    <file alias="dt-simple-commands.json">examples/dt-simple-commands.json</file>
+  </qresource>
 </RCC>

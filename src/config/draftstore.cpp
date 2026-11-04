@@ -1,10 +1,10 @@
 #include "draftstore.h"
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QSaveFile>
-#include <QStandardPaths>
 
 namespace {
 bool fail(TranslationError *error, const char *code, const QString &message)
@@ -19,10 +19,8 @@ DraftStore::DraftStore(const QString &filePath)
 
 QString DraftStore::defaultFilePath()
 {
-    // 使用稳定的用户目录，重新编译、更换exe目录或当前工作目录不会丢失配置。
-    // main在创建窗口前设置Trendwin/Translation；显式路径供测试隔离使用。
-    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    return directory.isEmpty() ? QString() : QDir(directory).filePath("draft.json");
+    const QString directory = QCoreApplication::applicationDirPath();
+    return directory.isEmpty() ? QString() : QDir(directory).filePath(QStringLiteral("config/draft.json"));
 }
 
 bool DraftStore::exists() const { return QFileInfo::exists(m_filePath); }

@@ -6,7 +6,7 @@
 int main(int argc, char *argv[])
 {
     QApplication a(argc, argv);
-    // 固定草稿的用户数据目录，不随编译套件、exe输出目录或启动路径变化。
+    // 配置由 DraftStore 保存在程序旁的 config/draft.json。
     QCoreApplication::setOrganizationName(QStringLiteral("Trendwin"));
     QCoreApplication::setApplicationName(QStringLiteral("Translation"));
     // 标准编辑菜单（复制、粘贴等）也加载内置中文翻译，不依赖发布机器安装 Qt。
