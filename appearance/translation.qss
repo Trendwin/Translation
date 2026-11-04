@@ -1,0 +1,173 @@
+Widget, QDialog#axisFormulaDialog {
+    background-color: #f3f6fa;
+}
+
+QLabel {
+    color: #24364b;
+}
+
+QLabel:disabled {
+    color: #66778b;
+}
+
+QTabWidget::pane {
+    border: 1px solid #cbd6e3;
+    border-radius: 4px;
+    background-color: #ffffff;
+}
+
+QTabBar::tab {
+    background-color: #e8eef5;
+    color: #344a64;
+    border: 1px solid #cbd6e3;
+    border-bottom: 2px solid #cbd6e3;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    margin-right: 3px;
+    padding: 4px 12px;
+}
+
+QTabBar::tab:hover {
+    background-color: #dfeaf8;
+}
+
+QTabBar::tab:selected {
+    background-color: #ffffff;
+    color: #174d92;
+    border-bottom-color: #2767b4;
+}
+
+QTabBar::tab:focus {
+    border-color: #2767b4;
+}
+
+QGroupBox {
+    color: #24364b;
+    border: 1px solid #d4dfe9;
+    border-radius: 5px;
+    margin-top: 9px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 9px;
+    padding: 0 4px;
+}
+
+QTableWidget, QPlainTextEdit, QTextEdit {
+    background-color: #ffffff;
+    color: #24364b;
+    border: 1px solid #cbd6e3;
+    selection-background-color: #d9eaff;
+    selection-color: #173b6a;
+}
+
+QTableWidget {
+    alternate-background-color: #f5f8fc;
+    gridline-color: #e1e8f0;
+}
+
+QTableWidget::item:selected:active {
+    background-color: #c4dfff;
+    color: #173b6a;
+}
+
+QTableWidget::item:selected:!active {
+    background-color: #d9eaff;
+    color: #173b6a;
+}
+
+QHeaderView::section {
+    background-color: #edf2f8;
+    color: #344a64;
+    border: 0;
+    border-right: 1px solid #d4dfe9;
+    border-bottom: 1px solid #d4dfe9;
+    padding: 2px 5px;
+}
+
+QLineEdit {
+    background-color: #ffffff;
+    color: #24364b;
+    border: 1px solid #bccbdb;
+    border-radius: 3px;
+    padding: 0 3px;
+    selection-background-color: #c4dfff;
+    selection-color: #173b6a;
+}
+
+QSpinBox QLineEdit {
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+}
+
+QTableWidget:focus, QTextEdit:focus, QPlainTextEdit:focus, QLineEdit:focus {
+    border-color: #2767b4;
+}
+
+QLineEdit:disabled, QLineEdit:read-only {
+    background-color: #f0f3f7;
+    color: #425872;
+}
+
+QPushButton {
+    background-color: #ffffff;
+    color: #24364b;
+    border: 1px solid #bccbdb;
+    border-radius: 4px;
+    padding: 3px 9px;
+}
+
+QPushButton:hover {
+    background-color: #ecf4ff;
+    border-color: #7298c7;
+}
+
+QPushButton:pressed {
+    background-color: #d9eaff;
+}
+
+QPushButton:focus {
+    border-color: #2767b4;
+    outline: 1px solid #2767b4;
+}
+
+QPushButton#saveConfig, QPushButton#formulaAccept {
+    background-color: #205da6;
+    color: #ffffff;
+    border-color: #205da6;
+}
+
+QPushButton#saveConfig:hover, QPushButton#formulaAccept:hover {
+    background-color: #174d92;
+}
+
+QPushButton#saveConfig:pressed, QPushButton#formulaAccept:pressed {
+    background-color: #123d74;
+}
+
+QPushButton#saveConfig:focus, QPushButton#formulaAccept:focus {
+    border-color: #102f57;
+    outline: 1px solid #ffffff;
+}
+
+QPushButton:disabled, QPushButton#saveConfig:disabled, QPushButton#formulaAccept:disabled {
+    background-color: #edf1f6;
+    color: #64758a;
+    border-color: #d4dfe9;
+}
+
+QPushButton[objectName^="axisFormulaButton_"] {
+    padding: 0;
+    border-radius: 3px;
+}
+
+QSplitter#mappingSplitter::handle {
+    background-color: #dce5f0;
+}
+
+QSplitter#mappingSplitter::handle:hover {
+    background-color: #a8c5e8;
+}

@@ -395,7 +395,12 @@ void Widget::buildUi()
 {
     setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换"));
     resize(1100, 740);
+    QFile appearance(QStringLiteral(":/appearance/translation.qss"));
+    if (appearance.open(QIODevice::ReadOnly))
+        setStyleSheet(QString::fromUtf8(appearance.readAll()));
     auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(12, 10, 12, 10);
+    root->setSpacing(8);
     m_draftVersion = new QLabel(QString::fromUtf8(u8"配置：未加载"), this);
     m_activeVersion = new QLabel(QString::fromUtf8(u8"启用：无"), this);
     m_validationState = new QLabel(this);
@@ -565,7 +570,6 @@ void Widget::buildUi()
     m_mappingSteps->setSelectionBehavior(QAbstractItemView::SelectRows); m_mappingSteps->setSelectionMode(QAbstractItemView::SingleSelection);
     m_mappingSteps->setEditTriggers(QAbstractItemView::NoEditTriggers); m_mappingSteps->verticalHeader()->hide();
     m_mappingSteps->verticalHeader()->setDefaultSectionSize(26);
-    m_mappingSteps->setStyleSheet(QStringLiteral("QTableWidget::item:selected { background:#d9eaff; color:#111; }"));
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_mappingSteps->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);

@@ -5,4 +5,7 @@
   <qresource prefix="/translations">
     <file alias="qt_zh_CN.qm">translations/qt_zh_CN.qm</file>
   </qresource>
+  <qresource prefix="/appearance">
+    <file alias="translation.qss">appearance/translation.qss</file>
+  </qresource>
 </RCC>
