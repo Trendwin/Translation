@@ -41,6 +41,10 @@ SDK请求/回告有独立工程 `tests/sdk-requests.pro`、`tests/sdk-replies.pr
 
 应用输出为 `bin/release/Translation.exe`。实际桌面运行前清除测试用的 offscreen 环境变量；确保 PATH 中的 Qt DLL 和编译器 kit 一致，不能混用 MinGW/MSVC 的 DLL。
 
+Windows 应用构建会使用当前 Qt kit 的 `windeployqt`，将匹配配置的 Qt DLL 和平台插件补齐到 `bin/debug` 或 `bin/release`。即使程序无需重新链接，普通构建也会检查并补齐缺少的依赖；修改工程后先重新运行 qmake。部署工具不存在或执行失败时，构建会报错，不会将缺库的输出当作构建成功。
+
+Debug 主窗口可以借助 Qt Creator 的临时运行环境找到 `Qt5SerialPortd.dll` 等库；“初始化虚拟串口”通过管理员权限另起进程，不能依赖这份临时环境，因此依赖必须放在程序旁。此步骤只准备本地构建输出，不创建或同步 Release/Debug 运行包，不修改 `config` 中的用户设置。Debug 仍用于安装了相应编译器调试运行库的开发电脑；对其他电脑交付运行包时另行执行正式打包流程。
+
 默认示例 `examples/dt-simple-commands.json` 编译进程序，无需为启动示例附带外部 `examples/` 目录。可通过“导入配置”选择其他 JSON。
 
 完整趋盛指令目录 `data/qusheng-commands.json` 通过资源文件编译进应用和测试，不依赖运行时的当前目录。修改目录后需要重新构建；用户客户格式和映射仍通过JSON导入导出。
