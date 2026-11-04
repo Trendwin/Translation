@@ -21,8 +21,11 @@ class QSpinBox;
 class QTableWidget;
 class QSplitter;
 class QTextEdit;
+class QPlainTextEdit;
 class QushengProtocol;
 class SerialTransport;
+class UpstreamSerialReceiver;
+class VirtualComProvider;
 class RequestManager;
 class TranslationService;
 
@@ -30,7 +33,8 @@ class Widget : public QWidget
 {
     Q_OBJECT
 public:
-    explicit Widget(QWidget *parent = nullptr, const QString &draftFilePath = QString());
+    explicit Widget(QWidget *parent = nullptr, const QString &draftFilePath = QString(),
+                    const QString &virtualStatePath = QString());
     ~Widget() override = default;
 
 protected:
@@ -56,6 +60,8 @@ private:
     void exportDraft();
     bool applyAdvancedJson();
     void refreshPorts();
+    void updateUpstreamCounters();
+    void refreshUpstreamConfig();
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();
     void preview(bool live);
@@ -107,6 +113,12 @@ private:
 
     QushengProtocol *m_protocol = nullptr;
     SerialTransport *m_transport = nullptr;
+    UpstreamSerialReceiver *m_upstream = nullptr;
+    VirtualComProvider *m_virtualCom = nullptr;
+    QString m_providedPublicPort, m_providedInternalPort;
+    bool m_virtualNeedsInitialization = false;
+    ProtocolConfig m_upstreamConfig;
+    quint64 m_upstreamBytes = 0, m_upstreamFramesCount = 0, m_upstreamErrors = 0;
     RequestManager *m_requests = nullptr;
     TranslationService *m_service = nullptr;
 
@@ -185,6 +197,12 @@ private:
     QPushButton *m_connectButton = nullptr;
     QLabel *m_connectionState = nullptr;
     QLabel *m_liveReason = nullptr;
+    QLabel *m_providedPort = nullptr;
+    QPushButton *m_virtualComAction = nullptr;
+    QLabel *m_upstreamState = nullptr;
+    QLabel *m_upstreamCounters = nullptr;
+    QPlainTextEdit *m_upstreamRaw = nullptr;
+    QPlainTextEdit *m_upstreamFrames = nullptr;
 
     QLabel *m_inputEncoding = nullptr;
     QLineEdit *m_input = nullptr;

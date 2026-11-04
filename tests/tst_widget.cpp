@@ -10,6 +10,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QPlainTextEdit>
+#include <QTextDocument>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextEdit>
@@ -32,6 +34,8 @@
 #include <QJsonDocument>
 #include "widget.h"
 #include "transport/serialtransport.h"
+#include "transport/upstreamserialreceiver.h"
+#include "transport/virtualcomprovider.h"
 #include "core/translationservice.h"
 #include "core/requestmanager.h"
 #include "qusheng/qushengprotocol.h"
@@ -46,6 +50,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void providedVirtualPortLifecycle();
+    void upstreamUsesSavedFormatAndNeverSends();
     void xyzFormulaEditorLifecycle();
     void xyzFormulaBindingsAndInvalidSources();
     void calibrationPresetTableRoundTripAndInvalidValues();
@@ -558,6 +564,158 @@ static void applyRoot(Widget &widget, const QJsonObject &root)
 {
     widget.findChild<QTextEdit *>("advancedJson")->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson()));
     button(widget, "applyJson")->click();
+}
+
+static QJsonObject upstreamReceiveExample()
+{
+    QJsonArray fields;
+    auto delimited = [&fields](const char *name, const char *type, const char *role, const char *delimiter) {
+        fields.append(QJsonObject{{"name", name}, {"type", type}, {"role", role},
+                                  {"lengthMode", "delimited"}, {"delimiter", delimiter}});
+    };
+    delimited("source", "ascii", "metadata", "&");
+    delimited("destination", "ascii", "metadata", "&");
+    delimited("messageType", "ascii", "metadata", "&");
+    delimited("sequence", "uint", "metadata", "&");
+    delimited("flag", "uint", "metadata", ";");
+    delimited("command", "ascii", "command", "=");
+    delimited("values", "integerList", "parameter", ";");
+    delimited("delay", "uint", "metadata", "\\n");
+    fields.append(QJsonObject{{"name", "end"}, {"type", "ascii"}, {"role", "fixed"},
+                              {"lengthMode", "fixed"}, {"length", 4}, {"fixedValue", "END&"}});
+    return QJsonObject{{"schemaVersion", 1}, {"name", "Upstream receive example"},
+                       {"external", QJsonObject{{"encoding", "ascii"}, {"header", "@&"},
+                                                {"footer", "?&\\r\\n"}, {"fields", fields}}},
+                       {"mappings", QJsonArray()}};
+}
+
+void WidgetTest::providedVirtualPortLifecycle()
+{
+    const QString draftPath = freshDraftPath();
+    Widget widget(nullptr, draftPath);
+    applyRoot(widget, upstreamReceiveExample());
+    button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *raw = widget.findChild<QPlainTextEdit *>("upstreamRaw");
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *counters = widget.findChild<QLabel *>("upstreamCounters");
+    auto *provider = widget.findChild<VirtualComProvider *>();
+    auto *action = button(widget, "virtualComAction");
+    QVERIFY(receiver && raw && frames && counters && provider && action);
+    QCOMPARE(provider->statePath(), draftPath + ".upstream-port.json");
+    QVERIFY(!receiver->isConnected());
+    QCOMPARE(widget.findChildren<SerialTransport *>().size(), 1);
+    QVERIFY(!widget.findChild<QComboBox *>("upstreamPort"));
+    QVERIFY(!widget.findChild<QComboBox *>("upstreamBaud"));
+    QCOMPARE(widget.findChild<QTabWidget *>("mainTabs")->count(), 4);
+    widget.resize(1100, 740); widget.show();
+    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2);
+    widget.findChild<QTabWidget *>("communicationTabs")->setCurrentIndex(1);
+    QCoreApplication::processEvents(); QVERIFY(raw->isVisible());
+    QCOMPARE(action->text(), QString::fromUtf8(u8"初始化虚拟串口"));
+    QVERIFY(action->isEnabled());
+    // Simulate provider notifications only. The missing endpoint cannot open a hardware port.
+    provider->busyChanged(true); QVERIFY(!action->isEnabled());
+    provider->busyChanged(false); QVERIFY(action->isEnabled());
+    provider->needsInitialization(false);
+    provider->ready("COM87", "TRANSLATION_TEST_MISSING_INTERNAL_PORT");
+    QVERIFY(widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    QVERIFY(!receiver->isConnected());
+    QCOMPARE(action->text(), QString::fromUtf8(u8"重试"));
+    QVERIFY(action->isVisible());
+    receiver->connectionChanged(true, QString());
+    QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"等待上游报文"));
+    QVERIFY(action->isHidden());
+    QVERIFY(widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    provider->busyChanged(true);
+    QVERIFY(widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    provider->busyChanged(false);
+    button(widget, "upstreamClear")->click();
+
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const int split = 12;
+    receiver->feedBytes(frame.left(split));
+    QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"接收中"));
+    QVERIFY(raw->toPlainText().contains(QString::fromLatin1(frame.left(split))));
+    QVERIFY(frames->toPlainText().isEmpty());
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 0 · 错误 0").arg(split));
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(raw->toPlainText().contains("\\n"));
+    QVERIFY(raw->toPlainText().contains("0A"));
+    QVERIFY(frames->toPlainText().contains("RST"));
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"实际项数")));
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 0").arg(frame.size()));
+
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render);
+        QVERIFY(widget.grab().save(QDir(render).filePath("provided-virtual-port-simulated-raw.png")));
+        widget.findChild<QTabWidget *>("upstreamResults")->setCurrentIndex(1);
+        QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("provided-virtual-port-simulated-fields.png")));
+    }
+    receiver->feedBytes(frame.left(split));
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    button(widget, "upstreamClear")->click();
+    QVERIFY(raw->toPlainText().isEmpty()); QVERIFY(frames->toPlainText().isEmpty());
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 0 · 完整有效帧 0 · 错误 0"));
+    receiver->feedBytes(QByteArray(4096, '<'));
+    QVERIFY(raw->toPlainText().contains(QString::fromUtf8(u8"字节统计包含全部数据")));
+    QVERIFY(counters->text().contains("4096"));
+    QVERIFY(raw->document()->maximumBlockCount() == 500 && frames->document()->maximumBlockCount() == 500);
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes(frame.left(split));
+    provider->needsInitialization(true);
+    QVERIFY(!widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    QCOMPARE(action->text(), QString::fromUtf8(u8"初始化虚拟串口"));
+    QVERIFY(action->isVisible());
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+}
+
+void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
+{
+    Widget widget(nullptr, freshDraftPath());
+    applyRoot(widget, upstreamReceiveExample());
+    button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *transport = widget.findChild<SerialTransport *>();
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    QSignalSpy sent(transport, &ITransport::sendFinished);
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const int split = 10;
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes(frame.left(split));
+    button(widget, "saveConfig")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    widget.findChild<QLineEdit *>("formatHeader")->setText("!&");
+    receiver->feedBytes(frame);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 2")));
+
+    receiver->feedBytes(frame.left(split));
+    button(widget, "saveConfig")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 3")));
+    QByteArray updated = frame; updated.replace(0, 2, "!&");
+    receiver->feedBytes(updated);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 3")));
+    QCOMPARE(sent.count(), 0);
+    QVERIFY(!transport->isConnected());
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    QCOMPARE(widget.findChild<QTableWidget *>("mappingTable")->rowCount(), 0);
+    auto *provider = widget.findChild<VirtualComProvider *>();
+    provider->ready("COM87", "TRANSLATION_TEST_MISSING_INTERNAL_PORT");
+    auto *port = widget.findChild<QComboBox *>("downstreamPort");
+    for (const QString &reserved : {QString("COM87"), QString("TRANSLATION_TEST_MISSING_INTERNAL_PORT")}) {
+        port->addItem(reserved, reserved); port->setCurrentIndex(port->count() - 1);
+        button(widget, "connectButton")->click();
+        QVERIFY(!transport->isConnected());
+        QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"属于上游虚拟串口")));
+    }
+    QCOMPARE(sent.count(), 0);
 }
 
 static QJsonArray mappingRows(Widget &widget)

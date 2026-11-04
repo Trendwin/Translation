@@ -11,4 +11,8 @@
   <qresource prefix="/examples">
     <file alias="dt-simple-commands.json">examples/dt-simple-commands.json</file>
   </qresource>
+  <qresource prefix="/virtualcom">
+    <file alias="com0com-x86.exe">third_party/com0com/installers/com0com-x86.exe</file>
+    <file alias="com0com-x64.exe">third_party/com0com/installers/com0com-x64.exe</file>
+  </qresource>
 </RCC>
