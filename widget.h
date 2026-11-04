@@ -21,8 +21,10 @@ class QSpinBox;
 class QTableWidget;
 class QSplitter;
 class QTextEdit;
+class QPlainTextEdit;
 class QushengProtocol;
 class SerialTransport;
+class UpstreamSerialReceiver;
 class RequestManager;
 class TranslationService;
 
@@ -56,6 +58,8 @@ private:
     void exportDraft();
     bool applyAdvancedJson();
     void refreshPorts();
+    void updateUpstreamCounters();
+    void refreshUpstreamConfig();
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();
     void preview(bool live);
@@ -107,6 +111,9 @@ private:
 
     QushengProtocol *m_protocol = nullptr;
     SerialTransport *m_transport = nullptr;
+    UpstreamSerialReceiver *m_upstream = nullptr;
+    ProtocolConfig m_upstreamConfig;
+    quint64 m_upstreamBytes = 0, m_upstreamFramesCount = 0, m_upstreamErrors = 0;
     RequestManager *m_requests = nullptr;
     TranslationService *m_service = nullptr;
 
@@ -185,6 +192,13 @@ private:
     QPushButton *m_connectButton = nullptr;
     QLabel *m_connectionState = nullptr;
     QLabel *m_liveReason = nullptr;
+    QComboBox *m_upstreamPort = nullptr;
+    QComboBox *m_upstreamBaud = nullptr;
+    QPushButton *m_upstreamConnect = nullptr;
+    QLabel *m_upstreamState = nullptr;
+    QLabel *m_upstreamCounters = nullptr;
+    QPlainTextEdit *m_upstreamRaw = nullptr;
+    QPlainTextEdit *m_upstreamFrames = nullptr;
 
     QLabel *m_inputEncoding = nullptr;
     QLineEdit *m_input = nullptr;

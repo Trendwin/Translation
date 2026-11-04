@@ -10,6 +10,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QPlainTextEdit>
+#include <QTextDocument>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTextEdit>
@@ -32,6 +34,7 @@
 #include <QJsonDocument>
 #include "widget.h"
 #include "transport/serialtransport.h"
+#include "transport/upstreamserialreceiver.h"
 #include "core/translationservice.h"
 #include "core/requestmanager.h"
 #include "qusheng/qushengprotocol.h"
@@ -46,6 +49,8 @@ class WidgetTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void upstreamReceiveLifecycleAndCounters();
+    void upstreamUsesSavedFormatAndNeverSends();
     void xyzFormulaEditorLifecycle();
     void xyzFormulaBindingsAndInvalidSources();
     void calibrationPresetTableRoundTripAndInvalidValues();
@@ -558,6 +563,121 @@ static void applyRoot(Widget &widget, const QJsonObject &root)
 {
     widget.findChild<QTextEdit *>("advancedJson")->setPlainText(QString::fromUtf8(QJsonDocument(root).toJson()));
     button(widget, "applyJson")->click();
+}
+
+static QJsonObject upstreamReceiveExample()
+{
+    QJsonArray fields;
+    auto delimited = [&fields](const char *name, const char *type, const char *role, const char *delimiter) {
+        fields.append(QJsonObject{{"name", name}, {"type", type}, {"role", role},
+                                  {"lengthMode", "delimited"}, {"delimiter", delimiter}});
+    };
+    delimited("source", "ascii", "metadata", "&");
+    delimited("destination", "ascii", "metadata", "&");
+    delimited("messageType", "ascii", "metadata", "&");
+    delimited("sequence", "uint", "metadata", "&");
+    delimited("flag", "uint", "metadata", ";");
+    delimited("command", "ascii", "command", "=");
+    delimited("values", "integerList", "parameter", ";");
+    delimited("delay", "uint", "metadata", "\\n");
+    fields.append(QJsonObject{{"name", "end"}, {"type", "ascii"}, {"role", "fixed"},
+                              {"lengthMode", "fixed"}, {"length", 4}, {"fixedValue", "END&"}});
+    return QJsonObject{{"schemaVersion", 1}, {"name", "Upstream receive example"},
+                       {"external", QJsonObject{{"encoding", "ascii"}, {"header", "@&"},
+                                                {"footer", "?&\\r\\n"}, {"fields", fields}}},
+                       {"mappings", QJsonArray()}};
+}
+
+void WidgetTest::upstreamReceiveLifecycleAndCounters()
+{
+    Widget widget(nullptr, freshDraftPath());
+    applyRoot(widget, upstreamReceiveExample());
+    button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *raw = widget.findChild<QPlainTextEdit *>("upstreamRaw");
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *counters = widget.findChild<QLabel *>("upstreamCounters");
+    QVERIFY(receiver && raw && frames && counters);
+    QVERIFY(!receiver->isConnected());
+    QCOMPARE(widget.findChildren<SerialTransport *>().size(), 1);
+    QCOMPARE(widget.findChild<QComboBox *>("upstreamBaud")->currentData().toInt(), 115200);
+    QCOMPARE(widget.findChild<QTabWidget *>("mainTabs")->count(), 4);
+    widget.resize(1100, 740); widget.show();
+    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2);
+    widget.findChild<QTabWidget *>("communicationTabs")->setCurrentIndex(1);
+    QCoreApplication::processEvents(); QVERIFY(raw->isVisible());
+    button(widget, "upstreamClear")->click();
+
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const int split = 12;
+    receiver->feedBytes(frame.left(split));
+    QVERIFY(raw->toPlainText().contains(QString::fromLatin1(frame.left(split))));
+    QVERIFY(frames->toPlainText().isEmpty());
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 0 · 错误 0").arg(split));
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(raw->toPlainText().contains("\\n"));
+    QVERIFY(raw->toPlainText().contains("0A"));
+    QVERIFY(frames->toPlainText().contains("RST"));
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"实际项数")));
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 0").arg(frame.size()));
+
+    const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
+    if (!render.isEmpty()) {
+        QDir().mkpath(render);
+        QVERIFY(widget.grab().save(QDir(render).filePath("upstream-raw.png")));
+        widget.findChild<QTabWidget *>("upstreamResults")->setCurrentIndex(1);
+        QCoreApplication::processEvents();
+        QVERIFY(widget.grab().save(QDir(render).filePath("upstream-fields.png")));
+    }
+    receiver->feedBytes(frame.left(split));
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    button(widget, "upstreamClear")->click();
+    QVERIFY(raw->toPlainText().isEmpty()); QVERIFY(frames->toPlainText().isEmpty());
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 0 · 完整有效帧 0 · 错误 0"));
+    receiver->feedBytes(QByteArray(4096, '<'));
+    QVERIFY(raw->toPlainText().contains(QString::fromUtf8(u8"字节统计包含全部数据")));
+    QVERIFY(counters->text().contains("4096"));
+    QVERIFY(raw->document()->maximumBlockCount() == 500 && frames->document()->maximumBlockCount() == 500);
+}
+
+void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
+{
+    Widget widget(nullptr, freshDraftPath());
+    applyRoot(widget, upstreamReceiveExample());
+    button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *transport = widget.findChild<SerialTransport *>();
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    QSignalSpy sent(transport, &ITransport::sendFinished);
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const int split = 10;
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes(frame.left(split));
+    button(widget, "saveConfig")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    widget.findChild<QLineEdit *>("formatHeader")->setText("!&");
+    receiver->feedBytes(frame);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 2")));
+
+    receiver->feedBytes(frame.left(split));
+    button(widget, "saveConfig")->click();
+    receiver->feedBytes(frame.mid(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 3")));
+    QByteArray updated = frame; updated.replace(0, 2, "!&");
+    receiver->feedBytes(updated);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 3")));
+    QCOMPARE(sent.count(), 0);
+    QVERIFY(!transport->isConnected());
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+    QCOMPARE(widget.findChild<QTableWidget *>("mappingTable")->rowCount(), 0);
+    auto *port = widget.findChild<QComboBox *>("upstreamPort");
+    port->addItem("Unavailable selected port", "TRANSLATION_TEST_UNAVAILABLE");
+    port->setCurrentIndex(port->count() - 1);
+    button(widget, "upstreamRefresh")->click();
+    QCOMPARE(port->currentData().toString(), QString("TRANSLATION_TEST_UNAVAILABLE"));
 }
 
 static QJsonArray mappingRows(Widget &widget)

@@ -13,6 +13,7 @@
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
 #include "qusheng/sdk/qushengsdk.h"
+#include "transport/upstreamserialreceiver.h"
 
 class FakeTransport : public ITransport
 {
@@ -35,6 +36,8 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void upstreamReceiveFramingAndLargeChunks();
+    void upstreamReceiveFormatChangesAndRecovery();
     void formulaArithmeticAndBounds();
     void formulaMappingReferencesAndSnapshots();
     void formulaValidationAndBatchFailures();
@@ -129,6 +132,148 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+void FrameworkTest::upstreamReceiveFramingAndLargeChunks()
+{
+    auto config = integerListConfig();
+    config.root.insert("mappings", QJsonArray());
+    UpstreamSerialReceiver receiver;
+    QSignalSpy raw(&receiver, &UpstreamSerialReceiver::rawReceived);
+    QSignalSpy frames(&receiver, &UpstreamSerialReceiver::frameReceived);
+    QSignalSpy errors(&receiver, &UpstreamSerialReceiver::errorOccurred);
+    QVERIFY(receiver.setConfig(config));
+    QVERIFY(!receiver.isConnected());
+
+    const QByteArray first("!UNKNOWN=1,2,3\r");
+    receiver.feedBytes("noise!UNK");
+    QCOMPARE(frames.size(), 0);
+    receiver.feedBytes("NOWN=1,2,3\r!ONE=7\r!OTHER=8\r");
+    QCOMPARE(frames.size(), 3);
+    QCOMPARE(frames.at(0).at(0).toByteArray(), first);
+    QCOMPARE(frames.at(1).at(0).toByteArray(), QByteArray("!ONE=7\r"));
+    QCOMPARE(frames.at(2).at(0).toByteArray(), QByteArray("!OTHER=8\r"));
+    QCOMPARE(errors.size(), 0);
+    QCOMPARE(raw.size(), 2);
+
+    frames.clear();
+    for (int index = 0; index < first.size(); ++index)
+        receiver.feedBytes(first.mid(index, 1));
+    QCOMPARE(frames.size(), 1);
+    QCOMPARE(frames.at(0).at(0).toByteArray(), first);
+
+    frames.clear(); raw.clear();
+    const QByteArray repeated = QByteArray("!ONE=7\r").repeated(10000);
+    QVERIFY(repeated.size() > 64 * 1024);
+    receiver.feedBytes(repeated);
+    QCOMPARE(frames.size(), 10000);
+    QCOMPARE(raw.size(), 1);
+    QCOMPARE(raw.first().at(0).toByteArray(), repeated);
+    QCOMPARE(errors.size(), 0);
+
+    frames.clear();
+    receiver.feedBytes("!BAD=not-a-number\r!VALID=9\r");
+    QCOMPARE(errors.size(), 1);
+    QCOMPARE(frames.size(), 1);
+    QCOMPARE(frames.first().at(0).toByteArray(), QByteArray("!VALID=9\r"));
+
+    // A frame can use the entire documented 4096-byte limit. The next byte
+    // after an oversized partial frame can itself begin a valid new frame.
+    config.root.insert("external", QJsonObject{{"encoding", "ascii"}, {"header", "!"}, {"footer", "\\r"},
+        {"fields", QJsonArray{QJsonObject{{"name", "command"}, {"role", "command"}, {"type", "ascii"}, {"lengthMode", "toFooter"}}}}});
+    QVERIFY(receiver.setConfig(config));
+    frames.clear(); errors.clear();
+    const QByteArray maximumFrame = "!" + QByteArray(4094, 'A') + "\r";
+    receiver.feedBytes(maximumFrame.left(4090));
+    QCOMPARE(frames.size(), 0);
+    receiver.feedBytes(maximumFrame.mid(4090) + "!NEXT\r");
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.first().at(0).toByteArray(), maximumFrame);
+    QCOMPARE(frames.last().at(0).toByteArray(), QByteArray("!NEXT\r"));
+    QCOMPARE(errors.size(), 0);
+    receiver.feedBytes("!" + QByteArray(4095, 'A'));
+    receiver.feedBytes("!RECOVERED\r");
+    QCOMPARE(errors.size(), 1);
+    QCOMPARE(frames.size(), 3);
+    QCOMPARE(frames.last().at(0).toByteArray(), QByteArray("!RECOVERED\r"));
+
+    // Fixed-length binary payload bytes may contain exactly the footer bytes.
+    config.root.insert("external", QJsonObject{{"encoding", "hex"}, {"header", "AA55"}, {"footer", "0D0A"},
+        {"fields", QJsonArray{
+            QJsonObject{{"name", "command"}, {"role", "command"}, {"type", "ascii"}, {"lengthMode", "fixed"}, {"length", 1}},
+            QJsonObject{{"name", "value"}, {"role", "parameter"}, {"type", "uint"}, {"lengthMode", "fixed"}, {"length", 2}}}}});
+    QVERIFY(receiver.setConfig(config));
+    frames.clear(); errors.clear();
+    const QByteArray binary = QByteArray::fromHex("aa55410d0a0d0a");
+    receiver.feedBytes(binary.left(4));
+    QCOMPARE(frames.size(), 0);
+    receiver.feedBytes(binary.mid(4) + binary);
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.first().at(0).toByteArray(), binary);
+    QCOMPARE(errors.size(), 0);
+}
+
+void FrameworkTest::upstreamReceiveFormatChangesAndRecovery()
+{
+    auto config = integerListConfig();
+    UpstreamSerialReceiver receiver;
+    QSignalSpy raw(&receiver, &UpstreamSerialReceiver::rawReceived);
+    QSignalSpy frames(&receiver, &UpstreamSerialReceiver::frameReceived);
+    QSignalSpy errors(&receiver, &UpstreamSerialReceiver::errorOccurred);
+    QVERIFY(receiver.setConfig(config));
+    receiver.feedBytes("!ONE=1,");
+    QVERIFY(receiver.setConfig(config));
+    auto businessOnly = config;
+    businessOnly.root.insert("device", QJsonObject{{"devId", 22}});
+    businessOnly.root.insert("mappings", QJsonArray());
+    businessOnly.root.insert("parameterPresets", QJsonArray());
+    QVERIFY(receiver.setConfig(businessOnly));
+    receiver.feedBytes("2\r");
+    QCOMPARE(frames.size(), 1);
+    QCOMPARE(frames.first().at(0).toByteArray(), QByteArray("!ONE=1,2\r"));
+
+    receiver.feedBytes("!ONE=3");
+    receiver.clear();
+    receiver.feedBytes("\r");
+    QCOMPARE(frames.size(), 1);
+    receiver.feedBytes("!ONE=4");
+    receiver.close();
+    receiver.feedBytes("\r");
+    QCOMPARE(frames.size(), 1);
+
+    receiver.feedBytes("!ONE=5");
+    auto external = config.root.value("external").toObject();
+    external.insert("header", "#"); config.root.insert("external", external);
+    QVERIFY(receiver.setConfig(config));
+    receiver.feedBytes("\r#UNKNOWN=6\r");
+    QCOMPARE(frames.size(), 2);
+    QCOMPARE(frames.last().at(0).toByteArray(), QByteArray("#UNKNOWN=6\r"));
+
+    const int rawBeforeInvalid = raw.size();
+    external.insert("header", ""); config.root.insert("external", external);
+    QVERIFY(!receiver.setConfig(config));
+    QCOMPARE(errors.size(), 1);
+    receiver.feedBytes("unparsed bytes");
+    QCOMPARE(raw.size(), rawBeforeInvalid + 1);
+    QCOMPARE(raw.last().at(0).toByteArray(), QByteArray("unparsed bytes"));
+    QCOMPARE(frames.size(), 2);
+    external.insert("header", "!"); config.root.insert("external", external);
+    QVERIFY(receiver.setConfig(config));
+    receiver.feedBytes("!ONE=8\r");
+    QCOMPARE(frames.size(), 3);
+
+    // A failed connection attempt resets partial input and leaves the endpoint closed.
+    receiver.feedBytes("!ONE=9");
+    QVERIFY(!receiver.open("TRANSLATION_NONEXISTENT_TEST_PORT_A617", 115200));
+    QCOMPARE(receiver.portName(), QString("TRANSLATION_NONEXISTENT_TEST_PORT_A617"));
+    QVERIFY(!receiver.isConnected());
+    receiver.feedBytes("\r!ONE=10\r");
+    QCOMPARE(frames.size(), 4);
+    QCOMPARE(frames.last().at(0).toByteArray(), QByteArray("!ONE=10\r"));
+#ifdef Q_OS_WIN
+    QVERIFY(!receiver.open("\\\\.\\TRANSLATION_NONEXISTENT_TEST_PORT_A617", 115200));
+    QCOMPARE(receiver.portName(), QString("TRANSLATION_NONEXISTENT_TEST_PORT_A617"));
+#endif
 }
 
 static QJsonObject presetRelation(int item)

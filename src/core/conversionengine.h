@@ -35,6 +35,7 @@ public:
     bool convertBatch(const QByteArray &input, bool live, ConversionPreview *out, TranslationError *error) const;
     QList<QByteArray> feed(const QByteArray &chunk, QList<TranslationError> *errors);
     void clear() { m_buffer.clear(); }
+    int bufferedByteCount() const { return m_buffer.size(); }
 private:
     bool parse(const QByteArray &input, QMap<QString,QVariant> *fields, TranslationError *error,
                QStringList *order = nullptr, QStringList *notices = nullptr) const;
