@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "name": "DT风格查询验证示例（共用回车帧尾）",
+  "name": "DT风格查询验证示例（共用字面\\r帧尾）",
   "external": {
     "encoding": "ascii",
     "header": "/",

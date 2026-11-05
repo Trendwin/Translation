@@ -52,6 +52,8 @@ class WidgetTest : public QObject
 private slots:
     void providedVirtualPortLifecycle();
     void upstreamUsesSavedFormatAndNeverSends();
+    void asciiLiteralInputAndReceiveRoundTrip();
+    void asciiControlCharactersStayDistinctInPreview();
     void xyzFormulaEditorLifecycle();
     void xyzFormulaBindingsAndInvalidSources();
     void calibrationPresetTableRoundTripAndInvalidValues();
@@ -632,7 +634,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     provider->busyChanged(false);
     button(widget, "upstreamClear")->click();
 
-    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     const int split = 12;
     receiver->feedBytes(frame.left(split));
     QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"接收中"));
@@ -641,7 +643,8 @@ void WidgetTest::providedVirtualPortLifecycle()
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 0 · 错误 0").arg(split));
     receiver->feedBytes(frame.mid(split));
     QVERIFY(raw->toPlainText().contains("\\n"));
-    QVERIFY(raw->toPlainText().contains("0A"));
+    QVERIFY(raw->toPlainText().contains("5C 6E"));
+    QVERIFY(!raw->toPlainText().contains("[LF]"));
     QVERIFY(frames->toPlainText().contains("RST"));
     QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"实际项数")));
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 0").arg(frame.size()));
@@ -684,7 +687,7 @@ void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
     auto *transport = widget.findChild<SerialTransport *>();
     auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
     QSignalSpy sent(transport, &ITransport::sendFinished);
-    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     const int split = 10;
     button(widget, "upstreamClear")->click();
     receiver->feedBytes(frame.left(split));
@@ -716,6 +719,93 @@ void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
         QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"属于上游虚拟串口")));
     }
     QCOMPARE(sent.count(), 0);
+}
+
+void WidgetTest::asciiLiteralInputAndReceiveRoundTrip()
+{
+    const QString path = freshDraftPath(), exportPath = freshDraftPath();
+    Widget widget(nullptr, path);
+    auto root = upstreamReceiveExample();
+    root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "MFCV"}, {"operation", "MOTOR_FORWARD"},
+        {"input", QJsonObject{{"parameterCounts", QJsonObject{{"values", 1}}}}},
+        {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}}},
+                                    {"devId", QJsonObject{{"kind", "constant"}, {"value", 17}}}}}}});
+    root.insert("extension", "literal \\n and \\r\\n retained");
+    applyRoot(widget, root); button(widget, "saveConfig")->click();
+    const auto saved = draftRoot(widget);
+    QCOMPARE(saved.value("external").toObject().value("footer").toString(), QString("?&\\r\\n"));
+    QCOMPARE(saved.value("external").toObject().value("fields").toArray().at(7).toObject().value("delimiter").toString(), QString("\\n"));
+
+    const QString packet = QStringLiteral("@&5A&01&SCT&1&0;MFCV=255;10\\nEND&?&\\r\\n");
+    const QByteArray frame = packet.toLatin1();
+    QCOMPARE(frame.size(), 39);
+    auto *input = widget.findChild<QLineEdit *>("customerInput");
+    auto *manual = widget.findChild<QTextEdit *>("previewOutput");
+    input->setText(packet); button(widget, "parseFormatButton")->click();
+    QVERIFY2(manual->toPlainText().contains(QString::fromUtf8(u8"解析成功")), qPrintable(manual->toPlainText()));
+    for (const QString &expected : {QString("command = MFCV"), QString("values = [255]"), QString("delay = 10")})
+        QVERIFY(manual->toPlainText().contains(expected));
+    button(widget, "previewButton")->click();
+    QVERIFY2(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().contains("AA AA"), qPrintable(manual->toPlainText()));
+    QVERIFY(manual->toPlainText().contains(packet));
+    QVERIFY(!manual->toPlainText().contains("[LF]"));
+
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *counters = widget.findChild<QLabel *>("upstreamCounters");
+    QSignalSpy sent(widget.findChild<SerialTransport *>(), &ITransport::sendFinished);
+    button(widget, "upstreamClear")->click();
+    const int split = frame.indexOf("\\n") + 1;
+    receiver->feedBytes(frame.left(split));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧")));
+    receiver->feedBytes(frame.mid(split, frame.size() - split - 1));
+    QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧")));
+    receiver->feedBytes(frame.right(1));
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 39 · 完整有效帧 1 · 错误 0"));
+    QVERIFY(frames->toPlainText().contains(packet));
+    for (const QString &expected : {QString("command = MFCV"), QString("values = [255]"), QString("delay = 10")})
+        QVERIFY(frames->toPlainText().contains(expected));
+    QCOMPARE(sent.count(), 0);
+
+    auto fileAction = [&widget](const char *name, const QString &filePath) {
+        bool seen = false;
+        QTimer::singleShot(0, &widget, [&widget, &seen, filePath]() {
+            auto *dialog = widget.findChild<QFileDialog *>();
+            if (!dialog) return;
+            seen = true; dialog->selectFile(filePath);
+            QMetaObject::invokeMethod(dialog, "accept", Qt::QueuedConnection);
+        });
+        button(widget, name)->click(); return seen;
+    };
+    QVERIFY(fileAction("exportConfig", exportPath));
+    QCOMPARE(QJsonDocument::fromJson(draftBytes(exportPath)).object(), saved);
+    widget.findChild<QLineEdit *>("formatFooter")->setText("changed"); button(widget, "saveConfig")->click();
+    QVERIFY(fileAction("importConfig", exportPath)); QCOMPARE(draftRoot(widget), saved);
+    Widget restored(nullptr, path); QCOMPARE(draftRoot(restored), saved);
+    restored.findChild<QLineEdit *>("customerInput")->setText(packet); button(restored, "parseFormatButton")->click();
+    QVERIFY(restored.findChild<QTextEdit *>("previewOutput")->toPlainText().contains("values = [255]"));
+}
+
+void WidgetTest::asciiControlCharactersStayDistinctInPreview()
+{
+    Widget widget(nullptr, freshDraftPath());
+    auto root = upstreamReceiveExample();
+    auto external = root.value("external").toObject();
+    external.insert("header", "!"); external.insert("footer", "\\r");
+    external.insert("fields", QJsonArray{
+        QJsonObject{{"name", "command"}, {"type", "ascii"}, {"role", "command"}, {"lengthMode", "delimited"}, {"delimiter", "="}},
+        QJsonObject{{"name", "text"}, {"type", "ascii"}, {"role", "metadata"}, {"lengthMode", "toFooter"}}});
+    root.insert("external", external); applyRoot(widget, root); button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *raw = widget.findChild<QPlainTextEdit *>("upstreamRaw");
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    button(widget, "upstreamClear")->click();
+    receiver->feedBytes("!CMD=\\n|\n|\\t|\t|\r|\x1b\\r");
+    const QString displayed = QStringLiteral("\\n|[LF]|\\t|[TAB]|[CR]|[0x1B]");
+    QVERIFY2(raw->toPlainText().contains(displayed), qPrintable(raw->toPlainText()));
+    QVERIFY(frames->toPlainText().contains("text = " + displayed));
+    QVERIFY(widget.findChild<QLineEdit *>("formatFooter")->toolTip().contains(QString::fromUtf8(u8"四个")));
+    QVERIFY(widget.findChild<QLineEdit *>("customerInput")->toolTip().contains(QString::fromUtf8(u8"原样")));
 }
 
 static QJsonArray mappingRows(Widget &widget)

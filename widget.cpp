@@ -66,11 +66,11 @@ QString visibleBytes(const QByteArray &bytes)
 {
     QString result;
     for (char byte : bytes) {
-        if (byte == '\r') result += QStringLiteral("\\r");
-        else if (byte == '\n') result += QStringLiteral("\\n");
-        else if (byte == '\t') result += QStringLiteral("\\t");
+        if (byte == '\r') result += QStringLiteral("[CR]");
+        else if (byte == '\n') result += QStringLiteral("[LF]");
+        else if (byte == '\t') result += QStringLiteral("[TAB]");
         else if (quint8(byte) < 0x20 || quint8(byte) >= 0x7f)
-            result += QStringLiteral("\\x%1").arg(quint8(byte), 2, 16, QLatin1Char('0')).toUpper();
+            result += QStringLiteral("[0x%1]").arg(QString::number(quint8(byte), 16).rightJustified(2, QLatin1Char('0')).toUpper());
         else result += QChar::fromLatin1(byte);
     }
     return result;
@@ -323,7 +323,18 @@ QJsonObject renameMappingFields(QJsonObject mapping, const QMap<QString, QString
 
 QStringList fieldPreview(const QString &name, const QVariant &value)
 {
-    if (value.type() != QVariant::List) return {QStringLiteral("%1 = %2").arg(name, value.toString())};
+    if (value.type() != QVariant::List) {
+        QString displayed;
+        for (const QChar ch : value.toString()) {
+            if (ch == '\r') displayed += QStringLiteral("[CR]");
+            else if (ch == '\n') displayed += QStringLiteral("[LF]");
+            else if (ch == '\t') displayed += QStringLiteral("[TAB]");
+            else if (ch.unicode() < 0x20 || ch.unicode() == 0x7f)
+                displayed += QStringLiteral("[0x%1]").arg(QString::number(ch.unicode(), 16).rightJustified(2, QLatin1Char('0')).toUpper());
+            else displayed += ch;
+        }
+        return {QStringLiteral("%1 = %2").arg(name, displayed)};
+    }
     QStringList values, lines;
     const QVariantList items = value.toList();
     for (const auto &item : items) values.append(item.toString());
@@ -446,11 +457,11 @@ void Widget::buildUi()
     auto *boundaryForm = new QFormLayout;
     m_encoding = combo(this, {{QString::fromUtf8(u8"ASCII 文本"), QStringLiteral("ascii")},
                               {QString::fromUtf8(u8"HEX 字节"), QStringLiteral("hex")}});
-    m_encoding->setToolTip(QString());
+    m_encoding->setToolTip(QString::fromUtf8(u8"ASCII 按原样读取，不解释转义；\\n 是两个字符，\\r\\n 是四个字符。HEX 按十六进制字节读取。"));
     m_header = new QLineEdit(this); m_header->setObjectName("formatHeader");
     m_header->setToolTip(QString());
     m_footer = new QLineEdit(this); m_footer->setObjectName("formatFooter");
-    m_footer->setToolTip(QString::fromUtf8(u8"完整报文必须以此内容结束；ASCII 模式可填写 R\\r。"));
+    m_footer->setToolTip(QString::fromUtf8(u8"完整报文必须以此内容结束。ASCII 原样匹配：\\r\\n 是四个可见字符；HEX 的 0D0A 才表示实际回车换行字节。"));
     m_byteOrderLabel = new QLabel(QString::fromUtf8(u8"多字节整数"), this);
     m_byteOrder = combo(this, {{QString::fromUtf8(u8"大端（高字节在前）"), QStringLiteral("big")},
                                {QString::fromUtf8(u8"小端（低字节在前）"), QStringLiteral("little")}});
@@ -482,7 +493,7 @@ void Widget::buildUi()
         QString::fromUtf8(u8"命令码、参数或固定字段。"),
         QString::fromUtf8(u8"ASCII 原样读取；整数按编码方式解析"),
         QString::fromUtf8(u8"顺序读取；命令码可按配置匹配。"),
-        QString::fromUtf8(u8"固定长度填字节数；读到分隔符填写 &、;、=、\\n 等，读取后消耗分隔符。HEX 模式填十六进制字节。"),
+        QString::fromUtf8(u8"固定长度填字节数；分隔符读取后会消耗。ASCII 原样匹配，\\n 是两个字符；HEX 模式填写十六进制字节，如 0A。"),
         QString::fromUtf8(u8"固定字段期望值"),
         QString::fromUtf8(u8"可选的输入下限"),
         QString::fromUtf8(u8"可选的输入上限")};
@@ -882,6 +893,7 @@ void Widget::buildUi()
     m_input = new QLineEdit(this);
     m_input->setObjectName("customerInput");
     m_input->setPlaceholderText(QString::fromUtf8(u8"客户报文"));
+    m_input->setToolTip(QString::fromUtf8(u8"ASCII 报文按输入原样读取，不解释 \\n、\\r 等转义；与上游收到的同一段文本使用相同规则。"));
     m_previewButton = new QPushButton(QString::fromUtf8(u8"预览"), this);
     m_previewButton->setObjectName("previewButton");
     m_sendButton = new QPushButton(QString::fromUtf8(u8"发送"), this);
@@ -951,6 +963,7 @@ void Widget::buildUi()
     upstreamLayout->addLayout(upstreamStats);
     auto *receiveResults = new QTabWidget(this); receiveResults->setObjectName("upstreamResults");
     m_upstreamRaw = new QPlainTextEdit(this); m_upstreamRaw->setObjectName("upstreamRaw"); m_upstreamRaw->setReadOnly(true); m_upstreamRaw->setMaximumBlockCount(500);
+    m_upstreamRaw->setToolTip(QString::fromUtf8(u8"文字 \\n 保持原样；实际控制字符显示为 [LF]、[CR]、[TAB]，可结合 HEX 核对。"));
     m_upstreamFrames = new QPlainTextEdit(this); m_upstreamFrames->setObjectName("upstreamFrames"); m_upstreamFrames->setReadOnly(true); m_upstreamFrames->setMaximumBlockCount(500);
     receiveResults->addTab(m_upstreamRaw, QString::fromUtf8(u8"原始数据 · ASCII / HEX"));
     receiveResults->addTab(m_upstreamFrames, QString::fromUtf8(u8"完整报文与字段"));
