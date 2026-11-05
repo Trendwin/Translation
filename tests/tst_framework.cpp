@@ -9,6 +9,8 @@
 #include "core/conversionengine.h"
 #include "core/numericformula.h"
 #include "core/requestmanager.h"
+#include "core/translationservice.h"
+#include "core/upstreamforwarder.h"
 #include "demo/demointernalprotocol.h"
 #include "qusheng/qushengprotocol.h"
 #include "qusheng/qushengcommandcatalog.h"
@@ -36,6 +38,11 @@ class FrameworkTest : public QObject
 {
     Q_OBJECT
 private slots:
+    void automaticForwardDisconnectedAndValidation();
+    void automaticForwardOrderedGroupsAndSnapshots();
+    void automaticForwardFailureAndDisconnectIsolation();
+    void automaticForwardBoundedQueueAndSynchronousFailure();
+    void automaticForwardSequenceWrap();
     void virtualComStateAndOwnership();
     void virtualComPortAllocationAndFailureBoundaries();
     void formulaArithmeticAndBounds();
@@ -134,6 +141,228 @@ static ProtocolConfig integerListConfig()
     if (!ProtocolConfig::load(example("integer-list-parameters.json"), &config, &error))
         qWarning() << error.code << error.message;
     return config;
+}
+
+static ProtocolConfig automaticConfig()
+{
+    ProtocolConfig config;
+    TranslationError error;
+    if (!ProtocolConfig::load(example("literal-ascii-sequential.json"), &config, &error))
+        qWarning() << error.code << error.message;
+    return config;
+}
+
+static QByteArray automaticFrame(const QByteArray &value = "255", const QByteArray &command = "MFCV")
+{
+    return "@&5A&01&SCT&1&0;" + command + '=' + value + ";10\\nEND&?&\\r\\n";
+}
+
+static QByteArray automaticReply(const QByteArray &request, quint8 errorCode = 0)
+{
+    QByteArray data(4, '\0');
+    data[quint8(request[7]) == 0x21 ? 1 : 0] = char(errorCode);
+    return QushengProtocol::makeFrame(quint8(request[3]), quint8(request[2]), quint8(request[6]), quint8(request[7]), data);
+}
+
+void FrameworkTest::automaticForwardDisconnectedAndValidation()
+{
+    QushengProtocol protocol; FakeTransport transport; RequestManager manager(&protocol, &transport);
+    TranslationService service(&manager); UpstreamForwarder forwarder(&transport, &service);
+    auto config = automaticConfig(); forwarder.setConfig(config);
+    QSignalSpy rejected(&forwarder, &UpstreamForwarder::rejected), queued(&forwarder, &UpstreamForwarder::queued);
+    transport.connected = false;
+    forwarder.forwardFrame(automaticFrame());
+    QCOMPARE(rejected.size(), 1); QCOMPARE(rejected.last()[0].toString(), QString("DISCONNECTED"));
+    QVERIFY(rejected.last()[1].toString().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QVERIFY(!manager.hasPendingRequests());
+    transport.connected = true; emit transport.connectionChanged(true, QString());
+    QCoreApplication::processEvents(); QVERIFY(transport.sent.isEmpty()); QCOMPARE(queued.size(), 0);
+
+    for (const auto &frame : {automaticFrame("255", "UNKNOWN"), automaticFrame("bad"), automaticFrame("70000"),
+                             QByteArray("@&5A&01&SCT&1&0;MFCV=255;10\nEND&?&\r\n")}) {
+        const int before = rejected.size(); forwarder.forwardFrame(frame);
+        QCOMPARE(rejected.size(), before + 1); QVERIFY(!manager.hasPendingRequests());
+    }
+    QVERIFY(transport.sent.isEmpty());
+    // A bad saved edit replaces the previous valid configuration, rather than
+    // accidentally continuing to execute the old mapping.
+    auto invalid = config; invalid.root.remove("device"); forwarder.setConfig(invalid);
+    forwarder.forwardFrame(automaticFrame()); QCOMPARE(queued.size(), 0);
+    QVERIFY(!manager.hasPendingRequests());
+
+    ProtocolConfig formula; TranslationError error;
+    QVERIFY(ProtocolConfig::load(example("xyz-formulas.json"), &formula, &error));
+    auto mappings = formula.root.value("mappings").toArray(); auto mapping = mappings[0].toObject();
+    auto parameters = mapping.value("parameters").toObject();
+    parameters.insert("xPosition", QJsonObject{{"kind", "formula"}, {"formula", "a / b"}, {"round", "nearest"},
+        {"variables", QJsonObject{{"a", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}}},
+                                  {"b", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 2}}}}}});
+    mapping.insert("parameters", parameters); mappings[0] = mapping; formula.root.insert("mappings", mappings);
+    QVERIFY(formula.validate(&error)); forwarder.setConfig(formula);
+    const int before = rejected.size(); forwarder.forwardFrame("!MOVE=1,0,2\\r");
+    QCOMPARE(rejected.size(), before + 1); QCOMPARE(rejected.last()[0].toString(), QString("FORMULA_EVALUATION"));
+    QVERIFY(!manager.hasPendingRequests()); QVERIFY(transport.sent.isEmpty());
+
+    QVERIFY(ProtocolConfig::load(example("motor-actions.json"), &config, &error));
+    forwarder.setConfig(config); forwarder.forwardFrame("!F7000\\r");
+    QVERIFY(!manager.hasPendingRequests()); QVERIFY(transport.sent.isEmpty()); QCOMPARE(queued.size(), 0);
+}
+
+class RecordingForwardProtocol : public QushengProtocol
+{
+public:
+    bool encodeCommand(const UnifiedCommand &command, QByteArray *frame, TranslationError *error) const override
+    { commands.append(command); return QushengProtocol::encodeCommand(command, frame, error); }
+    mutable QList<UnifiedCommand> commands;
+};
+
+void FrameworkTest::automaticForwardOrderedGroupsAndSnapshots()
+{
+    qRegisterMetaType<UnifiedGroupResult>(); RecordingForwardProtocol protocol; FakeTransport transport; transport.stall = true;
+    RequestManager manager(&protocol, &transport); TranslationService service(&manager);
+    UpstreamForwarder forwarder(&transport, &service); auto config = automaticConfig(); config.version.clear(); forwarder.setConfig(config);
+    QSignalSpy queued(&forwarder, &UpstreamForwarder::queued), finished(&forwarder, &UpstreamForwarder::finished);
+    QSignalSpy outgoing(&service, &TranslationService::outgoingFrame), progress(&forwarder, &UpstreamForwarder::progress);
+    forwarder.forwardFrame(automaticFrame("1")); QCOMPARE(queued.size(), 1); QCOMPARE(queued[0][2].toInt(), 2);
+    auto changed = config; auto device = changed.root.value("device").toObject(); device.insert("destination", 3); changed.root.insert("device", device);
+    auto mappings = changed.root.value("mappings").toArray(); auto mapping = mappings[0].toObject(); auto steps = mapping.value("steps").toArray();
+    auto step = steps[1].toObject(); auto parameters = step.value("parameters").toObject();
+    parameters.insert("valveMask", QJsonObject{{"kind", "constant"}, {"value", 7}}); step.insert("parameters", parameters); steps[1] = step;
+    mapping.insert("steps", steps); mappings[0] = mapping; changed.root.insert("mappings", mappings); forwarder.setConfig(changed);
+    forwarder.forwardFrame(automaticFrame("2")); QCOMPARE(queued.size(), 2);
+    QTRY_COMPARE(transport.sent.size(), 1);
+    QCOMPARE(transport.sent[0].mid(8, 8), QByteArray::fromHex("000000fe00000000"));
+    QCOMPARE(quint8(transport.sent[0][2]), quint8(2));
+    QVERIFY(!protocol.commands[0].configVersion.isEmpty()); const auto oldVersion = protocol.commands[0].configVersion;
+    transport.receive(automaticReply(transport.sent[0])); QCoreApplication::processEvents(); QCOMPARE(transport.sent.size(), 1);
+    emit transport.sendFinished(outgoing[0][0].toULongLong(), true, QString()); QTRY_COMPARE(transport.sent.size(), 2);
+    QCOMPARE(transport.sent[1].mid(8, 8), QByteArray::fromHex("4000000100000000"));
+    QCOMPARE(protocol.commands[1].configVersion, oldVersion); QCOMPARE(quint8(transport.sent[1][2]), quint8(2));
+    QCOMPARE(finished.size(), 0);
+    for (int index = 1; index < 4; ++index) {
+        if (index >= 2) {
+            QCOMPARE(quint8(transport.sent[index][2]), quint8(3));
+            QVERIFY(protocol.commands[index].configVersion != oldVersion);
+        }
+        emit transport.sendFinished(outgoing[index][0].toULongLong(), true, QString());
+        transport.receive(automaticReply(transport.sent[index]));
+        if (index < 3) QTRY_COMPARE(transport.sent.size(), index + 2);
+    }
+    QCOMPARE(transport.sent[2].mid(8, 8), QByteArray::fromHex("000000fd00000000"));
+    QCOMPARE(transport.sent[3].mid(8, 8), QByteArray::fromHex("4000000700000000"));
+    QTRY_COMPARE(finished.size(), 2); QVERIFY(!manager.hasPendingRequests()); QVERIFY(progress.size() >= 4);
+    for (const auto &args : finished) {
+        const auto result = qvariant_cast<UnifiedGroupResult>(args[0]); QVERIFY(result.success); QCOMPARE(result.acceptedSteps, 2);
+    }
+}
+
+void FrameworkTest::automaticForwardFailureAndDisconnectIsolation()
+{
+    qRegisterMetaType<UnifiedGroupResult>(); QushengProtocol protocol; protocol.setAddresses(2, 1); FakeTransport transport; transport.stall = true;
+    RequestManager manager(&protocol, &transport); manager.setTimeouts(1000, 1000); TranslationService service(&manager);
+    UpstreamForwarder forwarder(&transport, &service); forwarder.setConfig(automaticConfig());
+    QSignalSpy outgoing(&service, &TranslationService::outgoingFrame), finished(&forwarder, &UpstreamForwarder::finished);
+    forwarder.forwardFrame(automaticFrame("1")); forwarder.forwardFrame(automaticFrame("2"));
+    UnifiedCommand manual; manual.operation = "QUERY_MOTOR"; manual.targetDevice = "17"; manual.packetDebug = true;
+    const auto manualId = service.submitUnifiedCommand(manual);
+    QTRY_COMPARE(transport.sent.size(), 1);
+    emit transport.sendFinished(outgoing[0][0].toULongLong(), true, QString()); transport.receive(automaticReply(transport.sent[0], 4));
+    QTRY_COMPARE(finished.size(), 1); QVERIFY(!qvariant_cast<UnifiedGroupResult>(finished[0][0]).success);
+    QCOMPARE(qvariant_cast<UnifiedGroupResult>(finished[0][0]).remainingSteps, 1);
+    QTRY_COMPARE(transport.sent.size(), 2);
+    transport.disconnectNow(); transport.connected = true; emit transport.connectionChanged(true, QString());
+    QTRY_COMPARE(finished.size(), 2); QTRY_COMPARE(transport.sent.size(), 3);
+    QCOMPARE(quint8(transport.sent[2][7]), quint8(0x12)); // The unrelated manual request was not cancelled.
+    emit transport.sendFinished(manualId, true, QString()); service.cancelRequest(manualId);
+    QTRY_VERIFY(!manager.hasPendingRequests()); QCOMPARE(finished.size(), 2);
+
+    // An already queued group is cancelled even if disconnect and reconnect both
+    // happen before the queue's zero-timer runs.
+    forwarder.forwardFrame(automaticFrame()); transport.disconnectNow(); transport.connected = true;
+    emit transport.connectionChanged(true, QString()); QCoreApplication::processEvents();
+    QCOMPARE(transport.sent.size(), 3); QCOMPARE(finished.size(), 3); QVERIFY(!manager.hasPendingRequests());
+
+    manager.setTimeouts(20, 20); forwarder.forwardFrame(automaticFrame()); QTRY_COMPARE(transport.sent.size(), 4);
+    QTRY_COMPARE(finished.size(), 4); const auto timeout = qvariant_cast<UnifiedGroupResult>(finished.last()[0]);
+    QVERIFY(!timeout.success); QCOMPARE(timeout.error.code, QString("SEND_TIMEOUT")); QCOMPARE(timeout.remainingSteps, 1);
+    transport.disconnectNow(); QCoreApplication::processEvents(); QCOMPARE(transport.sent.size(), 4);
+}
+
+class RejectingForwardProtocol : public QushengProtocol
+{
+public:
+    bool validateCommand(const UnifiedCommand &, TranslationError *error) const override
+    { *error = {"TEST_VALIDATION", QStringLiteral("Synchronous validation failure")}; return false; }
+};
+
+void FrameworkTest::automaticForwardBoundedQueueAndSynchronousFailure()
+{
+    qRegisterMetaType<UnifiedGroupResult>();
+    {
+        QushengProtocol protocol; FakeTransport transport; RequestManager manager(&protocol, &transport);
+        TranslationService service(&manager); UpstreamForwarder forwarder(&transport, &service); forwarder.setConfig(automaticConfig());
+        QSignalSpy queued(&forwarder, &UpstreamForwarder::queued), rejected(&forwarder, &UpstreamForwarder::rejected);
+        QSignalSpy finished(&forwarder, &UpstreamForwarder::finished);
+        for (int i = 0; i < 128; ++i) forwarder.forwardFrame(automaticFrame());
+        QCOMPARE(queued.size(), 128); forwarder.forwardFrame(automaticFrame());
+        QCOMPARE(rejected.size(), 1); QCOMPARE(rejected.last()[0].toString(), QString("FORWARD_QUEUE_FULL"));
+        transport.disconnectNow(); QCOMPARE(finished.size(), 128); QVERIFY(!manager.hasPendingRequests());
+        transport.connected = true; emit transport.connectionChanged(true, QString()); QCoreApplication::processEvents();
+        QVERIFY(transport.sent.isEmpty()); forwarder.forwardFrame(automaticFrame()); QCOMPARE(queued.size(), 129);
+        transport.disconnectNow(); QVERIFY(!manager.hasPendingRequests());
+    }
+    {
+        RejectingForwardProtocol protocol; FakeTransport transport; RequestManager manager(&protocol, &transport);
+        TranslationService service(&manager); UpstreamForwarder forwarder(&transport, &service); forwarder.setConfig(automaticConfig());
+        QSignalSpy finished(&forwarder, &UpstreamForwarder::finished), rejected(&forwarder, &UpstreamForwarder::rejected);
+        QStringList order;
+        connect(&forwarder, &UpstreamForwarder::queued, this, [&](quint64, const QString &, int) { order << "queued"; });
+        connect(&forwarder, &UpstreamForwarder::finished, this, [&](const UnifiedGroupResult &) { order << "finished"; });
+        for (int i = 0; i < 130; ++i) {
+            forwarder.forwardFrame(automaticFrame()); QCOMPARE(finished.size(), i + 1);
+            QCOMPARE(qvariant_cast<UnifiedGroupResult>(finished.last()[0]).error.code, QString("TEST_VALIDATION"));
+        }
+        QCOMPARE(rejected.size(), 0); QCOMPARE(order.size(), 260); QVERIFY(transport.sent.isEmpty());
+        for (int i = 0; i < order.size(); i += 2) { QCOMPARE(order[i], QString("queued")); QCOMPARE(order[i + 1], QString("finished")); }
+    }
+    {
+        QushengProtocol protocol; FakeTransport transport; RequestManager manager(&protocol, &transport);
+        TranslationService service(&manager); UpstreamForwarder forwarder(&transport, &service); forwarder.setConfig(automaticConfig());
+        QSignalSpy finished(&forwarder, &UpstreamForwarder::finished);
+        bool disconnected = false;
+        connect(&service, &TranslationService::requestStateChanged, this, [&](quint64, RequestState state, const QString &) {
+            if (state == RequestState::Queued && !disconnected) {
+                disconnected = true; transport.disconnectNow(); transport.connected = true;
+                emit transport.connectionChanged(true, QString());
+            }
+        });
+        forwarder.forwardFrame(automaticFrame()); QCOMPARE(finished.size(), 1);
+        QCoreApplication::processEvents(); QVERIFY(transport.sent.isEmpty()); QVERIFY(!manager.hasPendingRequests());
+    }
+}
+
+void FrameworkTest::automaticForwardSequenceWrap()
+{
+    qRegisterMetaType<UnifiedGroupResult>(); QushengProtocol protocol; FakeTransport transport; transport.stall = true;
+    RequestManager manager(&protocol, &transport); TranslationService service(&manager);
+    UpstreamForwarder forwarder(&transport, &service); forwarder.setConfig(automaticConfig());
+    QSignalSpy outgoing(&service, &TranslationService::outgoingFrame), finished(&forwarder, &UpstreamForwarder::finished);
+    for (int group = 0; group < 140; ++group) {
+        forwarder.forwardFrame(automaticFrame());
+        for (int step = 0; step < 2; ++step) {
+            const int index = group * 2 + step; QCoreApplication::processEvents();
+            QTRY_COMPARE(transport.sent.size(), index + 1); QCOMPARE(quint8(transport.sent[index][6]), quint8(index));
+            emit transport.sendFinished(outgoing[index][0].toULongLong(), true, QString());
+            transport.receive(automaticReply(transport.sent[index]));
+        }
+        QCOMPARE(finished.size(), group + 1); QVERIFY(qvariant_cast<UnifiedGroupResult>(finished.last()[0]).success);
+    }
+    TranslationError error; ProtocolConfig relative;
+    QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &relative, &error)); forwarder.setConfig(relative);
+    forwarder.forwardFrame("/1P20R\\r"); QCoreApplication::processEvents(); QTRY_COMPARE(transport.sent.size(), 281);
+    QCOMPARE(quint8(transport.sent.last()[7]), quint8(0x11)); // No automatic 0x12 preflight query.
+    emit transport.sendFinished(outgoing.last()[0].toULongLong(), true, QString());
+    transport.receive(automaticReply(transport.sent.last())); QTRY_VERIFY(!manager.hasPendingRequests());
 }
 
 void FrameworkTest::virtualComStateAndOwnership()

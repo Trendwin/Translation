@@ -10,10 +10,12 @@ SOURCES += tst_widget.cpp ../widget.cpp \
     ../src/config/protocolconfig.cpp ../src/core/conversionengine.cpp \
     ../src/config/draftstore.cpp \
     ../src/core/requestmanager.cpp ../src/core/translationservice.cpp \
+    ../src/core/upstreamforwarder.cpp \
     ../src/qusheng/qushengprotocol.cpp ../src/transport/serialtransport.cpp \
     ../src/transport/upstreamserialreceiver.cpp \
     ../src/transport/virtualcomprovider.cpp
 HEADERS += ../widget.h ../src/core/requestmanager.h ../src/core/translationservice.h \
+    ../src/core/upstreamforwarder.h \
     ../src/core/numericformula.h \
     ../src/config/draftstore.h \
     ../src/qusheng/qushengcommandcatalog.h \

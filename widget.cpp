@@ -3,6 +3,7 @@
 #include "src/core/requestmanager.h"
 #include "src/core/numericformula.h"
 #include "src/core/translationservice.h"
+#include "src/core/upstreamforwarder.h"
 #include "src/qusheng/qushengprotocol.h"
 #include "src/qusheng/qushengcommandcatalog.h"
 #include "src/qusheng/sdk/qushengsdk.h"
@@ -419,6 +420,7 @@ Widget::Widget(QWidget *parent, const QString &draftFilePath, const QString &vir
                                          ? draftFilePath + QStringLiteral(".upstream-port.json") : virtualStatePath)),
       m_requests(new RequestManager(m_protocol, m_transport, this)),
       m_service(new TranslationService(m_requests, this)),
+      m_upstreamForwarder(new UpstreamForwarder(m_transport, m_service, this)),
       m_draftStore(draftFilePath)
 {
     buildUi();
@@ -955,7 +957,9 @@ void Widget::buildUi()
     upstreamPorts->addWidget(m_providedPort, 1); upstreamPorts->addWidget(m_virtualComAction);
     upstreamLayout->addLayout(upstreamPorts);
     upstreamLayout->addWidget(m_upstreamState);
-    auto *upstreamHint = new QLabel(QString::fromUtf8(u8"上游软件选择上面提供的串口。115200 · 8 数据位 · 无校验 · 1 停止位 · 无流控\n按已保存的客户格式接收与解析。"), this);
+    m_upstreamForwardState = new QLabel(this); m_upstreamForwardState->setObjectName("upstreamForwardState"); m_upstreamForwardState->setWordWrap(true);
+    upstreamLayout->addWidget(m_upstreamForwardState);
+    auto *upstreamHint = new QLabel(QString::fromUtf8(u8"上游软件选择上面提供的串口。115200 · 8 数据位 · 无校验 · 1 停止位 · 无流控\n完整报文按已保存的格式和映射自动转换下发；不向上游回告。"), this);
     upstreamHint->setWordWrap(true); upstreamLayout->addWidget(upstreamHint);
     auto *upstreamStats = new QHBoxLayout;
     m_upstreamCounters = new QLabel(this); m_upstreamCounters->setObjectName("upstreamCounters"); upstreamStats->addWidget(m_upstreamCounters, 1);
@@ -1015,7 +1019,8 @@ void Widget::buildUi()
         m_upstreamState->setText(connected ? QString::fromUtf8(u8"等待上游报文") : reason);
     });
     connect(m_upstream, &UpstreamSerialReceiver::rawReceived, this, [this](const QByteArray &bytes) {
-        m_upstreamState->setText(QString::fromUtf8(u8"接收中"));
+        m_upstreamState->setText(m_transport->isConnected() ? QString::fromUtf8(u8"接收中")
+                                : QString::fromUtf8(u8"接收中；下游串口未连接"));
         m_upstreamBytes += quint64(bytes.size()); updateUpstreamCounters();
         const QByteArray shown = bytes.left(2048);
         m_upstreamRaw->appendPlainText(QString::fromUtf8(u8"收到 %1 字节\nASCII  %2\nHEX    %3")
@@ -1041,10 +1046,38 @@ void Widget::buildUi()
         const QString text = lines.join('\n');
         m_upstreamFrames->appendPlainText(text.left(8192));
         if (text.size() > 8192) m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"本帧显示已截断"));
+        m_upstreamForwarder->forwardFrame(frame);
     });
     connect(m_upstream, &UpstreamSerialReceiver::errorOccurred, this, [this](const QString &reason) {
         ++m_upstreamErrors; updateUpstreamCounters(); m_upstreamState->setText(reason);
         m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"接收提示：%1").arg(reason.left(2048)));
+    });
+    connect(m_upstreamForwarder, &UpstreamForwarder::queued, this,
+            [this](quint64 group, const QString &command, int total) {
+        m_lastRequestId = group;
+        const QString text = QString::fromUtf8(u8"自动转发：%1 已入队（组%2，共%3条），等待下发与应答")
+                .arg(command).arg(group).arg(total);
+        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+    });
+    connect(m_upstreamForwarder, &UpstreamForwarder::rejected, this,
+            [this](const QString &code, const QString &reason) {
+        ++m_upstreamErrors; updateUpstreamCounters();
+        const QString text = QString::fromUtf8(u8"未转发：%1（%2）").arg(reason, code);
+        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+    });
+    connect(m_upstreamForwarder, &UpstreamForwarder::progress, this,
+            [this](quint64 group, int step, int total, const QString &detail) {
+        const QString text = QString::fromUtf8(u8"自动转发：组%1，第%2/%3条；%4").arg(group).arg(step).arg(total).arg(detail);
+        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+    });
+    connect(m_upstreamForwarder, &UpstreamForwarder::finished, this, [this](const UnifiedGroupResult &result) {
+        const QString text = result.success
+                ? QString::fromUtf8(u8"自动转发：组%1下游已成功应答%2/%3条；机械动作完成未确认")
+                  .arg(result.groupId).arg(result.acceptedSteps).arg(result.totalSteps)
+                : QString::fromUtf8(u8"自动转发失败：组%1，%2（%3）；剩余%4条未发送")
+                  .arg(result.groupId).arg(result.error.message, result.error.code).arg(result.remainingSteps);
+        if (!result.success) { ++m_upstreamErrors; updateUpstreamCounters(); }
+        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
     });
 
     m_log = new QTextEdit(this); m_log->setObjectName("runLog"); m_log->setReadOnly(true);
@@ -3092,10 +3125,18 @@ void Widget::refreshUpstreamConfig()
     ProtocolConfig updated; updated.root = m_draftRoot;
     const bool changed = m_upstreamConfig.root.isEmpty() || receiveFormatKey(m_upstreamConfig) != receiveFormatKey(updated);
     m_upstreamConfig = updated;
+    m_upstreamForwarder->setConfig(m_upstreamConfig);
     if (!changed) return;
     const bool valid = m_upstream->setConfig(m_upstreamConfig);
     m_upstreamFrames->appendPlainText(valid ? QString::fromUtf8(u8"已更新为保存的客户格式，接收缓冲已清空")
                                           : QString::fromUtf8(u8"保存的客户格式不可用，请检查配置"));
+}
+
+void Widget::updateUpstreamForwardState()
+{
+    m_upstreamForwardState->setText(m_transport->isConnected()
+        ? QString::fromUtf8(u8"自动转发：下游已连接，收到完整报文后按已保存映射下发")
+        : QString::fromUtf8(u8"自动转发：下游串口未连接，收到报文不会下发"));
 }
 
 void Widget::updateConnectionUi(bool connected, const QString &reason)
@@ -3109,6 +3150,7 @@ void Widget::updateConnectionUi(bool connected, const QString &reason)
     if (!connected && reason.contains(QString::fromUtf8(u8"；系统详情：")))
         m_validationState->setText(reason.section(QString::fromUtf8(u8"；系统详情："), 0, 0));
     if (connected) m_protocol->resetSession();
+    updateUpstreamForwardState();
     updateLiveState();
 }
 

@@ -14,6 +14,8 @@ SOURCES += tst_framework.cpp \
     ../src/config/protocolconfig.cpp \
     ../src/core/conversionengine.cpp \
     ../src/core/requestmanager.cpp \
+    ../src/core/translationservice.cpp \
+    ../src/core/upstreamforwarder.cpp \
     ../src/transport/upstreamserialreceiver.cpp \
     ../src/transport/virtualcomprovider.cpp
 HEADERS += ../src/model/translationtypes.h \
@@ -25,6 +27,8 @@ HEADERS += ../src/model/translationtypes.h \
     ../src/config/protocolconfig.h \
     ../src/core/conversionengine.h \
     ../src/core/requestmanager.h \
+    ../src/core/translationservice.h \
+    ../src/core/upstreamforwarder.h \
     ../src/transport/itransport.h \
     ../src/transport/upstreamserialreceiver.h \
     ../src/transport/virtualcomprovider.h
