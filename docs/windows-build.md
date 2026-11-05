@@ -43,6 +43,8 @@ SDK请求/回告有独立工程 `tests/sdk-requests.pro`、`tests/sdk-replies.pr
 
 Windows 应用构建会使用当前 Qt kit 的 `windeployqt`，将匹配配置的 Qt DLL 和平台插件补齐到 `bin/debug` 或 `bin/release`。即使程序无需重新链接，普通构建也会检查并补齐缺少的依赖；修改工程后先重新运行 qmake。部署工具不存在或执行失败时，构建会报错，不会将缺库的输出当作构建成功。
 
+Qt 5 的 `windeployqt` 还会通过 PATH 调用 `qmake` 查询 Qt 安装位置，因此仅指定部署工具的绝对路径仍可能混用其他套件。部署命令会临时将当前 kit 的 bin 放在 PATH 首位，只对本次部署生效，不修改系统或用户环境变量。如果 MSVC 构建日志却出现 `mingw` 目录，请更新工程后重新运行 qmake，再构建，生成新的部署命令。
+
 Debug 主窗口可以借助 Qt Creator 的临时运行环境找到 `Qt5SerialPortd.dll` 等库；“初始化虚拟串口”通过管理员权限另起进程，不能依赖这份临时环境，因此依赖必须放在程序旁。此步骤只准备本地构建输出，不创建或同步 Release/Debug 运行包，不修改 `config` 中的用户设置。Debug 仍用于安装了相应编译器调试运行库的开发电脑；对其他电脑交付运行包时另行执行正式打包流程。
 
 默认示例 `examples/dt-simple-commands.json` 编译进程序，无需为启动示例附带外部 `examples/` 目录。可通过“导入配置”选择其他 JSON。
