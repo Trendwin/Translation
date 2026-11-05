@@ -21,7 +21,7 @@
 | 属性 | 中文含义与边界 |
 |---|---|
 | encoding | ascii 或 hex，决定输入框如何转成字节 |
-| header、footer | 必填共用帧头和帧尾；ASCII 支持 `\r`、`\n`、`\t`、`\xNN`，HEX 填偶数个十六进制字符 |
+| header、footer | 必填共用帧头和帧尾；ASCII 按字符原样匹配，`\n`为两个字符、`\r\n`为四个字符，不解释反斜杠转义；HEX 填偶数个十六进制字符 |
 | byteOrder | big 或 little，只影响 HEX 多字节整数 |
 | fields | 有顺序的字段数组，连续读取，不填写 offset |
 
@@ -87,7 +87,7 @@ fixedValue 是固定字段必须匹配的值；min/max 只适用于整数。ASCI
 
 `command-catalog-draft.json` 展示另一个自行定义的客户格式：`!MOVE2000\r` 可预览绝对位置运动，`!FAN50\r` 命中风扇控制草稿并显示发送待实现。固定风扇编号224仅为编辑演示，不代表实际设备已确认；目录参数范围不替代客户字段取值限制。
 
-`dt-preview.json` 是上一阶段的固定1字节命令码/十倍换算回归；其含义不变，仍可加载。ASCII/HEX旧顺序字段配置继续兼容；旧实验 external.format、offset/endian字段、双连接结构明确拒绝，不能静默解释成新配置。
+`dt-preview.json` 是上一阶段的固定1字节命令码/十倍换算回归，映射和换算关系保持不变。ASCII/HEX旧顺序字段配置仍可加载；ASCII中的反斜杠现在统一按原样匹配，依赖旧转义行为的配置需按实际报文字节核对，见[ASCII文本说明](ascii-text.md)。HEX字节语义不变。旧实验 external.format、offset/endian字段、双连接结构明确拒绝，不能静默解释成新配置。
 
 完整帧与缓存均不超过4096字节。全固定长度分帧按长度定位帧尾，允许二进制参数中出现同值尾字节；带delimited字段的正文不能包含完整帧尾序列，否则报多帧/边界错误。toFooter尾字段也不能包含完整帧尾。半包等待后续数据，粘包逐帧处理，字段分隔错误不沿用上次解析结果。详见[顺序字段说明](sequential-fields.md)。
 

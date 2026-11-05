@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "external": {
+    "encoding": "ascii",
+    "header": "@&",
+    "footer": "\\r\\n",
+    "fields": [
+      {
+        "name": "源地址",
+        "type": "ascii",
+        "role": "fixed",
+        "lengthMode": "delimited",
+        "delimiter": "&",
+        "fixedValue": "5A"
+      },
+      {
+        "name": "目标地址",
+        "type": "ascii",
+        "role": "fixed",
+        "lengthMode": "delimited",
+        "delimiter": "&",
+        "fixedValue": "01"
+      },
+      {
+        "name": "报文类型",
+        "type": "ascii",
+        "role": "fixed",
+        "lengthMode": "delimited",
+        "delimiter": "&",
+        "fixedValue": "SCT"
+      },
+      {
+        "name": "序号",
+        "type": "uint",
+        "role": "metadata",
+        "lengthMode": "delimited",
+        "delimiter": "&"
+      },
+      {
+        "name": "等待标志",
+        "type": "uint",
+        "role": "metadata",
+        "lengthMode": "delimited",
+        "delimiter": ";",
+        "max": 255
+      },
+      {
+        "name": "命令码",
+        "type": "ascii",
+        "role": "command",
+        "lengthMode": "delimited",
+        "delimiter": "="
+      },
+      {
+        "name": "数值",
+        "type": "integerList",
+        "role": "parameter",
+        "lengthMode": "delimited",
+        "delimiter": ";",
+        "min": 0,
+        "max": 65535
+      },
+      {
+        "name": "延时",
+        "type": "uint",
+        "role": "metadata",
+        "lengthMode": "delimited",
+        "delimiter": "\\n"
+      },
+      {
+        "name": "固定结束文字",
+        "type": "ascii",
+        "role": "fixed",
+        "lengthMode": "fixed",
+        "length": 4,
+        "fixedValue": "END&"
+      },
+      {
+        "name": "校验值",
+        "type": "ascii",
+        "role": "checksum",
+        "lengthMode": "delimited",
+        "delimiter": "&"
+      }
+    ]
+  },
+  "device": {
+    "destination": 2,
+    "source": 1,
+    "devId": 17,
+    "speedUmPerS": 1000,
+    "minPositionUm": 0,
+    "maxPositionUm": 200000
+  },
+  "name": "ASCII 原样顺序格式与MFC位图示例",
+  "mappings": [
+    {
+      "commandCode": "MFCV",
+      "input": {
+        "parameterCounts": {
+          "数值": 1
+        }
+      },
+      "steps": [
+        {
+          "operation": "QUSHENG_21",
+          "parameters": {
+            "mode": {
+              "kind": "constant",
+              "value": 0
+            },
+            "duration": {
+              "kind": "constant",
+              "value": 0
+            },
+            "valveMask": {
+              "kind": "linear",
+              "field": "数值",
+              "itemIndex": 1,
+              "numerator": -1,
+              "denominator": 1,
+              "offset": 255,
+              "round": "exact"
+            }
+          }
+        },
+        {
+          "operation": "QUSHENG_21",
+          "parameters": {
+            "mode": {
+              "kind": "constant",
+              "value": 1
+            },
+            "duration": {
+              "kind": "constant",
+              "value": 0
+            },
+            "valveMask": {
+              "kind": "field",
+              "field": "数值",
+              "itemIndex": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

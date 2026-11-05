@@ -69,6 +69,8 @@ private slots:
     void finalQushengFrameMatchesSample();
     void runtimeHasExactlyOneDeviceTransport();
     void strictConfigurationAndByteInput();
+    void asciiLiteralFormattingAndStreaming();
+    void asciiLiteralBoundariesAndHex();
     void parameterRelationsAndRounding();
     void signedFixedFieldsAndOverflow();
     void fixedBinaryFramesWithEmbeddedFooter();
@@ -323,7 +325,7 @@ void FrameworkTest::formulaMappingReferencesAndSnapshots()
     QTemporaryDir directory; const auto path = directory.filePath("formula.json");
     QVERIFY(config.save(path, &error)); ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error));
     QCOMPARE(restored.root, config.root);
-    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=3,4,5\\r", false, &result, &error), qPrintable(error.message));
     QCOMPARE(result.command.parameters.value("xPosition").toInt(), 88);
     QCOMPARE(result.command.parameters.value("yPosition").toInt(), 1080);
     QCOMPARE(result.command.parameters.value("zPosition").toInt(), 15);
@@ -333,7 +335,7 @@ void FrameworkTest::formulaMappingReferencesAndSnapshots()
     const auto snapshot = result.command;
     auto records = config.root.value("parameterPresets").toArray(); auto record = records.first().toObject();
     record.insert("name", "renamed"); record.insert("values", QJsonArray{180, 1075, 30}); records[0] = record; config.root.insert("parameterPresets", records);
-    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=3,4,5\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("xPosition").toInt(), 188);
     QCOMPARE(snapshot.parameters.value("xPosition").toInt(), 88);
     auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings.first().toObject();
@@ -342,15 +344,15 @@ void FrameworkTest::formulaMappingReferencesAndSnapshots()
         {"xPosition", formulaRelation("p+1", {{"p", presetRelation(1)}})},
         {"yPosition", formulaRelation("0")}, {"zPosition", formulaRelation("0")}});
     config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convertBatch("!XYZ=999\\r", false, &result, &error), qPrintable(error.message));
     QCOMPARE(result.command.parameters.value("xPosition").toInt(), 181);
     QCOMPARE(result.fields.value("values").toList().first().toInt(), 999);
     // Existing explicit constraints apply to the final formula result, after rounding.
     auto p = mapping.value("parameters").toObject(); auto expression = formulaRelation("0.5"); expression.insert("allowedValues", QJsonArray{0, 1});
     p.insert("xPosition", expression); mapping.insert("parameters", p); config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error)); QCOMPARE(result.command.parameters.value("xPosition").toInt(), 1);
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\\r", false, &result, &error)); QCOMPARE(result.command.parameters.value("xPosition").toInt(), 1);
     expression.insert("allowedValues", QJsonArray{0}); p.insert("xPosition", expression); mapping.insert("parameters", p); config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY(!ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
+    QVERIFY(!ConversionEngine(config).convertBatch("!XYZ=999\\r", false, &result, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
     QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
 }
 
@@ -364,7 +366,7 @@ void FrameworkTest::formulaValidationAndBatchFailures()
         parameters.insert("xPosition", expression); mapping.insert("parameters", parameters);
         if (!inputSettings.isEmpty()) mapping.insert("input", inputSettings);
         config.root.insert("mappings", QJsonArray{mapping});
-        return ConversionEngine(config).convertBatch("!XYZ=3,4,5\r", false, &result, &error);
+        return ConversionEngine(config).convertBatch("!XYZ=3,4,5\\r", false, &result, &error);
     };
     for (const auto &bad : QList<QJsonObject>{formulaRelation("a", {}), formulaRelation("1", {{"unused", input}}),
              formulaRelation("a[1]", {{"a", input}}), formulaRelation("a", {{"a", QJsonObject{{"kind", "constant"}, {"value", 1}}}}),
@@ -390,9 +392,9 @@ void FrameworkTest::formulaValidationAndBatchFailures()
     const QJsonObject firstStep{{"operation", "MOTOR_FORWARD"}, {"parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "constant"}, {"value", 80}}}}}};
     grouped.root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "XYZ"}, {"input", originalMapping.value("input")}, {"steps", QJsonArray{firstStep, finalStep}}}});
     QVERIFY2(grouped.validate(&error), qPrintable(error.message));
-    QVERIFY(!ConversionEngine(grouped).convertBatch("!XYZ=3,4,5\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(grouped).convertBatch("!XYZ=3,4,5\\r", false, &result, &error));
     QCOMPARE(error.code, QString("FORMULA_EVALUATION")); QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
-    QVERIFY(ConversionEngine(grouped).parsePreview("!XYZ=3,4,5\r", &result, &error)); QCOMPARE(result.fields.value("values").toList().size(), 3);
+    QVERIFY(ConversionEngine(grouped).parsePreview("!XYZ=3,4,5\\r", &result, &error)); QCOMPARE(result.fields.value("values").toList().size(), 3);
 }
 
 void FrameworkTest::parameterPresetsSchemaAndRoundTrip()
@@ -431,28 +433,28 @@ void FrameworkTest::parameterPresetsSchemaAndRoundTrip()
 void FrameworkTest::parameterPresetsMappingAndSnapshots()
 {
     auto config = parameterPresetConfig(); TranslationError error; ConversionPreview result;
-    QVERIFY2(ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convertBatch("!MOVE=999\\r", false, &result, &error), qPrintable(error.message));
     QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11410003e8000050"));
     QVERIFY(result.parameterTrace.value("positionUm").contains(QString::fromUtf8(u8"样品盘A首孔")));
     const auto snapshot = result.command;
-    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\\r", false, &result, &error));
     QCOMPARE(result.targetFrame.mid(8, 20), QByteArray::fromHex("012300005000043300001e0003e80003e80003e8"));
-    QVERIFY(ConversionEngine(config).convertBatch("!SCALE=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!SCALE=999\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("positionUm").toInt(), 2155);
     QVERIFY(result.parameterTrace.value("positionUm").contains(QString::fromUtf8(u8"第 2 项")));
     auto records = config.root.value("parameterPresets").toArray(); auto record = records.first().toObject();
     record.insert("values", QJsonArray{123, 1075, 30}); records[0] = record; config.root.insert("parameterPresets", records);
-    QVERIFY(ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!MOVE=999\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("positionUm").toInt(), 123);
-    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!XYZ=999\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("xPosition").toInt(), 123);
     QCOMPARE(snapshot.parameters.value("positionUm").toInt(), 80);
-    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("positionUm").toInt(), 999);
     auto mappings = config.root.value("mappings").toArray(); auto inputMapping = mappings.last().toObject();
     auto inputExpression = inputMapping.value("parameters").toObject().value("positionUm").toObject(); inputExpression.insert("scope", "input");
     inputMapping.insert("parameters", QJsonObject{{"positionUm", inputExpression}}); mappings[mappings.size() - 1] = inputMapping; config.root.insert("mappings", mappings);
-    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!INPUT=999\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("positionUm").toInt(), 999);
 }
 
@@ -464,7 +466,7 @@ void FrameworkTest::parameterPresetsFailuresAndScopeIsolation()
     const auto runRelation = [&](const QJsonObject &relation) {
         auto changed = mapping; changed.insert("parameters", QJsonObject{{"positionUm", relation}});
         config = base; config.root.insert("mappings", QJsonArray{changed});
-        return ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error);
+        return ConversionEngine(config).convertBatch("!MOVE=999\\r", false, &result, &error);
     };
     for (const auto &change : QList<QJsonObject>{QJsonObject{{"field", "missing"}}, QJsonObject{{"itemIndex", 0}},
             QJsonObject{{"itemIndex", 4}}, QJsonObject{{"scope", "unknown"}}, QJsonObject{{"scope", QJsonValue()}}}) {
@@ -488,11 +490,11 @@ void FrameworkTest::parameterPresetsFailuresAndScopeIsolation()
     auto second = first; second.insert("parameters", QJsonObject{{"positionUm", presetRelation(3)}});
     auto group = mapping; group.remove("operation"); group.remove("parameters"); group.insert("steps", QJsonArray{first, second});
     config.root.insert("mappings", QJsonArray{group}); QVERIFY(config.validate(&error));
-    QVERIFY(!ConversionEngine(config).convertBatch("!MOVE=999\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(config).convertBatch("!MOVE=999\\r", false, &result, &error));
     QVERIFY(result.steps.isEmpty()); QVERIFY(result.targetFrame.isEmpty());
     // Independent format parsing still works when the optional preset table is incomplete.
     config.root.insert("parameterPresets", QJsonValue());
-    QVERIFY(ConversionEngine(config).parsePreview("!MOVE=999\r", &result, &error));
+    QVERIFY(ConversionEngine(config).parsePreview("!MOVE=999\\r", &result, &error));
     QCOMPARE(result.fields.value("values").toList().first().toInt(), 999);
 }
 
@@ -518,26 +520,26 @@ void FrameworkTest::valveStateParameterAndExpressionConstraints()
         parameters.insert("mode", mode); selected.insert("parameters", parameters);
         config.root.insert("mappings", QJsonArray{selected}); QVERIFY2(config.validate(&error), qPrintable(error.message));
         for (int state : {0, 1}) {
-            QVERIFY2(ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + '\r', false, &preview, &error), qPrintable(error.message));
+            QVERIFY2(ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + "\\r", false, &preview, &error), qPrintable(error.message));
             QCOMPARE(preview.steps.first().targetFrame.mid(8, 8), QByteArray::fromHex(state ? "6000000100000000" : "2000000100000000"));
         }
         for (int state : {-1, 2, 3}) {
-            QVERIFY(!ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + '\r', false, &preview, &error));
+            QVERIFY(!ConversionEngine(config).convertBatch("!SW=" + QByteArray::number(state) + "\\r", false, &preview, &error));
             QCOMPARE(error.code, QString("EXPRESSION_VALUE")); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
         }
         auto first = selected; auto firstParameters = parameters; firstParameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 0}});
         first.insert("parameters", firstParameters); first.remove("input"); first.remove("commandCode"); auto second = selected; second.remove("input"); second.remove("commandCode");
         auto group = selected; group.remove("operation"); group.remove("parameters"); group.insert("steps", QJsonArray{first, second});
         config.root.insert("mappings", QJsonArray{group}); QVERIFY(config.validate(&error));
-        QVERIFY(!ConversionEngine(config).convertBatch("!SW=2\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
+        QVERIFY(!ConversionEngine(config).convertBatch("!SW=2\\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
     }
     auto config = base; auto parameters = mapping.value("parameters").toObject();
     auto linear = relation; linear.insert("kind", "linear"); linear.insert("numerator", 2); linear.insert("denominator", 1); linear.insert("round", "exact");
     parameters.insert("mode", linear); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\r", false, &preview, &error));
-    QVERIFY(!ConversionEngine(config).convertBatch("!SW=1\r", false, &preview, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
+    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convertBatch("!SW=1\\r", false, &preview, &error)); QCOMPARE(error.code, QString("EXPRESSION_VALUE"));
     linear.remove("allowedValues"); parameters.insert("mode", linear); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY(ConversionEngine(config).convertBatch("!SW=1\r", false, &preview, &error)); QCOMPARE(preview.steps.first().command.parameters.value("mode").toInt(), 2);
+    QVERIFY(ConversionEngine(config).convertBatch("!SW=1\\r", false, &preview, &error)); QCOMPARE(preview.steps.first().command.parameters.value("mode").toInt(), 2);
     for (const auto &bad : QList<QJsonValue>{QJsonValue(), QJsonValue("0,1"), QJsonArray{}, QJsonArray{0, "1"}, QJsonArray{0, 0.5}, QJsonArray{9007199254740992.0}}) {
         auto invalid = base; auto changed = relation; changed.insert("allowedValues", bad); auto p = parameters; p.insert("mode", changed);
         auto item = mapping; item.insert("parameters", p); invalid.root.insert("mappings", QJsonArray{item}); QVERIFY(!invalid.validate(&error));
@@ -545,7 +547,7 @@ void FrameworkTest::valveStateParameterAndExpressionConstraints()
     auto constant = QJsonObject{{"kind", "constant"}, {"value", 2}, {"allowedValues", QJsonArray{0, 1}}};
     parameters.insert("mode", constant); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping}); QVERIFY(!config.validate(&error));
     constant.insert("value", 1); parameters.insert("mode", constant); mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
-    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\r", false, &preview, &error));
+    QVERIFY(config.validate(&error)); QVERIFY(ConversionEngine(config).convertBatch("!SW=0\\r", false, &preview, &error));
     QTemporaryDir directory; const auto path = directory.filePath("state.json"); QVERIFY(base.save(path, &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, base.root);
 }
@@ -555,12 +557,12 @@ void FrameworkTest::valveSelectionPayloadsAndDefaults()
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("valve-selection.json"), &config, &error));
     const QList<QPair<QByteArray, QByteArray>> packets = {
-        {"!CLOSE1=0\r", QByteArray::fromHex("0000000100000000")},
-        {"!CLOSE30=0\r", QByteArray::fromHex("2000000000000000")},
-        {"!OPENSET=3000\r", QByteArray::fromHex("6018060100000bb8")},
-        {"!OPEN30=4294967295\r", QByteArray::fromHex("4effffffff")},
-        {"!REPLACE=0\r", QByteArray::fromHex("80000005000003e8")},
-        {"!DEFAULT22=0\r", QByteArray::fromHex("3100000000")}
+        {"!CLOSE1=0\\r", QByteArray::fromHex("0000000100000000")},
+        {"!CLOSE30=0\\r", QByteArray::fromHex("2000000000000000")},
+        {"!OPENSET=3000\\r", QByteArray::fromHex("6018060100000bb8")},
+        {"!OPEN30=4294967295\\r", QByteArray::fromHex("4effffffff")},
+        {"!REPLACE=0\\r", QByteArray::fromHex("80000005000003e8")},
+        {"!DEFAULT22=0\\r", QByteArray::fromHex("3100000000")}
     };
     for (const auto &packet : packets) {
         QVERIFY2(ConversionEngine(config).convertBatch(packet.first, false, &preview, &error), qPrintable(error.message));
@@ -575,7 +577,7 @@ void FrameworkTest::valveSelectionPayloadsAndDefaults()
                               {"offset", 5}, {"round", "exact"}, {"extension", "keep expression"}};
     parameters.insert("duration", duration); parameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 0}});
     mapping.insert("parameters", parameters); mapping.insert("extension", "keep mapping"); mappings[2] = mapping; config.root.insert("mappings", mappings);
-    QVERIFY(ConversionEngine(config).convertBatch("!OPENSET=100\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!OPENSET=100\\r", false, &preview, &error));
     QCOMPARE(preview.steps.first().targetFrame.mid(8, 8), QByteArray::fromHex("20180601000000cd")); // 关闭不擅自改时间。
     QTemporaryDir directory; const auto path = directory.filePath("valves.json"); QVERIFY(config.save(path, &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, config.root);
@@ -597,7 +599,7 @@ void FrameworkTest::sixMotorConfigurationAndConversion()
     for (int id : {0x17, 0x1c}) {
         auto config = base; auto device = config.root.value("device").toObject(); device.insert("devId", id); config.root.insert("device", device);
         QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_MOTOR_ID"));
-        QVERIFY(!ConversionEngine(config).convert("!ONE=50\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
+        QVERIFY(!ConversionEngine(config).convert("!ONE=50\\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
         config = base; config.root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"devId", id}}}});
         QVERIFY(!config.validate(&error)); // An explicit valid mapping must not hide a stale invalid preset.
         config = base; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject();
@@ -607,10 +609,10 @@ void FrameworkTest::sixMotorConfigurationAndConversion()
         params.insert("devId", QJsonObject{{"kind", "field"}, {"field", "values"}, {"itemIndex", 1}});
         mapping.insert("parameters", params); config.root.insert("mappings", QJsonArray{mapping});
         QVERIFY(config.validate(&error));
-        QVERIFY(!ConversionEngine(config).convert("!ONE=" + QByteArray::number(id) + "\r", false, &preview, &error));
+        QVERIFY(!ConversionEngine(config).convert("!ONE=" + QByteArray::number(id) + "\\r", false, &preview, &error));
         QVERIFY(preview.targetFrame.isEmpty());
     }
-    QVERIFY(ConversionEngine(base).convert("!ONE=50\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(base).convert("!ONE=50\\r", false, &preview, &error));
     preview.command.targetDevice = QString::number(0x1c);
     QushengProtocol protocol; protocol.setAddresses(2, 1); QByteArray frame;
     QVERIFY(!protocol.encodeCommand(preview.command, &frame, &error)); QCOMPARE(error.code, QString("QUSHENG_DEVID"));
@@ -622,30 +624,30 @@ void FrameworkTest::integerListMixedMappings()
     TranslationError error;
     ConversionPreview p;
     QVERIFY2(config.validate(&error), qPrintable(error.message));
-    QVERIFY2(ConversionEngine(config).convert("!XYZ=66051,258,197637\r", false, &p, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("!XYZ=66051,258,197637\\r", false, &p, &error), qPrintable(error.message));
     QCOMPARE(p.fields.value("values").toList(), QVariantList({qint64(66051), qint64(258), qint64(197637)}));
     QCOMPARE(p.targetFrame.mid(8, 20), QByteArray::fromHex("0123010203000102030405001234001234001234"));
     QVERIFY(p.parameterTrace.value("yPosition").contains(QString::fromUtf8(u8"第 2 项")));
     QCOMPARE(p.command.targetDevice, QString("xyz:35"));
-    QVERIFY(ConversionEngine(config).convert("!ONE=50\r", false, &p, &error));
+    QVERIFY(ConversionEngine(config).convert("!ONE=50\\r", false, &p, &error));
     QCOMPARE(p.command.parameters.value("positionUm").toInt(), 50);
     QCOMPARE(p.command.parameters.value("devId").toInt(), 18);
-    QVERIFY(ConversionEngine(config).convert("!MIX=20,200,3000\r", false, &p, &error));
+    QVERIFY(ConversionEngine(config).convert("!MIX=20,200,3000\\r", false, &p, &error));
     QCOMPARE(p.command.parameters.value("xPosition").toInt(), 200);
     QCOMPARE(p.command.parameters.value("zPosition").toInt(), 200);
     QCOMPARE(p.command.parameters.value("yPosition").toInt(), 0);
-    for (const QByteArray input : {QByteArray("!ONE=1,2\r"), QByteArray("!XYZ=1,2\r"), QByteArray("!MIX=1,2,3,4\r")}) {
+    for (const QByteArray input : {QByteArray("!ONE=1,2\\r"), QByteArray("!XYZ=1,2\\r"), QByteArray("!MIX=1,2,3,4\\r")}) {
         QVERIFY(!ConversionEngine(config).convert(input, false, &p, &error));
         QCOMPARE(error.code, QString("PARAMETER_COUNT"));
         QVERIFY(p.targetFrame.isEmpty());
     }
     auto formatOnly = config;
     formatOnly.root.remove("device"); formatOnly.root.insert("mappings", QJsonArray());
-    QVERIFY(ConversionEngine(formatOnly).parsePreview("!UNKNOWN=20,200,3000\r", &p, &error));
+    QVERIFY(ConversionEngine(formatOnly).parsePreview("!UNKNOWN=20,200,3000\\r", &p, &error));
     QCOMPARE(p.fields.value("values").toList().size(), 3);
     ConversionEngine stream(config); QList<TranslationError> errors;
     QVERIFY(stream.feed("!XYZ=1,", &errors).isEmpty());
-    QCOMPARE(stream.feed("2,3\r!ONE=50\r", &errors).size(), 2);
+    QCOMPARE(stream.feed("2,3\\r!ONE=50\\r", &errors).size(), 2);
     QVERIFY(errors.isEmpty());
     QTemporaryDir dir;
     QVERIFY(config.save(dir.filePath("lists.json"), &error));
@@ -660,14 +662,14 @@ void FrameworkTest::integerListStrictValidation()
     for (const QByteArray value : {QByteArray(""), QByteArray(",1"), QByteArray("1,"), QByteArray("1,,2"),
          QByteArray("1, 2"), QByteArray("1,2 "), QByteArray("1,+2"), QByteArray("1,2.0"),
          QByteArray("1,2\n"), QByteArray("1,9223372036854775808"), QByteArray("1,8388608")}) {
-        QVERIFY(ConversionEngine(config).parsePreview("!XYZ=1,2,3\r", &p, &error));
-        QVERIFY2(!ConversionEngine(config).parsePreview("!XYZ=" + value + "\r", &p, &error), value.constData());
+        QVERIFY(ConversionEngine(config).parsePreview("!XYZ=1,2,3\\r", &p, &error));
+        QVERIFY2(!ConversionEngine(config).parsePreview("!XYZ=" + value + "\\r", &p, &error), value.constData());
         QVERIFY(p.fields.isEmpty()); QVERIFY(p.targetFrame.isEmpty());
     }
     auto ext = config.root.value("external").toObject(); auto fields = ext.value("fields").toArray();
     auto field = fields[1].toObject(); field.remove("min"); field.remove("max"); fields[1] = field;
     ext.insert("fields", fields); config.root.insert("external", ext);
-    QVERIFY(ConversionEngine(config).parsePreview("!XYZ=-9223372036854775808,0,9223372036854775807\r", &p, &error));
+    QVERIFY(ConversionEngine(config).parsePreview("!XYZ=-9223372036854775808,0,9223372036854775807\\r", &p, &error));
     QCOMPARE(p.fields.value("values").toList().first().toLongLong(), std::numeric_limits<qint64>::min());
     const auto original = integerListConfig();
     for (const QJsonValue index : {QJsonValue(0), QJsonValue(-1), QJsonValue(1.5), QJsonValue("1"), QJsonValue(4)}) {
@@ -699,7 +701,7 @@ void FrameworkTest::integerListLayoutAndBudget()
     command.insert("lengthMode", "fixed"); command.remove("delimiter"); command.insert("length", 3); fields[0] = command;
     ext.insert("fields", fields); config.root.insert("external", ext);
     QVERIFY2(config.validate(&error), qPrintable(error.message));
-    QVERIFY(ConversionEngine(config).convert("!ONE20,200,3000\r", false, &p, &error));
+    QVERIFY(ConversionEngine(config).convert("!ONE20,200,3000\\r", false, &p, &error));
     QCOMPARE(p.command.parameters.value("positionUm").toInt(), 400);
     auto list = fields[1].toObject(); list.insert("lengthMode", "fixed"); list.insert("length", 4); fields[1] = list;
     ext.insert("fields", fields); config.root.insert("external", ext);
@@ -728,6 +730,94 @@ static void addDelimitedMappings(ProtocolConfig *config)
     config->root.insert("mappings",mappings);config->root.insert("device",QJsonObject{{"destination",2},{"source",1},{"devId",17},{"speedUmPerS",1000},{"minPositionUm",0},{"maxPositionUm",6000}});
 }
 
+void FrameworkTest::asciiLiteralFormattingAndStreaming()
+{
+    auto config = delimitedConfig(); addDelimitedMappings(&config);
+    auto external = config.root.value("external").toObject();
+    auto fields = external.value("fields").toArray();
+    for (int index : {4, 7}) {
+        auto field = fields.at(index).toObject(); field.insert("role", "metadata"); fields[index] = field;
+    }
+    external.insert("fields", fields); config.root.insert("external", external);
+    TranslationError error; ConversionPreview preview; QByteArray bytes;
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    const QString text = QStringLiteral("@&5A&01&SCT&1&0;MFCV=255;10\\nEND&?&\\r\\n");
+    const auto expected = QByteArray::fromHex("4026354126303126534354263126303b4d4643563d3235353b31305c6e454e44263f265c725c6e");
+    QVERIFY(ProtocolConfig::decodeBytes(text, "ascii", &bytes, &error));
+    QCOMPARE(bytes.size(), 39); QCOMPARE(bytes, expected);
+    QVERIFY(ConversionEngine(config).convert(bytes, false, &preview, &error));
+    QCOMPARE(preview.fields.value("command").toString(), QString("MFCV"));
+    QCOMPARE(preview.fields.value("value").toLongLong(), qint64(255));
+    QCOMPARE(preview.fields.value("delay").toLongLong(), qint64(10));
+    QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 255);
+    QVERIFY(!preview.targetFrame.isEmpty());
+    auto realLf = expected; realLf.replace("\\nEND", "\nEND");
+    QVERIFY(!ConversionEngine(config).parsePreview(realLf, &preview, &error));
+    auto realFooter = expected; realFooter.chop(4); realFooter += "\r\n";
+    QVERIFY(!ConversionEngine(config).parsePreview(realFooter, &preview, &error));
+    for (int split = 1; split < expected.size(); ++split) {
+        ConversionEngine stream(config); QList<TranslationError> errors;
+        QVERIFY(stream.feed(expected.left(split), &errors).isEmpty());
+        const auto frames = stream.feed(expected.mid(split) + expected, &errors);
+        QCOMPARE(frames, QList<QByteArray>({expected, expected})); QVERIFY(errors.isEmpty());
+    }
+    ProtocolConfig loaded;
+    QVERIFY(ProtocolConfig::fromJson(QJsonDocument(config.root).toJson(), &loaded, &error));
+    QCOMPARE(loaded.root, config.root);
+    QVERIFY(ConversionEngine(loaded).parsePreview(expected, &preview, &error));
+}
+
+void FrameworkTest::asciiLiteralBoundariesAndHex()
+{
+    TranslationError error; QByteArray bytes;
+    for (const QString &text : {QString("\\n"), QString("\\r\\n"), QString("\\t"),
+             QString("\\x41"), QString("\\xGG"), QString("\\z"), QString("tail\\"), QString("\\\\")}) {
+        QVERIFY(ProtocolConfig::decodeBytes(text, "ascii", &bytes, &error));
+        QCOMPARE(bytes, text.toLatin1());
+    }
+    QVERIFY(ProtocolConfig::decodeBytes(QString("\r\n\t"), "ascii", &bytes, &error));
+    QCOMPARE(bytes, QByteArray::fromHex("0d0a09"));
+    QVERIFY(ProtocolConfig::decodeBytes("0D 0A 09 5C 6E", "hex", &bytes, &error));
+    QCOMPARE(bytes, QByteArray::fromHex("0d0a095c6e"));
+    QVERIFY(!ProtocolConfig::decodeBytes(QString::fromUtf8(u8"prefix中文"), "ascii", &bytes, &error));
+    QVERIFY(bytes.isEmpty());
+
+    ProtocolConfig config;
+    config.root = {{"schemaVersion", 1}, {"external", QJsonObject{{"encoding", "ascii"},
+        {"header", "H\\n"}, {"footer", "\\r\\n"}, {"fields", QJsonArray{
+            QJsonObject{{"name", "fixed"}, {"type", "ascii"}, {"role", "fixed"},
+                {"lengthMode", "delimited"}, {"delimiter", "\\t"}, {"fixedValue", "A\\x41"}},
+            QJsonObject{{"name", "command"}, {"type", "ascii"}, {"role", "command"}, {"lengthMode", "toFooter"}}
+        }}}}, {"mappings", QJsonArray()}};
+    QVERIFY(config.validateFormat(&error));
+    ConversionPreview preview;
+    const QByteArray frame("H\\nA\\x41\\tCMD\\r\\n");
+    QVERIFY(ConversionEngine(config).parsePreview(frame, &preview, &error));
+    QCOMPARE(preview.fields.value("fixed").toString(), QString("A\\x41"));
+    QCOMPARE(preview.fields.value("command").toString(), QString("CMD"));
+    QVERIFY(!ConversionEngine(config).parsePreview("H\nA\\x41\\tCMD\\r\\n", &preview, &error));
+    QVERIFY(!ConversionEngine(config).parsePreview("H\\nA\\x41\tCMD\\r\\n", &preview, &error));
+    config.root.insert("device", QJsonObject{{"destination", 2}, {"source", 1}, {"devId", 17},
+        {"speedUmPerS", 1000}, {"minPositionUm", 0}, {"maxPositionUm", 6000}});
+    config.root.insert("mappings", QJsonArray{QJsonObject{{"commandCode", "CMD\\z"},
+        {"operation", "MOTOR_STOP"}, {"parameters", QJsonObject()}}});
+    QVERIFY2(config.validate(&error), qPrintable(error.message));
+    QVERIFY(ConversionEngine(config).convert("H\\nA\\x41\\tCMD\\z\\r\\n", false, &preview, &error));
+    QCOMPARE(preview.fields.value("command").toString(), QString("CMD\\z"));
+    QVERIFY(!preview.targetFrame.isEmpty());
+
+    auto external = config.root.value("external").toObject();
+    external.insert("header", "AA"); external.insert("footer", "0D0A"); external.insert("encoding", "hex");
+    external.insert("fields", QJsonArray{QJsonObject{{"name", "command"}, {"type", "uint"},
+        {"role", "command"}, {"lengthMode", "fixed"}, {"length", 1}}});
+    config.root.insert("external", external); QVERIFY(config.validateFormat(&error));
+    const auto binaryFrame = QByteArray::fromHex("aa010d0a");
+    QVERIFY(ConversionEngine(config).parsePreview(binaryFrame, &preview, &error));
+    ConversionEngine stream(config); QList<TranslationError> errors;
+    QCOMPARE(stream.feed(binaryFrame + binaryFrame, &errors), QList<QByteArray>({binaryFrame, binaryFrame}));
+    QVERIFY(errors.isEmpty());
+}
+
 void FrameworkTest::formatDrivenUnusedFieldsAndCounts()
 {
     auto config = delimitedConfig(); addDelimitedMappings(&config);
@@ -742,7 +832,7 @@ void FrameworkTest::formatDrivenUnusedFieldsAndCounts()
     QVERIFY2(config.validate(&error), qPrintable(error.message));
     QVERIFY(!config.hasMappedCommand());
     QCOMPARE(config.inputFormat(mapping), external);
-    const QByteArray packet("@&5A&01&SCT&1&0;RST=0;10\nEND&?&\r\n");
+    const QByteArray packet("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     QVERIFY2(ConversionEngine(config).parsePreview(packet, &preview, &error), qPrintable(error.message));
     const auto expectedFields = preview.fields;
     QCOMPARE(preview.fields.value("value").toList(), QVariantList{QVariant::fromValue<qint64>(0)});
@@ -759,10 +849,10 @@ void FrameworkTest::formatDrivenUnusedFieldsAndCounts()
     auto ignoredMapping = mapping; ignoredMapping.insert("input", QJsonObject{{"omitFields", QJsonArray{"value", "delay"}}});
     ignoredExecution.root.insert("mappings", QJsonArray{ignoredMapping});
     QVERIFY(!ConversionEngine(ignoredExecution).convertBatch(packet, false, &preview, &error)); QCOMPARE(error.code, QString("EXECUTION_SEMANTICS"));
-    for (const QByteArray &bad : {QByteArray("@&5A&01&SCT&1&0;RST=;10\nEND&?&\r\n"),
-                                QByteArray("@&5A&01&SCT&1&0;RST=bad;10\nEND&?&\r\n"),
-                                QByteArray("@&5A&01&SCT&1&0;RST=0;bad\nEND&?&\r\n"),
-                                QByteArray("@&5A&01&SCT&1&0;RST=0\nEND&?&\r\n")}) {
+    for (const QByteArray &bad : {QByteArray("@&5A&01&SCT&1&0;RST=;10\\nEND&?&\\r\\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=bad;10\\nEND&?&\\r\\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=0;bad\\nEND&?&\\r\\n"),
+                                QByteArray("@&5A&01&SCT&1&0;RST=0\\nEND&?&\\r\\n")}) {
         QVERIFY(!ConversionEngine(config).parsePreview(bad, &preview, &error)); QVERIFY(preview.fields.isEmpty());
     }
     QList<TranslationError> errors; ConversionEngine stream(config);
@@ -813,7 +903,7 @@ void FrameworkTest::formatDrivenUnusedFieldsAndCounts()
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(path, &restored, &error)); QCOMPARE(restored.root, config.root);
 
     ProtocolConfig generic; QVERIFY(ProtocolConfig::load(example("format-driven-unused-parameter.json"), &generic, &error));
-    QVERIFY(ConversionEngine(generic).parsePreview("[AA|BB|CTL|1|0;RESET=0;10\nDONE|?|]\r", &preview, &error));
+    QVERIFY(ConversionEngine(generic).parsePreview("[AA|BB|CTL|1|0;RESET=0;10\\nDONE|?|]\\r", &preview, &error));
     QCOMPARE(preview.fields.value(QString::fromUtf8(u8"数值")).toList().size(), 1);
 }
 
@@ -821,35 +911,35 @@ void FrameworkTest::sequentialDelimitedFieldsAndMapping()
 {
     auto config=delimitedConfig();TranslationError error;ConversionPreview p;
     for(const QString &code:{QStringLiteral("MFCV"),QStringLiteral("LED"),QStringLiteral("XYZ_PX"),QStringLiteral("UNKNOWN")})for(const int sequence:{1,12,255}) {
-        const QByteArray input="@&5A&01&SCT&"+QByteArray::number(sequence)+"&0;"+code.toLatin1()+"=234;10\nEND&?&\r\n";
+        const QByteArray input="@&5A&01&SCT&"+QByteArray::number(sequence)+"&0;"+code.toLatin1()+"=234;10\\nEND&?&\\r\\n";
         QVERIFY2(ConversionEngine(config).parsePreview(input,&p,&error),qPrintable(error.message));QCOMPARE(p.fields.size(),10);QCOMPARE(p.fields.value("destination").toString(),QString("01"));QCOMPARE(p.fields.value("sequence").toInt(),sequence);QCOMPARE(p.fields.value("value").toInt(),234);QCOMPARE(p.notices.size(),3);QVERIFY(p.targetFrame.isEmpty());
     }
     QTemporaryDir dir;QVERIFY(config.save(dir.filePath("format.json"),&error));ProtocolConfig restored;QVERIFY(ProtocolConfig::load(dir.filePath("format.json"),&restored,&error));QCOMPARE(restored.root,config.root);
-    const QByteArray input="@&5A&01&SCT&12&0;MFCV=234;10\nEND&?&\r\n";
+    const QByteArray input="@&5A&01&SCT&12&0;MFCV=234;10\\nEND&?&\\r\\n";
     QVERIFY(!ConversionEngine(config).convert(input,false,&p,&error));QVERIFY(p.targetFrame.isEmpty());
     addDelimitedMappings(&config);QVERIFY(!ConversionEngine(config).convert(input,false,&p,&error));QCOMPARE(error.code,QString("EXECUTION_SEMANTICS"));
     auto external=config.root.value("external").toObject();auto fields=external.value("fields").toArray();for(int i:{4,7}){auto field=fields.at(i).toObject();field.insert("role","metadata");fields.replace(i,field);}external.insert("fields",fields);config.root.insert("external",external);
     QVERIFY2(ConversionEngine(config).convert(input,false,&p,&error),qPrintable(error.message));QCOMPARE(p.command.parameters.value("positionUm").toInt(),234);QVERIFY(!p.targetFrame.isEmpty());
-    QVERIFY(!ConversionEngine(config).convert("@&5A&01&SCT&12&0;UNKNOWN=234;10\nEND&?&\r\n",false,&p,&error));QCOMPARE(error.code,QString("COMMAND_UNSUPPORTED"));QVERIFY(p.targetFrame.isEmpty());
+    QVERIFY(!ConversionEngine(config).convert("@&5A&01&SCT&12&0;UNKNOWN=234;10\\nEND&?&\\r\\n",false,&p,&error));QCOMPARE(error.code,QString("COMMAND_UNSUPPORTED"));QVERIFY(p.targetFrame.isEmpty());
     // Legacy mapped-command mode and omissions work after a delimited variable prefix.
     external={{"encoding","ascii"},{"header","!"},{"footer","\\r"},{"fields",QJsonArray{QJsonObject{{"name","sequence"},{"role","metadata"},{"type","uint"},{"lengthMode","delimited"},{"delimiter","|"}},QJsonObject{{"name","command"},{"role","command"},{"type","ascii"},{"lengthMode","mappedCommand"}},QJsonObject{{"name","value"},{"role","parameter"},{"type","uint"},{"lengthMode","toFooter"}}}}};
     config.root.insert("external",external);config.root.insert("mappings",QJsonArray{QJsonObject{{"commandCode","MOVE"},{"operation","MOTOR_FORWARD"},{"parameters",QJsonObject{{"positionUm",QJsonObject{{"kind","field"},{"field","value"}}}}}},QJsonObject{{"commandCode","Q"},{"operation","QUERY_MOTOR"},{"parameters",QJsonObject()},{"input",QJsonObject{{"omitFields",QJsonArray{"value"}}}}}});
-    QVERIFY2(ConversionEngine(config).convert("!255|MOVE234\r",false,&p,&error),qPrintable(error.message));QVERIFY(ConversionEngine(config).convert("!1|Q\r",false,&p,&error));QVERIFY(!p.fields.contains("value"));
+    QVERIFY2(ConversionEngine(config).convert("!255|MOVE234\\r",false,&p,&error),qPrintable(error.message));QVERIFY(ConversionEngine(config).convert("!1|Q\\r",false,&p,&error));QVERIFY(!p.fields.contains("value"));
     fields=external.value("fields").toArray();auto command=fields.at(1).toObject();command.insert("lengthMode","delimited");command.insert("delimiter","=");fields.replace(1,command);external.insert("fields",fields);config.root.insert("external",external);
-    QVERIFY2(ConversionEngine(config).convert("!12|Q=0\r",false,&p,&error),qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("!12|Q=0\\r",false,&p,&error),qPrintable(error.message));
     QCOMPARE(p.fields.value("value").toInt(), 0);
-    QVERIFY(!ConversionEngine(config).convert("!12|Q=\r",false,&p,&error));
+    QVERIFY(!ConversionEngine(config).convert("!12|Q=\\r",false,&p,&error));
     QCOMPARE(error.code, QString("FIELD_LENGTH"));
 }
 void FrameworkTest::sequentialDelimitedFailureAndStream()
 {
-    auto config=delimitedConfig();TranslationError error;ConversionPreview p;const QByteArray prefix="@&5A&01&SCT&1&0;MFCV=",suffix=";10\nEND&?&\r\n";
+    auto config=delimitedConfig();TranslationError error;ConversionPreview p;const QByteArray prefix="@&5A&01&SCT&1&0;MFCV=",suffix=";10\\nEND&?&\\r\\n";
     for(const QByteArray value:{QByteArray(""),QByteArray("abc"),QByteArray("1,2,3"),QByteArray(" 20"),QByteArray("20 "),QByteArray("20\n"),QByteArray("6001"),QByteArray("9223372036854775808")}) {
         QVERIFY(ConversionEngine(config).parsePreview(prefix+"255"+suffix,&p,&error));QVERIFY(!ConversionEngine(config).parsePreview(prefix+value+suffix,&p,&error));QVERIFY(p.fields.isEmpty());QVERIFY(p.targetFrame.isEmpty());
     }
-    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\nWRONG&?&\r\n",&p,&error));QCOMPARE(error.code,QString("FIELD_CONSTANT"));
-    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\nEND&?\r\n",&p,&error));QCOMPARE(error.code,QString("FIELD_DELIMITER"));
-    const auto original=config.root.value("external").toObject();for(const QString &delimiter:{QString(),QString("\\q"),QString(129,'&'),QString("\\r\\n")}) {
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\\nWRONG&?&\\r\\n",&p,&error));QCOMPARE(error.code,QString("FIELD_CONSTANT"));
+    QVERIFY(!ConversionEngine(config).parsePreview(prefix+"255;10\\nEND&?\\r\\n",&p,&error));QCOMPARE(error.code,QString("FIELD_DELIMITER"));
+    const auto original=config.root.value("external").toObject();for(const QString &delimiter:{QString(),QString(129,'&'),QString("\\r\\n")}) {
         auto external=original;auto fields=external.value("fields").toArray();auto f=fields.at(0).toObject();f.insert("delimiter",delimiter);fields.replace(0,f);external.insert("fields",fields);config.root.insert("external",external);QVERIFY(!config.validateFormat(&error));
     }
     config.root.insert("external",original);ConversionEngine engine(config);QList<TranslationError> errors;const QByteArray frame=prefix+"255"+suffix;
@@ -920,10 +1010,10 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
     TranslationError error;
     QVERIFY2(ProtocolConfig::load(example("command-catalog-draft.json"), &config, &error), qPrintable(error.message));
     ConversionPreview result;
-    QVERIFY2(ConversionEngine(config).convert("!MOVE2000\r", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("!MOVE2000\\r", false, &result, &error), qPrintable(error.message));
     const QByteArray goodFrame = result.targetFrame;
     QVERIFY(!goodFrame.isEmpty());
-    QVERIFY(ConversionEngine(config).convert("!FAN50\r", false, &result, &error));
+    QVERIFY(ConversionEngine(config).convert("!FAN50\\r", false, &result, &error));
     QCOMPARE(quint8(result.targetFrame.at(7)), quint8(0x81));
     QCOMPARE(result.targetFrame.mid(8, 2), QByteArray::fromHex("e032"));
 
@@ -933,9 +1023,9 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
     ProtocolConfig reloaded;
     QVERIFY(ProtocolConfig::load(dir.filePath("draft.json"), &reloaded, &error));
     QCOMPARE(reloaded.root, config.root);
-    QVERIFY(ConversionEngine(reloaded).convert("!MOVE2000\r", false, &result, &error));
+    QVERIFY(ConversionEngine(reloaded).convert("!MOVE2000\\r", false, &result, &error));
     QCOMPARE(result.targetFrame, goodFrame);
-    QVERIFY(ConversionEngine(reloaded).convert("!FAN50\r", true, &result, &error));
+    QVERIFY(ConversionEngine(reloaded).convert("!FAN50\\r", true, &result, &error));
     QCOMPARE(result.targetFrame.mid(8, 2), QByteArray::fromHex("e032"));
 
     // 任意目录状态/高级配置标志都不能授予执行权限，真实发送和预览共享同一编译白名单。
@@ -950,7 +1040,7 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
     config.root.insert("mappings", mappings);
     QVERIFY(config.validate(&error));
     QVERIFY(!QushengCommandCatalog::isExecutable(pending.value("operation").toString()));
-    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", true, &result, &error));
+    QVERIFY(!ConversionEngine(config).convert("!FAN50\\r", true, &result, &error));
     QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
     QVERIFY(result.targetFrame.isEmpty());
     QVERIFY(config.save(dir.filePath("metadata.json"), &error));
@@ -964,7 +1054,7 @@ void FrameworkTest::pendingCommandMappingsRoundTripAndRefuseExecution()
                    {"action", QJsonObject{{"kind", "constant"}, {"value", 2}}}});
     mappings.replace(1, pending); config.root.insert("mappings", mappings);
     QVERIFY2(config.validate(&error), qPrintable(error.message));
-    QVERIFY(!ConversionEngine(config).convert("!FAN50\r", true, &result, &error));
+    QVERIFY(!ConversionEngine(config).convert("!FAN50\\r", true, &result, &error));
     QCOMPARE(error.code, QStringLiteral("COMMAND_NOT_IMPLEMENTED"));
     QVERIFY(result.targetFrame.isEmpty());
 
@@ -1023,7 +1113,7 @@ void FrameworkTest::configuredDtStyleAndRoundTrip()
     QVERIFY2(ProtocolConfig::load(example("dt-preview.json"), &config, &error), qPrintable(error.message));
     ConversionEngine engine(config);
     ConversionPreview result;
-    QVERIFY2(engine.convert("/1A2000R\r", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(engine.convert("/1A2000R\\r", false, &result, &error), qPrintable(error.message));
     QCOMPARE(result.fields.value(QString::fromUtf8(u8"地址")).toLongLong(), 1LL);
     QCOMPARE(result.fields.value(QString::fromUtf8(u8"命令码")).toString(), QStringLiteral("A"));
     QCOMPARE(result.fields.value(QString::fromUtf8(u8"位置")).toLongLong(), 2000LL);
@@ -1039,7 +1129,7 @@ void FrameworkTest::configuredDtStyleAndRoundTrip()
     QVERIFY(ProtocolConfig::load(saved, &loaded, &error));
     QCOMPARE(loaded.version, config.version);
     ConversionPreview reloadedResult;
-    QVERIFY(ConversionEngine(loaded).convert("/1A2000R\r", false, &reloadedResult, &error));
+    QVERIFY(ConversionEngine(loaded).convert("/1A2000R\\r", false, &reloadedResult, &error));
     QCOMPARE(reloadedResult.command.parameters, result.command.parameters);
     QCOMPARE(reloadedResult.targetFrame, result.targetFrame);
 }
@@ -1062,7 +1152,7 @@ void FrameworkTest::configurationChangesNeedNoCppChange()
     ProtocolConfig changed;
     QVERIFY2(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &changed, &error), qPrintable(error.message));
     ConversionPreview result;
-    QVERIFY2(ConversionEngine(changed).convert("#1X2000Z\n", false, &result, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(changed).convert("#1X2000Z\\n", false, &result, &error), qPrintable(error.message));
     QCOMPARE(result.command.parameters.value("positionUm").toLongLong(), 20000LL);
     QCOMPARE(result.targetFrame, QByteArray::fromHex("aaaa020108f7001111410003e8004e2027f8"));
 }
@@ -1075,17 +1165,17 @@ void FrameworkTest::genericParserRejectsInvalidInputs()
     ConversionEngine engine(config);
     ConversionPreview result;
 
-    QVERIFY(!engine.convert("1A2000R\r", false, &result, &error));
+    QVERIFY(!engine.convert("1A2000R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FRAME_HEADER"));
     QVERIFY(!engine.convert("/1A2000R", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FRAME_FOOTER"));
-    QVERIFY(!engine.convert("/A2000R\r", false, &result, &error));
+    QVERIFY(!engine.convert("/A2000R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FIELD_NUMBER"));
-    QVERIFY(!engine.convert("/1X2000R\r", false, &result, &error));
+    QVERIFY(!engine.convert("/1X2000R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("COMMAND_UNSUPPORTED"));
-    QVERIFY(!engine.convert("/1A20x0R\r", false, &result, &error));
+    QVERIFY(!engine.convert("/1A20x0R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FIELD_NUMBER"));
-    QVERIFY(!engine.convert("/1A6001R\r", false, &result, &error));
+    QVERIFY(!engine.convert("/1A6001R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FIELD_RANGE"));
 
     QJsonObject missingHeader = config.root;
@@ -1106,7 +1196,7 @@ void FrameworkTest::genericParserRejectsInvalidInputs()
     fixedLength.insert("external", external);
     ProtocolConfig exact;
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(fixedLength).toJson(), &exact, &error));
-    QVERIFY(!ConversionEngine(exact).convert("/1A200R\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(exact).convert("/1A200R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FIELD_LENGTH"));
 }
 
@@ -1133,10 +1223,10 @@ void FrameworkTest::hexEndianAndGenericStreamFraming()
     ConversionEngine stream(ascii);
     QList<TranslationError> errors;
     QCOMPARE(stream.feed("noise/1A20", &errors).size(), 0);
-    const auto frames = stream.feed("00R\r/1A1000R\r", &errors);
+    const auto frames = stream.feed("00R\\r/1A1000R\\r", &errors);
     QCOMPARE(frames.size(), 2);
-    QCOMPARE(frames.at(0), QByteArray("/1A2000R\r"));
-    QCOMPARE(frames.at(1), QByteArray("/1A1000R\r"));
+    QCOMPARE(frames.at(0), QByteArray("/1A2000R\\r"));
+    QCOMPARE(frames.at(1), QByteArray("/1A1000R\\r"));
     stream.feed(QByteArray(4097, 'x'), &errors);
     QCOMPARE(errors.last().code, QStringLiteral("INPUT_OVERFLOW"));
 }
@@ -1150,8 +1240,8 @@ void FrameworkTest::finalQushengFrameMatchesSample()
     QVERIFY(ProtocolConfig::load(example("ascii-preview.json"), &second, &error));
     ConversionPreview a;
     ConversionPreview b;
-    QVERIFY(ConversionEngine(first).convert("/1A2000R\r", false, &a, &error));
-    QVERIFY(ConversionEngine(second).convert("!M2000\r", false, &b, &error));
+    QVERIFY(ConversionEngine(first).convert("/1A2000R\\r", false, &a, &error));
+    QVERIFY(ConversionEngine(second).convert("!M2000\\r", false, &b, &error));
     const QByteArray independentlyListedSample = QByteArray::fromHex("aaaa020108f7001111410003e8004e2027f8");
     QCOMPARE(a.targetFrame, independentlyListedSample);
     QCOMPARE(b.targetFrame, independentlyListedSample);
@@ -1327,11 +1417,13 @@ void FrameworkTest::strictConfigurationAndByteInput()
     QVERIFY(ProtocolConfig::load(example("dt-preview.json"), &config, &error));
     QByteArray bytes;
     QVERIFY(ProtocolConfig::decodeBytes("/1A2000R\\r", "ascii", &bytes, &error));
-    QCOMPARE(bytes, QByteArray("/1A2000R\r"));
-    QVERIFY(!ProtocolConfig::decodeBytes("bad\\z", "ascii", &bytes, &error));
+    QCOMPARE(bytes, QByteArray("/1A2000R\\r"));
+    QVERIFY(ProtocolConfig::decodeBytes("bad\\z", "ascii", &bytes, &error));
+    QCOMPARE(bytes, QByteArray("bad\\z"));
     QVERIFY(!ProtocolConfig::decodeBytes(QString::fromUtf8(u8"中文"), "ascii", &bytes, &error));
     QVERIFY(!ProtocolConfig::decodeBytes("0AG0", "hex", &bytes, &error));
-    QVERIFY(!ProtocolConfig::decodeBytes("\\xGG", "ascii", &bytes, &error));
+    QVERIFY(ProtocolConfig::decodeBytes("\\xGG", "ascii", &bytes, &error));
+    QCOMPARE(bytes, QByteArray("\\xGG"));
     QVERIFY(ProtocolConfig::decodeBytes("AA 55 01", "hex", &bytes, &error));
     QCOMPARE(bytes, QByteArray::fromHex("aa5501"));
     const QList<QJsonObject> badExpressions = {
@@ -1368,7 +1460,7 @@ void FrameworkTest::parameterRelationsAndRounding()
     auto run = [&](QJsonObject expr, qint64 expected) {
         ProtocolConfig config;
         if (!ProtocolConfig::fromJson(QJsonDocument(withExpression(original.root, expr)).toJson(), &config, &error)) return false;
-        if (!ConversionEngine(config).convert("/1A2000R\r", false, &result, &error)) return false;
+        if (!ConversionEngine(config).convert("/1A2000R\\r", false, &result, &error)) return false;
         return result.command.parameters.value("positionUm").toLongLong() == expected;
     };
     QVERIFY(run({{"kind", "field"}, {"field", position}}, 2000));
@@ -1381,7 +1473,7 @@ void FrameworkTest::parameterRelationsAndRounding()
     ProtocolConfig fractions;
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(withExpression(original.root,
         {{"kind", "linear"}, {"field", position}, {"numerator", 1}, {"denominator", 3}, {"round", "exact"}})).toJson(), &fractions, &error));
-    QVERIFY(!ConversionEngine(fractions).convert("/1A2000R\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(fractions).convert("/1A2000R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("CONVERSION_FRACTION"));
     QVERIFY(result.targetFrame.isEmpty());
 }
@@ -1402,21 +1494,21 @@ void FrameworkTest::signedFixedFieldsAndOverflow()
     ProtocolConfig signedConfig;
     QVERIFY2(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &signedConfig, &error), qPrintable(error.message));
     ConversionPreview result;
-    QVERIFY(ConversionEngine(signedConfig).convert("/1A!-2000R\r", false, &result, &error));
+    QVERIFY(ConversionEngine(signedConfig).convert("/1A!-2000R\\r", false, &result, &error));
     QCOMPARE(result.command.parameters.value("positionUm").toLongLong(), 20000LL);
-    QVERIFY(!ConversionEngine(signedConfig).convert("/1A?-2000R\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(signedConfig).convert("/1A?-2000R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("FIELD_CONSTANT"));
     QVERIFY(result.targetFrame.isEmpty());
     // 无符号十进制禁止空白、符号、小数与超出 64 位的值。
     for (const QByteArray &value : {QByteArray("+2"), QByteArray(" 2"), QByteArray("-2"), QByteArray("2.0"), QByteArray("2\n"), QByteArray("2\r"), QByteArray("999999999999999999999")}) {
-        QVERIFY(!ConversionEngine(original).convert("/1A" + value + "R\r", false, &result, &error));
+        QVERIFY(!ConversionEngine(original).convert("/1A" + value + "R\\r", false, &result, &error));
         QVERIFY(result.targetFrame.isEmpty());
     }
     last.remove("min"); last.remove("max"); fields.replace(3, last);
     external.insert("fields", fields); root.insert("external", external);
     root = withExpression(root, {{"kind", "linear"}, {"field", QString::fromUtf8(u8"位置")}, {"numerator", 1000000000}, {"denominator", 1}, {"round", "exact"}});
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &signedConfig, &error));
-    QVERIFY(!ConversionEngine(signedConfig).convert("/1A!9223372036854775807R\r", false, &result, &error));
+    QVERIFY(!ConversionEngine(signedConfig).convert("/1A!9223372036854775807R\\r", false, &result, &error));
     QCOMPARE(error.code, QStringLiteral("CONVERSION_OVERFLOW"));
 }
 
@@ -1484,17 +1576,17 @@ void FrameworkTest::simpleCommandExamples_data()
     QTest::addColumn<QString>("policy");
     QTest::addColumn<int>("wireCommand");
     QTest::addColumn<QByteArray>("payload");
-    QTest::newRow("absolute-ack") << QByteArray("/1A2000R\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
-    QTest::newRow("absolute-lowercase") << QByteArray("/1a2000R\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
-    QTest::newRow("relative-forward-ack") << QByteArray("/1P500R\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
-    QTest::newRow("relative-forward-lowercase") << QByteArray("/1p500R\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
-    QTest::newRow("relative-backward-ack") << QByteArray("/1D500R\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
-    QTest::newRow("relative-backward-lowercase") << QByteArray("/1d500R\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
-    QTest::newRow("position") << QByteArray("/1?R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("position-alias") << QByteArray("/1?0R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("pulse-position") << QByteArray("/1?4R\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
-    QTest::newRow("version") << QByteArray("/1&R\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
-    QTest::newRow("version-alias") << QByteArray("/1?23R\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
+    QTest::newRow("absolute-ack") << QByteArray("/1A2000R\\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
+    QTest::newRow("absolute-lowercase") << QByteArray("/1a2000R\\r") << QString("MOTOR_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11410003e80007d0");
+    QTest::newRow("relative-forward-ack") << QByteArray("/1P500R\\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
+    QTest::newRow("relative-forward-lowercase") << QByteArray("/1p500R\\r") << QString("RELATIVE_FORWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11210003e80001f4");
+    QTest::newRow("relative-backward-ack") << QByteArray("/1D500R\\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
+    QTest::newRow("relative-backward-lowercase") << QByteArray("/1d500R\\r") << QString("RELATIVE_BACKWARD") << QString("ack") << 0x11 << QByteArray::fromHex("11230003e80001f4");
+    QTest::newRow("position") << QByteArray("/1?R\\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("position-alias") << QByteArray("/1?0R\\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("pulse-position") << QByteArray("/1?4R\\r") << QString("QUERY_MOTOR") << QString("ack") << 0x12 << QByteArray::fromHex("11");
+    QTest::newRow("version") << QByteArray("/1&R\\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
+    QTest::newRow("version-alias") << QByteArray("/1?23R\\r") << QString("QUERY_DEVICE_INFO") << QString("ack") << 0x04 << QByteArray::fromHex("0000");
 }
 
 void FrameworkTest::simpleCommandExamples()
@@ -1524,21 +1616,21 @@ void FrameworkTest::mappedInputFormatsAndRoundTrip()
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
     ConversionEngine engine(config);
-    for (const QByteArray &bad : {QByteArray("/1A2000\r"), QByteArray("/1?23\r"), QByteArray("/1?01R\r"), QByteArray("/1AR\r"),
-                                 QByteArray("/1A2xR\r"), QByteArray("/1A6001R\r"), QByteArray("/1A500P20R\r"),
-                                 QByteArray("/1#\r"), QByteArray("/1?20\r"), QByteArray("/1QR\r"), QByteArray("1A2000R\r")}) {
+    for (const QByteArray &bad : {QByteArray("/1A2000\\r"), QByteArray("/1?23\\r"), QByteArray("/1?01R\\r"), QByteArray("/1AR\\r"),
+                                 QByteArray("/1A2xR\\r"), QByteArray("/1A6001R\\r"), QByteArray("/1A500P20R\\r"),
+                                 QByteArray("/1#\\r"), QByteArray("/1?20\\r"), QByteArray("/1QR\\r"), QByteArray("1A2000R\\r")}) {
         QVERIFY2(!engine.convert(bad, false, &preview, &error), bad.constData()); QVERIFY(preview.targetFrame.isEmpty());
     }
     QList<TranslationError> errors;
     QVERIFY(engine.feed("noise/1?", &errors).isEmpty());
-    const auto frames = engine.feed("23R\r/1A2000R\r/1?4R\r", &errors);
-    QCOMPARE(frames.size(), 3); QVERIFY(errors.isEmpty()); QCOMPARE(frames.at(0), QByteArray("/1?23R\r"));
+    const auto frames = engine.feed("23R\\r/1A2000R\\r/1?4R\\r", &errors);
+    QCOMPARE(frames.size(), 3); QVERIFY(errors.isEmpty()); QCOMPARE(frames.at(0), QByteArray("/1?23R\\r"));
     QTemporaryDir directory; const QString saved = directory.filePath("commands.json");
     QVERIFY(config.save(saved, &error)); ProtocolConfig reloaded; QVERIFY(ProtocolConfig::load(saved, &reloaded, &error));
     QCOMPARE(config.version, reloaded.version);
     ConversionPreview second;
-    QVERIFY(engine.convert("/1P500R\r", false, &preview, &error));
-    QVERIFY(ConversionEngine(reloaded).convert("/1P500R\r", false, &second, &error));
+    QVERIFY(engine.convert("/1P500R\\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(reloaded).convert("/1P500R\\r", false, &second, &error));
     QCOMPARE(preview.targetFrame, second.targetFrame);
     // 将客户命令换成任意多字符值并更改共用帧尾，通用解析器不需要客户专用分支。
     QJsonObject root = config.root, external = root.value("external").toObject();
@@ -1548,9 +1640,9 @@ void FrameworkTest::mappedInputFormatsAndRoundTrip()
     QJsonObject query = mappings.at(10).toObject(); query.insert("commandCode", "VERSION");
     mappings.replace(10, query);
     root.insert("mappings", mappings); QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("!1MOVE2000;\n", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!1MOVE2000;\\n", false, &preview, &error));
     QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 2000);
-    QVERIFY(ConversionEngine(config).convert("!1VERSION;\n", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!1VERSION;\\n", false, &preview, &error));
     QCOMPARE(preview.command.operation, QString("QUERY_DEVICE_INFO"));
 }
 
@@ -1606,7 +1698,7 @@ void FrameworkTest::relativeMoveChecksPositionBeforeSending()
 {
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
-    for (const QByteArray &input : {QByteArray("/1p500R\r"), QByteArray("/1d500R\r")}) {
+    for (const QByteArray &input : {QByteArray("/1p500R\\r"), QByteArray("/1d500R\\r")}) {
         QVERIFY(ConversionEngine(config).convert(input, false, &preview, &error));
         QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
         UnifiedResult result; int completed = 0;
@@ -1627,7 +1719,7 @@ void FrameworkTest::relativeMoveRejectsUnsafeStartAndTimeout()
 {
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("dt-simple-commands.json"), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("/1D2000R\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("/1D2000R\\r", false, &preview, &error));
     for (int scenario = 0; scenario < 4; ++scenario) {
         QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport;
         RequestManager manager(&codec, &transport); manager.setTimeouts(50, 30);
@@ -1652,7 +1744,7 @@ void FrameworkTest::sharedFooterAndLegacyResponse()
     QVERIFY(!mapping.contains("responsePolicy"));
     mapping.insert("responsePolicy", "complete"); mappings[0] = mapping; root.insert("mappings", mappings);
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
     QCOMPARE(preview.command.responsePolicy, QString("ack"));
     // 即使旧覆盖与共用帧尾相同，也不再作为第二个编辑入口接纳。
     for (const QString &footer : {QStringLiteral("R\\r"), QStringLiteral("\\r")}) {
@@ -1663,11 +1755,11 @@ void FrameworkTest::sharedFooterAndLegacyResponse()
         QCOMPARE(error.code, QString("CONFIG_MAPPING_INPUT"));
     }
     QVERIFY(ProtocolConfig::load(example("dt-query-preview.json"), &config, &error));
-    for (const QByteArray &input : {QByteArray("/1?\r"), QByteArray("/1?4\r"), QByteArray("/1?23\r")}) {
+    for (const QByteArray &input : {QByteArray("/1?\\r"), QByteArray("/1?4\\r"), QByteArray("/1?23\\r")}) {
         QVERIFY(ConversionEngine(config).convert(input, false, &preview, &error));
         QVERIFY(!preview.targetFrame.isEmpty());
     }
-    QVERIFY(!ConversionEngine(config).convert("/1?R\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("/1?R\\r", false, &preview, &error));
     QTemporaryDir directory; QVERIFY(config.save(directory.filePath("queries.json"), &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("queries.json"), &restored, &error));
     QCOMPARE(config.version, restored.version);
@@ -1678,9 +1770,9 @@ void FrameworkTest::sdkSimpleControlsFromConfig()
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY2(ProtocolConfig::load(example("sdk-simple-controls.json"), &config, &error), qPrintable(error.message));
     const QList<QPair<QByteArray, QByteArray>> samples = {
-        {"/1FAN50R\r", QByteArray::fromHex("e132")}, {"/1VAL1000R\r", QByteArray::fromHex("32000003e8")},
-        {"/1DAC1000R\r", QByteArray::fromHex("710003e8")}, {"/1DC-30R\r", QByteArray::fromHex("21e2")},
-        {"/1ADCR\r", QByteArray::fromHex("62")}, {"/1DIR\r", QByteArray()}, {"/1STATR\r", QByteArray()}
+        {"/1FAN50R\\r", QByteArray::fromHex("e132")}, {"/1VAL1000R\\r", QByteArray::fromHex("32000003e8")},
+        {"/1DAC1000R\\r", QByteArray::fromHex("710003e8")}, {"/1DC-30R\\r", QByteArray::fromHex("21e2")},
+        {"/1ADCR\\r", QByteArray::fromHex("62")}, {"/1DIR\\r", QByteArray()}, {"/1STATR\\r", QByteArray()}
     };
     for (const auto &sample : samples) {
         QVERIFY2(ConversionEngine(config).convert(sample.first, false, &preview, &error), qPrintable(error.message));
@@ -1699,15 +1791,15 @@ void FrameworkTest::sdkSimpleControlsFromConfig()
     parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", 226}}); fan.insert("parameters", parameters);
     fan.insert("commandCode", "CHANGE"); mappings[0] = fan; root.insert("mappings", mappings);
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("/1CHANGE25R\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("/1CHANGE25R\\r", false, &preview, &error));
     QCOMPARE(preview.targetFrame.mid(8, 2), QByteArray::fromHex("e219"));
-    for (const QByteArray &bad : {QByteArray("/1CHANGE101R\r"), QByteArray("/1DC-129R\r"), QByteArray("/1DAC16777215R\r")}) {
+    for (const QByteArray &bad : {QByteArray("/1CHANGE101R\\r"), QByteArray("/1DC-129R\\r"), QByteArray("/1DAC16777215R\\r")}) {
         QVERIFY(!ConversionEngine(config).convert(bad, false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
     }
     QTemporaryDir directory; QVERIFY(config.save(directory.filePath("sdk.json"), &error));
     ProtocolConfig restored; QVERIFY(ProtocolConfig::load(directory.filePath("sdk.json"), &restored, &error));
     QCOMPARE(restored.root, config.root); QCOMPARE(restored.version, config.version);
-    QVERIFY(ConversionEngine(restored).convert("/1CHANGE25R\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(restored).convert("/1CHANGE25R\\r", false, &preview, &error));
     QCOMPARE(preview.targetFrame.mid(8, 2), QByteArray::fromHex("e219"));
     root.insert("sdkDefaults", QJsonObject{{"QUSHENG_81", QJsonObject{{"percent", 101}}}});
     QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error)); QCOMPARE(error.code, QString("CONFIG_SDK_DEFAULT"));
@@ -1720,7 +1812,7 @@ void FrameworkTest::sdkSimpleControlsFromConfig()
     root = config.root;
     root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"devId", 18}, {"speedUmPerS", 2000}}}});
     QVERIFY(ProtocolConfig::fromJson(QJsonDocument(root).toJson(), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
     QCOMPARE(preview.targetFrame.mid(8, 8), QByteArray::fromHex("12410007d00007d0"));
     root.insert("sdkDefaults", QJsonObject{{"MOTOR_FORWARD", QJsonObject{{"action", 2}}}});
     QVERIFY(!ProtocolConfig::fromJson(QJsonDocument(root).toJson(), nullptr, &error));
@@ -1807,7 +1899,7 @@ void FrameworkTest::mappingSourcesRespectChangedFormat()
         QVERIFY(error.message.contains(QString::fromUtf8(u8"位置")));
         if (change == "ascii" || change == "fixed") QVERIFY(error.message.contains(QString::fromUtf8(u8"整数参数字段")));
         ConversionPreview preview;
-        QVERIFY(!ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
+        QVERIFY(!ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error)); QVERIFY(preview.targetFrame.isEmpty());
     }
     // 删除原来源不会破坏固定数值映射；后者并不依赖任何客户数值字段。
     QJsonObject external = original.root.value("external").toObject();
@@ -1816,7 +1908,7 @@ void FrameworkTest::mappingSourcesRespectChangedFormat()
     mapping.insert("parameters", QJsonObject{{"positionUm", QJsonObject{{"kind", "constant"}, {"value", 2000}}}});
     original.root.insert("mappings", QJsonArray{mapping});
     QVERIFY2(original.validate(&error), qPrintable(error.message));
-    ConversionPreview preview; QVERIFY(ConversionEngine(original).convert("/1AR\r", false, &preview, &error));
+    ConversionPreview preview; QVERIFY(ConversionEngine(original).convert("/1AR\\r", false, &preview, &error));
     QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 2000);
 }
 
@@ -1866,7 +1958,7 @@ void FrameworkTest::fixedMotorActionTemplates()
         device.insert("speedUmPerS", 1234); device.remove("absoluteAction"); config.root.insert("device", device);
         QVERIFY2(config.validate(&error), qPrintable(error.message));
         ConversionPreview preview;
-        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
         const bool movement = operation == "MOTOR_FORWARD" || operation == "MOTOR_BACKWARD";
         if (movement) {
             QCOMPARE(preview.command.parameters.value("positionUm").toInt(), 20000);
@@ -1876,12 +1968,12 @@ void FrameworkTest::fixedMotorActionTemplates()
             const QByteArray before = preview.targetFrame;
             // 设备中的旧方向与直接构造的统一命令都不能改写新模板固定动作。
             device.insert("absoluteAction", operation == "MOTOR_FORWARD" ? 3 : 1); config.root.insert("device", device);
-            QVERIFY(ConversionEngine(config).convert("/1A2000R\r", true, &preview, &error)); QCOMPARE(preview.targetFrame, before);
+            QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", true, &preview, &error)); QCOMPARE(preview.targetFrame, before);
             UnifiedCommand forged = preview.command; forged.parameters.insert("absoluteAction", 2);
             QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
             QVERIFY(codec.encodeCommand(forged, &frame, &error)); QCOMPARE(frame, before);
             device.insert("maxPositionUm", 19999); config.root.insert("device", device);
-            QVERIFY(!ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+            QVERIFY(!ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
             QCOMPARE(error.code, QString("POSITION_LIMIT")); QVERIFY(preview.targetFrame.isEmpty());
             device.insert("maxPositionUm", 50000); config.root.insert("device", device);
         } else {
@@ -1894,7 +1986,7 @@ void FrameworkTest::fixedMotorActionTemplates()
             QVERIFY(codec.encodeCommand(forged, &frame, &error)); QCOMPARE(frame, preview.targetFrame);
             QJsonObject preset{{"devId", 18}, {"speedUmPerS", 2000}};
             config.root.insert("sdkDefaults", QJsonObject{{operation, preset}});
-            QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+            QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
             QCOMPARE(preview.targetFrame.mid(8, 8), QByteArray::fromHex(operation == "MOTOR_STOP" ? "12420007d0000000" : "12440007d0000000"));
             preset.insert("action", 1); config.root.insert("sdkDefaults", QJsonObject{{operation, preset}});
             QVERIFY(!config.validate(&error)); config.root.remove("sdkDefaults");
@@ -1902,7 +1994,7 @@ void FrameworkTest::fixedMotorActionTemplates()
         QVERIFY(config.save(directory.filePath("actions.json"), &error));
         ProtocolConfig loaded; QVERIFY(ProtocolConfig::load(directory.filePath("actions.json"), &loaded, &error));
         QCOMPARE(loaded.root, config.root);
-        QVERIFY(ConversionEngine(loaded).convert("/1A2000R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(loaded).convert("/1A2000R\\r", false, &preview, &error));
         QJsonObject parameters = mapping.value("parameters").toObject();
         parameters.insert("mode", QJsonObject{{"kind", "constant"}, {"value", 1}});
         mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
@@ -1913,11 +2005,11 @@ void FrameworkTest::fixedMotorActionTemplates()
 
     ProtocolConfig sample; QVERIFY(ProtocolConfig::load(example("motor-actions.json"), &sample, &error));
     ConversionPreview result;
-    QVERIFY(ConversionEngine(sample).convert("!F2000\r", false, &result, &error));
+    QVERIFY(ConversionEngine(sample).convert("!F2000\\r", false, &result, &error));
     QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11410003e80007d0"));
-    QVERIFY(ConversionEngine(sample).convert("!B500\r", false, &result, &error));
+    QVERIFY(ConversionEngine(sample).convert("!B500\\r", false, &result, &error));
     QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex("11430003e80001f4"));
-    for (const QByteArray &input : {QByteArray("!S\r"), QByteArray("!H\r")}) {
+    for (const QByteArray &input : {QByteArray("!S\\r"), QByteArray("!H\\r")}) {
         QVERIFY(ConversionEngine(sample).convert(input, true, &result, &error));
         QCOMPARE(result.targetFrame.mid(8, 8), QByteArray::fromHex(input.at(1) == 'S' ? "11420003e8000000" : "11440003e8000000"));
     }
@@ -2227,7 +2319,7 @@ void FrameworkTest::perMappingMotorSelection()
         config.root.insert("sdkDefaults", QJsonObject{{operation, QJsonObject{{"devId", 0x12}}}});
         QVERIFY2(config.validate(&error), qPrintable(error.message));
         ConversionPreview preview;
-        QVERIFY2(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error), qPrintable(error.message));
+        QVERIFY2(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error), qPrintable(error.message));
         QCOMPARE(preview.command.targetDevice, QString("22"));
         QCOMPARE(quint8(preview.targetFrame.at(8)), quint8(0x16));
         UnifiedCommand snapshot = preview.command;
@@ -2236,15 +2328,15 @@ void FrameworkTest::perMappingMotorSelection()
         QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
         QVERIFY(codec.encodeCommand(snapshot, &frame, &error));
         QCOMPARE(quint8(frame.at(8)), quint8(0x16));
-        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
         QCOMPARE(preview.command.targetDevice, QString("19"));
         // Omitted selection retains operation presets, then device defaults.
         parameters.remove("devId"); mapping.insert("parameters", parameters);
         config.root.insert("mappings", QJsonArray{mapping});
-        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
         QCOMPARE(preview.command.targetDevice, QString("18"));
         config.root.remove("sdkDefaults");
-        QVERIFY(ConversionEngine(config).convert("/1A2000R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A2000R\\r", false, &preview, &error));
         QCOMPARE(preview.command.targetDevice, QString("17"));
         for (int invalid : {0x10, 0x1d}) {
             parameters.insert("devId", QJsonObject{{"kind", "constant"}, {"value", invalid}});
@@ -2255,9 +2347,9 @@ void FrameworkTest::perMappingMotorSelection()
         parameters.insert("devId", QJsonObject{{"kind", "field"}, {"field", QString::fromUtf8(u8"位置")}});
         mapping.insert("parameters", parameters); config.root.insert("mappings", QJsonArray{mapping});
         QVERIFY2(config.validate(&error), qPrintable(error.message));
-        QVERIFY(ConversionEngine(config).convert("/1A22R\r", false, &preview, &error));
+        QVERIFY(ConversionEngine(config).convert("/1A22R\\r", false, &preview, &error));
         QCOMPARE(preview.command.targetDevice, QString("22"));
-        QVERIFY(!ConversionEngine(config).convert("/1A23R\r", false, &preview, &error));
+        QVERIFY(!ConversionEngine(config).convert("/1A23R\\r", false, &preview, &error));
         QVERIFY(preview.targetFrame.isEmpty());
     }
 }
@@ -2275,7 +2367,7 @@ void FrameworkTest::mappedMotorRelativePreflight()
         mapping.insert("parameters", parameters); mappings[i] = mapping;
     }
     config.root.insert("mappings", mappings);
-    QVERIFY2(ConversionEngine(config).convert("/1p500R\r", false, &preview, &error), qPrintable(error.message));
+    QVERIFY2(ConversionEngine(config).convert("/1p500R\\r", false, &preview, &error), qPrintable(error.message));
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
     preview.command.requestId = 1; manager.enqueue(preview.command);
     codec.setAddresses(9, 8); // A later configuration cannot change the queued preflight or motion addresses.
@@ -2294,17 +2386,17 @@ void FrameworkTest::xyzModuleMappingAndSnapshots()
 {
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY2(ProtocolConfig::load(example("xyz-module-and-motors.json"), &config, &error), qPrintable(error.message));
-    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\\r", false, &preview, &error));
     QCOMPARE(preview.targetFrame.mid(8, 20), QByteArray::fromHex("0123123456000000010203001234001234001234"));
     QCOMPARE(preview.command.targetDevice, QString("xyz:35"));
     const UnifiedCommand snapshot = preview.command;
     config.root.insert("sdkDefaults", QJsonObject{{"QUSHENG_C1", QJsonObject{{"xSpeed", 99}}}});
-    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!XYZ1193046\\r", false, &preview, &error));
     QCOMPARE(preview.command.parameters.value("xSpeed").toInt(), 99);
     QushengProtocol codec; codec.setAddresses(2, 1); QByteArray frame;
     QVERIFY(codec.encodeCommand(snapshot, &frame, &error));
     QCOMPARE(frame.mid(8, 20), QByteArray::fromHex("0123123456000000010203001234001234001234"));
-    QVERIFY(ConversionEngine(config).convert("!ALL255\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!ALL255\\r", false, &preview, &error));
     QCOMPARE(preview.command.targetDevice, QString("xyz:36"));
     for (const QString &key : {QString("xPosition"), QString("yPosition"), QString("zPosition")})
         QCOMPARE(preview.command.parameters.value(key).toInt(), 255);
@@ -2330,17 +2422,17 @@ void FrameworkTest::xyzModuleMappingAndSnapshots()
         QVERIFY(!config.validate(&error)); QCOMPARE(error.code, QString("CONFIG_PARAMETER"));
     }
     config = restored;
-    QVERIFY(!ConversionEngine(config).convert("!XYZ8388608\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("!XYZ8388608\\r", false, &preview, &error));
     QVERIFY(preview.targetFrame.isEmpty());
-    QVERIFY(!ConversionEngine(config).convert("!XYZ1.5\r", false, &preview, &error));
-    QVERIFY(!ConversionEngine(config).convert("!XYZ-1\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("!XYZ1.5\\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("!XYZ-1\\r", false, &preview, &error));
 }
 
 void FrameworkTest::xyzModuleLifecycleAndMotorIsolation()
 {
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY(ProtocolConfig::load(example("xyz-module-and-motors.json"), &config, &error));
-    QVERIFY(ConversionEngine(config).convert("!XYZ1000\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convert("!XYZ1000\\r", false, &preview, &error));
     UnifiedCommand xyz = preview.command; xyz.parameters.insert("moduleIndex", 17); xyz.targetDevice = "xyz:17"; xyz.requestId = 1;
     QushengProtocol codec; codec.setAddresses(2, 1); FakeTransport transport; RequestManager manager(&codec, &transport);
     manager.setTimeouts(1000, 2000);
@@ -2390,15 +2482,15 @@ void FrameworkTest::groupedConversionAndSchema()
 {
     ProtocolConfig config; TranslationError error; ConversionPreview preview;
     QVERIFY2(ProtocolConfig::load(example("one-to-many-mappings.json"), &config, &error), qPrintable(error.message));
-    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error));
+    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\\r", false, &preview, &error));
     QCOMPARE(preview.steps.size(), 3); QVERIFY(preview.targetFrame.isEmpty()); QVERIFY(preview.command.operation.isEmpty());
     QCOMPARE(quint8(preview.steps[0].targetFrame[6]), quint8(0)); QCOMPARE(quint8(preview.steps[1].targetFrame[6]), quint8(1));
     QCOMPARE(preview.steps[0].targetFrame.mid(8, 8), preview.steps[2].targetFrame.mid(8, 8));
     QCOMPARE(preview.steps[1].targetFrame.mid(8, 11), QByteArray::fromHex("012300001400001e000028"));
     QCOMPARE(preview.steps[0].command.destinationAddress, quint8(2));
-    QVERIFY(!ConversionEngine(config).convert("!TRIPLE=20,30,40\r", false, &preview, &error));
+    QVERIFY(!ConversionEngine(config).convert("!TRIPLE=20,30,40\\r", false, &preview, &error));
     QCOMPARE(error.code, QString("MULTI_STEP_REQUIRES_BATCH")); QVERIFY(preview.steps.isEmpty());
-    QVERIFY(ConversionEngine(config).convert("!ONE=50\r", false, &preview, &error)); QCOMPARE(preview.steps.size(), 1);
+    QVERIFY(ConversionEngine(config).convert("!ONE=50\\r", false, &preview, &error)); QCOMPARE(preview.steps.size(), 1);
     const auto original = config;
     for (int kind = 0; kind < 8; ++kind) {
         config = original; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject(); auto steps = mapping.value("steps").toArray();
@@ -2415,13 +2507,13 @@ void FrameworkTest::groupedConversionAndSchema()
             steps[1] = step;
         }
         mapping.insert("steps", steps); mappings[0] = mapping; config.root.insert("mappings", mappings);
-        QVERIFY(!ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.fields.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
+        QVERIFY(!ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\\r", false, &preview, &error)); QVERIFY(preview.steps.isEmpty()); QVERIFY(preview.fields.isEmpty()); QVERIFY(preview.targetFrame.isEmpty());
     }
     config = original; auto mappings = config.root.value("mappings").toArray(); auto mapping = mappings[0].toObject(); auto steps = mapping.value("steps").toArray();
     auto step = steps[0].toObject(); auto parameters = step.value("parameters").toObject();
     parameters.insert("positionUm", QJsonObject{{"kind", "linear"}, {"field", "values"}, {"itemIndex", 2}, {"numerator", 3}, {"denominator", 2}, {"offset", 1}, {"round", "floor"}, {"extension", "keep"}});
     step.insert("parameters", parameters); step.insert("stepExtension", "retained"); steps[0] = step; mapping.insert("steps", steps); mappings[0] = mapping; config.root.insert("mappings", mappings);
-    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\r", false, &preview, &error)); QCOMPARE(preview.steps[0].command.parameters.value("positionUm").toInt(), 46);
+    QVERIFY(ConversionEngine(config).convertBatch("!TRIPLE=20,30,40\\r", false, &preview, &error)); QCOMPARE(preview.steps[0].command.parameters.value("positionUm").toInt(), 46);
     QTemporaryDir dir; QVERIFY(config.save(dir.filePath("group.json"), &error)); ProtocolConfig restored;
     QVERIFY(ProtocolConfig::load(dir.filePath("group.json"), &restored, &error)); QCOMPARE(restored.root, config.root);
 }

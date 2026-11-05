@@ -22,7 +22,7 @@ public:
     bool hasMappedCommand() const;
     // 顺序格式始终完整读取；仅 mappedCommand 兼容按映射省略字段的旧短帧。
     QJsonObject inputFormat(const QJsonObject &mapping) const;
-    // 界面和解析器共用严格的字节入口，避免同一转义在配置与输入框中被不同解释。
+    // 界面和解析器共用字节入口：ASCII 逐字保留，HEX 严格解码，不执行二次转义。
     static bool decodeBytes(const QString &text, const QString &encoding,
                             QByteArray *bytes, TranslationError *error);
 };

@@ -21,7 +21,7 @@ bool fail(TranslationError *error, const QString &code, const QString &message)
 QByteArray configuredBytes(const QJsonObject &external, const char *name)
 {
     QByteArray bytes;
-    // 这里只接收已校验配置，配置边界和界面输入共用一套严格转义规则。
+    // 这里只接收已校验配置；配置边界和界面输入共用原样 ASCII / HEX 字节规则。
     ProtocolConfig::decodeBytes(external.value(QLatin1String(name)).toString(),
                                 external.value("encoding").toString(), &bytes, nullptr);
     return bytes;
@@ -614,7 +614,7 @@ QList<QByteArray> ConversionEngine::feed(const QByteArray &chunk, QList<Translat
             } else fixedPayloadLength += field.value("length").toInt();
         }
         // 全部固定长度时按配置长度定位帧尾，HEX 参数中的同值字节不能被当成结束符。
-        // 读取到帧尾则从固定字段之后搜索；此模式要求尾字段不含未转义的完整帧尾。
+        // 读取到帧尾则从固定字段之后搜索；此模式要求尾字段不含完整帧尾。
         const int end = hasTailField ? m_buffer.indexOf(footer, header.size() + (hasDelimitedField ? 0 : fixedPayloadLength))
                                     : header.size() + fixedPayloadLength;
         if (end < 0 || m_buffer.size() < end + footer.size()) break;

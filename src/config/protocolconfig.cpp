@@ -93,29 +93,13 @@ bool ProtocolConfig::decodeBytes(const QString &text, const QString &encoding,
     }
     if (encoding != "ascii")
         return fail(error, "INPUT_ENCODING", QString::fromUtf8(u8"输入编码未配置为 ASCII 或 HEX"));
-    // 转义错误不能悄悄丢弃反斜杠或把中文替换成问号，否则预览与客户实际字节会不一致。
-    for (int i = 0; i < text.size(); ++i) {
-        const QChar ch = text.at(i);
+    // ASCII 文本逐字保留。反斜杠只是普通字符，不再执行第二次转义。
+    // JSON 自身的转义已经由 QJsonDocument 处理；真实控制字符也原样保留。
+    for (const QChar ch : text) {
         if (ch.unicode() > 127)
             return fail(error, "INPUT_ASCII", QString::fromUtf8(u8"ASCII 输入只能包含 ASCII 字符"));
-        if (ch != '\\') { bytes->append(ch.toLatin1()); continue; }
-        if (++i == text.size())
-            return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"反斜杠后缺少转义字符"));
-        const QChar next = text.at(i);
-        if (next == 'r') bytes->append('\r');
-        else if (next == 'n') bytes->append('\n');
-        else if (next == 't') bytes->append('\t');
-        else if (next == '\\') bytes->append('\\');
-        else if (next == 'x' && i + 2 < text.size()) {
-            const QString digits = text.mid(i + 1, 2);
-            if (!validHex(digits))
-                return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"\\x 后必须有两个十六进制字符"));
-            const int value = digits.toInt(nullptr, 16);
-            if (value > 127)
-                return fail(error, "INPUT_ASCII", QString::fromUtf8(u8"超过 ASCII 范围的字节请使用 HEX 编码"));
-            bytes->append(char(value)); i += 2;
-        } else return fail(error, "INPUT_ESCAPE", QString::fromUtf8(u8"不支持的转义；可用 \\r、\\n、\\t、\\xNN 或双反斜杠"));
     }
+    *bytes = text.toLatin1();
     return true;
 }
 
@@ -486,8 +470,8 @@ bool ProtocolConfig::validate(TranslationError *error) const
         if (code.size() > 128) return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"客户命令码超过 128 字符"));
         if (encoding == "ascii") {
             for (QChar ch : code)
-                if (ch.unicode() < 0x21 || ch.unicode() > 0x7e || ch == '\\')
-                    return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"ASCII 客户命令码需为可见字符，不能含空格、控制符或转义"));
+                if (ch.unicode() < 0x21 || ch.unicode() > 0x7e)
+                    return fail(error, "CONFIG_MAPPING", QString::fromUtf8(u8"ASCII 客户命令码需为可见字符，不能含空格或控制符"));
         }
         // 帧尾属于整份客户协议格式，不能让不可见的旧映射覆盖分帧边界。
         if (input.contains("footer"))
