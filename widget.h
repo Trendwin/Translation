@@ -28,6 +28,7 @@ class UpstreamSerialReceiver;
 class VirtualComProvider;
 class RequestManager;
 class TranslationService;
+class UpstreamForwarder;
 
 class Widget : public QWidget
 {
@@ -62,6 +63,7 @@ private:
     void refreshPorts();
     void updateUpstreamCounters();
     void refreshUpstreamConfig();
+    void updateUpstreamForwardState();
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();
     void preview(bool live);
@@ -121,6 +123,7 @@ private:
     quint64 m_upstreamBytes = 0, m_upstreamFramesCount = 0, m_upstreamErrors = 0;
     RequestManager *m_requests = nullptr;
     TranslationService *m_service = nullptr;
+    UpstreamForwarder *m_upstreamForwarder = nullptr;
 
     DraftStore m_draftStore;
 
@@ -200,6 +203,7 @@ private:
     QLabel *m_providedPort = nullptr;
     QPushButton *m_virtualComAction = nullptr;
     QLabel *m_upstreamState = nullptr;
+    QLabel *m_upstreamForwardState = nullptr;
     QLabel *m_upstreamCounters = nullptr;
     QPlainTextEdit *m_upstreamRaw = nullptr;
     QPlainTextEdit *m_upstreamFrames = nullptr;

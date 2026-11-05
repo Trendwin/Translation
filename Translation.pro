@@ -22,6 +22,7 @@ SOURCES += \
     widget.cpp \
     src/core/requestmanager.cpp \
     src/core/translationservice.cpp \
+    src/core/upstreamforwarder.cpp \
     src/core/conversionengine.cpp \
     src/config/protocolconfig.cpp \
     src/config/draftstore.cpp \
@@ -40,6 +41,7 @@ HEADERS += \
     src/transport/itransport.h \
     src/core/requestmanager.h \
     src/core/translationservice.h \
+    src/core/upstreamforwarder.h \
     src/core/conversionengine.h \
     src/config/protocolconfig.h \
     src/qusheng/qushengprotocol.h \

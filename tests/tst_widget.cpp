@@ -37,6 +37,7 @@
 #include "transport/upstreamserialreceiver.h"
 #include "transport/virtualcomprovider.h"
 #include "core/translationservice.h"
+#include "core/upstreamforwarder.h"
 #include "core/requestmanager.h"
 #include "qusheng/qushengprotocol.h"
 
@@ -51,7 +52,8 @@ class WidgetTest : public QObject
     Q_OBJECT
 private slots:
     void providedVirtualPortLifecycle();
-    void upstreamUsesSavedFormatAndNeverSends();
+    void upstreamUsesSavedFormatAndRejectsDisconnected();
+    void upstreamAutomaticForwardingStatusAndDisconnectedInput();
     void asciiLiteralInputAndReceiveRoundTrip();
     void asciiControlCharactersStayDistinctInPreview();
     void xyzFormulaEditorLifecycle();
@@ -637,7 +639,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     const int split = 12;
     receiver->feedBytes(frame.left(split));
-    QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"接收中"));
+    QVERIFY(widget.findChild<QLabel *>("upstreamState")->text().contains(QString::fromUtf8(u8"下游串口未连接")));
     QVERIFY(raw->toPlainText().contains(QString::fromLatin1(frame.left(split))));
     QVERIFY(frames->toPlainText().isEmpty());
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 0 · 错误 0").arg(split));
@@ -647,7 +649,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     QVERIFY(!raw->toPlainText().contains("[LF]"));
     QVERIFY(frames->toPlainText().contains("RST"));
     QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"实际项数")));
-    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 0").arg(frame.size()));
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 1").arg(frame.size()));
 
     const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
     if (!render.isEmpty()) {
@@ -678,7 +680,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
 }
 
-void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
+void WidgetTest::upstreamUsesSavedFormatAndRejectsDisconnected()
 {
     Widget widget(nullptr, freshDraftPath());
     applyRoot(widget, upstreamReceiveExample());
@@ -686,6 +688,8 @@ void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
     auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
     auto *transport = widget.findChild<SerialTransport *>();
     auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *forwarder = widget.findChild<UpstreamForwarder *>(); QVERIFY(forwarder);
+    QSignalSpy rejected(forwarder, &UpstreamForwarder::rejected);
     QSignalSpy sent(transport, &ITransport::sendFinished);
     const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     const int split = 10;
@@ -694,6 +698,9 @@ void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
     button(widget, "saveConfig")->click();
     receiver->feedBytes(frame.mid(split));
     QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    QCOMPARE(rejected.size(), 1);
+    QCOMPARE(rejected.first().first().toString(), QString("DISCONNECTED"));
+    QVERIFY(widget.findChild<QLabel *>("upstreamForwardState")->text().contains(QString::fromUtf8(u8"下游串口未连接")));
     widget.findChild<QLineEdit *>("formatHeader")->setText("!&");
     receiver->feedBytes(frame);
     QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 2")));
@@ -719,6 +726,60 @@ void WidgetTest::upstreamUsesSavedFormatAndNeverSends()
         QVERIFY(widget.findChild<QLabel *>("validationState")->text().contains(QString::fromUtf8(u8"属于上游虚拟串口")));
     }
     QCOMPARE(sent.count(), 0);
+}
+
+void WidgetTest::upstreamAutomaticForwardingStatusAndDisconnectedInput()
+{
+    Widget widget(nullptr, freshDraftPath());
+    applyRoot(widget, upstreamReceiveExample()); button(widget, "saveConfig")->click();
+    auto *receiver = widget.findChild<UpstreamSerialReceiver *>();
+    auto *forwarder = widget.findChild<UpstreamForwarder *>();
+    auto *transport = widget.findChild<SerialTransport *>();
+    auto *state = widget.findChild<QLabel *>("upstreamForwardState");
+    auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *input = widget.findChild<QLineEdit *>("customerInput");
+    QVERIFY(receiver && forwarder && transport && state && frames && input);
+    QSignalSpy rejected(forwarder, &UpstreamForwarder::rejected);
+    QSignalSpy queued(forwarder, &UpstreamForwarder::queued);
+    QSignalSpy sent(transport, &ITransport::sendFinished);
+    input->setText("manual text remains unchanged");
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
+    receiver->feedBytes(frame.left(9));
+    QCOMPARE(rejected.size(), 0); QCOMPARE(queued.size(), 0);
+    receiver->feedBytes(frame.mid(9));
+    QCOMPARE(rejected.size(), 1); QCOMPARE(queued.size(), 0); QCOMPARE(sent.size(), 0);
+    QCOMPARE(rejected.first().first().toString(), QString("DISCONNECTED"));
+    QVERIFY2(state->text().contains(QString::fromUtf8(u8"未转发")), qPrintable(state->text()));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QCOMPARE(input->text(), QString("manual text remains unchanged"));
+    QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
+
+    // Simulate controller notifications, not a COM connection. Core tests cover
+    // actual ordered delivery using a fake transport; these assertions verify UI wording.
+    forwarder->queued(42, "RST", 3);
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"已入队")));
+    QVERIFY(!state->text().contains(QString::fromUtf8(u8"成功应答")));
+    forwarder->progress(42, 2, 3, QString::fromUtf8(u8"正在下发"));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"第2/3条")));
+    UnifiedGroupResult result; result.groupId = 42; result.totalSteps = 3; result.acceptedSteps = 3; result.success = true;
+    forwarder->finished(result);
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"成功应答3/3条")));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"机械动作完成未确认")));
+    result.groupId = 43; result.success = false; result.acceptedSteps = 1; result.failedStep = 2;
+    result.remainingSteps = 1; result.error = {"ACK_TIMEOUT", QString::fromUtf8(u8"等待应答超时")};
+    forwarder->finished(result);
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"自动转发失败")));
+    QVERIFY(state->text().contains("ACK_TIMEOUT"));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"剩余1条未发送")));
+    transport->connectionChanged(false, QString::fromUtf8(u8"下游串口未连接"));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    receiver->feedBytes(frame.left(8));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QVERIFY(widget.findChild<QLabel *>("upstreamState")->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QCOMPARE(input->text(), QString("manual text remains unchanged"));
+    QCOMPARE(sent.size(), 0);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
 }
 
 void WidgetTest::asciiLiteralInputAndReceiveRoundTrip()
@@ -761,7 +822,7 @@ void WidgetTest::asciiLiteralInputAndReceiveRoundTrip()
     receiver->feedBytes(frame.mid(split, frame.size() - split - 1));
     QVERIFY(!frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧")));
     receiver->feedBytes(frame.right(1));
-    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 39 · 完整有效帧 1 · 错误 0"));
+    QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 39 · 完整有效帧 1 · 错误 1"));
     QVERIFY(frames->toPlainText().contains(packet));
     for (const QString &expected : {QString("command = MFCV"), QString("values = [255]"), QString("delay = 10")})
         QVERIFY(frames->toPlainText().contains(expected));
