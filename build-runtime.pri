@@ -12,7 +12,10 @@ win32:!contains(TEMPLATE, subdirs) {
         # qmake's native target variable already contains the correctly quoted,
         # relative Windows path. Avoid re-encoding an absolute workspace path.
         translation_deploy_runtime.depends = $(DESTDIR_TARGET)
-        translation_deploy_runtime.commands = $$shell_quote($$shell_path($$translation_deploy_tool)) $$translation_deploy_mode --no-translations --no-compiler-runtime $(DESTDIR_TARGET)
+        # Qt 5 windeployqt queries qmake through PATH even when started by its
+        # absolute filename. Scope the active kit's bin to this recipe so an
+        # unrelated kit in Qt Creator's environment cannot supply its Qt paths.
+        translation_deploy_runtime.commands = set \"PATH=$$shell_path($$[QT_HOST_BINS]);%PATH%\" && $$shell_quote($$shell_path($$translation_deploy_tool)) $$translation_deploy_mode --no-translations --no-compiler-runtime $(DESTDIR_TARGET)
 
         translation_deploy_all.target = all
         translation_deploy_all.depends = deploy-runtime
