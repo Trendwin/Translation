@@ -1,13 +1,56 @@
 Widget, QDialog#axisFormulaDialog {
-    background-color: #f3f6fa;
+    background-color: #f1f5f9;
 }
 
 QLabel {
-    color: #24364b;
+    color: #14263c;
 }
 
 QLabel:disabled {
-    color: #66778b;
+    color: #475569;
+}
+
+QLabel[uiRole="heading"] {
+    color: #14263c;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+QLabel[uiRole="muted"] {
+    color: #475569;
+}
+
+QWidget#configBar {
+    background-color: #ffffff;
+    border-top: 1px solid #d5e0ec;
+}
+
+QLabel[uiRole="badge"], QPushButton[uiRole="badge"] {
+    background-color: #e9eff7;
+    color: #36485e;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 3px 7px;
+    font-weight: bold;
+}
+
+QLabel[uiRole="badge"][uiState="ok"], QPushButton[uiRole="badge"][uiState="ok"] {
+    background-color: #e8f6ed;
+    color: #166534;
+}
+
+QLabel[uiRole="badge"][uiState="notice"], QPushButton[uiRole="badge"][uiState="notice"] {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+QLabel[uiRole="badge"][uiState="error"], QPushButton[uiRole="badge"][uiState="error"] {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+QPushButton[uiRole="badge"]:hover, QPushButton[uiRole="badge"]:focus {
+    border-color: #1e40af;
 }
 
 QTabWidget::pane {
@@ -17,14 +60,12 @@ QTabWidget::pane {
 }
 
 QTabBar::tab {
-    background-color: #e8eef5;
-    color: #344a64;
-    border: 1px solid #cbd6e3;
-    border-bottom: 2px solid #cbd6e3;
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-    margin-right: 3px;
-    padding: 4px 12px;
+    background-color: #ffffff;
+    color: #475569;
+    border: 1px solid transparent;
+    border-bottom: 2px solid #d5e0ec;
+    margin-right: 2px;
+    padding: 4px 11px;
 }
 
 QTabBar::tab:hover {
@@ -33,19 +74,21 @@ QTabBar::tab:hover {
 
 QTabBar::tab:selected {
     background-color: #ffffff;
-    color: #174d92;
-    border-bottom-color: #2767b4;
+    color: #1e40af;
+    border-bottom-color: #1e40af;
 }
 
 QTabBar::tab:focus {
-    border-color: #2767b4;
+    border-color: #1e40af;
+    background-color: #eaf1ff;
 }
 
 QGroupBox {
-    color: #24364b;
-    border: 1px solid #d4dfe9;
+    color: #14263c;
+    background-color: #ffffff;
+    border: 1px solid #d5e0ec;
     border-radius: 5px;
-    margin-top: 9px;
+    margin-top: 10px;
 }
 
 QGroupBox::title {
@@ -53,6 +96,7 @@ QGroupBox::title {
     subcontrol-position: top left;
     left: 9px;
     padding: 0 4px;
+    font-weight: bold;
 }
 
 QTableWidget, QPlainTextEdit, QTextEdit {
@@ -79,8 +123,8 @@ QTableWidget::item:selected:!active {
 }
 
 QHeaderView::section {
-    background-color: #edf2f8;
-    color: #344a64;
+    background-color: #edf3f9;
+    color: #334963;
     border: 0;
     border-right: 1px solid #d4dfe9;
     border-bottom: 1px solid #d4dfe9;
@@ -92,7 +136,7 @@ QLineEdit {
     color: #24364b;
     border: 1px solid #bccbdb;
     border-radius: 3px;
-    padding: 0 3px;
+    padding: 2px 5px;
     selection-background-color: #c4dfff;
     selection-color: #173b6a;
 }
@@ -114,10 +158,10 @@ QLineEdit:disabled, QLineEdit:read-only {
 
 QPushButton {
     background-color: #ffffff;
-    color: #24364b;
-    border: 1px solid #bccbdb;
+    color: #14263c;
+    border: 1px solid #9caec4;
     border-radius: 4px;
-    padding: 3px 9px;
+    padding: 4px 10px;
 }
 
 QPushButton:hover {
@@ -130,34 +174,32 @@ QPushButton:pressed {
 }
 
 QPushButton:focus {
-    border-color: #2767b4;
-    outline: 1px solid #2767b4;
-}
-
-QPushButton#connectButton:focus {
+    background-color: #eaf1ff;
+    border-color: #1e40af;
     outline: none;
 }
 
-QPushButton#saveConfig, QPushButton#formulaAccept {
-    background-color: #205da6;
+QPushButton#saveConfig, QPushButton#formulaAccept, QPushButton[uiRole="primary"] {
+    background-color: #1e40af;
     color: #ffffff;
-    border-color: #205da6;
+    border-color: #1e40af;
 }
 
-QPushButton#saveConfig:hover, QPushButton#formulaAccept:hover {
-    background-color: #174d92;
+QPushButton#saveConfig:hover, QPushButton#formulaAccept:hover, QPushButton[uiRole="primary"]:hover {
+    background-color: #1e3a8a;
 }
 
-QPushButton#saveConfig:pressed, QPushButton#formulaAccept:pressed {
-    background-color: #123d74;
+QPushButton#saveConfig:pressed, QPushButton#formulaAccept:pressed, QPushButton[uiRole="primary"]:pressed {
+    background-color: #142b70;
 }
 
-QPushButton#saveConfig:focus, QPushButton#formulaAccept:focus {
-    border-color: #102f57;
-    outline: 1px solid #ffffff;
+QPushButton#saveConfig:focus, QPushButton#formulaAccept:focus, QPushButton[uiRole="primary"]:focus {
+    background-color: #234bbd;
+    border-color: #14263c;
+    outline: none;
 }
 
-QPushButton:disabled, QPushButton#saveConfig:disabled, QPushButton#formulaAccept:disabled {
+QPushButton:disabled, QPushButton#saveConfig:disabled, QPushButton#formulaAccept:disabled, QPushButton[uiRole="primary"]:disabled {
     background-color: #edf1f6;
     color: #64758a;
     border-color: #d4dfe9;
@@ -168,10 +210,10 @@ QPushButton[objectName^="axisFormulaButton_"] {
     border-radius: 3px;
 }
 
-QSplitter#mappingSplitter::handle {
+QSplitter::handle {
     background-color: #dce5f0;
 }
 
-QSplitter#mappingSplitter::handle:hover {
+QSplitter::handle:hover {
     background-color: #a8c5e8;
 }

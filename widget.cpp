@@ -18,12 +18,12 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDialog>
-#include <QEvent>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QListView>
 #include <QFile>
 #include <QFileDialog>
+#include <QFontDatabase>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QGridLayout>
@@ -36,14 +36,17 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QPlainTextEdit>
+#include <QScopedValueRollback>
 #include <QSerialPortInfo>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QSignalBlocker>
 #include <QSet>
 #include <QScrollArea>
+#include <QStyle>
 #include <QRegularExpression>
 #include <QStandardItemModel>
+#include <QStylePainter>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -56,9 +59,56 @@
 #include <limits>
 
 namespace {
-QComboBox *combo(QWidget *parent, const QList<QPair<QString, QString>> &values)
+constexpr int MaximumUpstreamRecords = 100;
+enum UpstreamRecordRole {
+    UpstreamFrameIdRole = Qt::UserRole, UpstreamGroupIdRole, UpstreamFieldsRole, UpstreamRawRole
+};
+
+void setIoState(QLabel *label, const QString &text, const QString &state)
 {
-    auto *box = new QComboBox(parent);
+    label->setTextFormat(Qt::PlainText);
+    label->setText(text);
+    if (label->property("uiState").toString() == state) return;
+    label->setProperty("uiState", state);
+    label->style()->unpolish(label);
+    label->style()->polish(label);
+}
+
+// Keep the native keyboard and popup behavior, while idle cells read like a table.
+class FormatChoice : public QComboBox
+{
+public:
+    explicit FormatChoice(QWidget *parent) : QComboBox(parent) {}
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        if (underMouse() || hasFocus()) {
+            QComboBox::paintEvent(event);
+            return;
+        }
+        QStylePainter painter(this);
+        const QRect label = rect().adjusted(6, 0, -4, 0);
+        painter.drawItemText(label, Qt::AlignVCenter | Qt::AlignLeft, palette(), isEnabled(),
+                             fontMetrics().elidedText(currentText(), Qt::ElideRight, label.width()), QPalette::Text);
+    }
+
+    void enterEvent(QEvent *event) override
+    {
+        QComboBox::enterEvent(event);
+        update();
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        QComboBox::leaveEvent(event);
+        update();
+    }
+};
+
+QComboBox *combo(QWidget *parent, const QList<QPair<QString, QString>> &values, bool formatCell = false)
+{
+    auto *box = formatCell ? new FormatChoice(parent) : new QComboBox(parent);
     for (const auto &value : values) box->addItem(value.first, value.second);
     return box;
 }
@@ -436,6 +486,12 @@ void Widget::buildUi()
 {
     setWindowTitle(QString::fromUtf8(u8"配置驱动协议转换"));
     resize(1100, 740);
+    QFont uiFont = font();
+#ifdef Q_OS_WIN
+    uiFont.setFamily(QStringLiteral("Microsoft YaHei UI"));
+#endif
+    uiFont.setPixelSize(13);
+    setFont(uiFont);
     QFile appearance(QStringLiteral(":/appearance/translation.qss"));
     if (appearance.open(QIODevice::ReadOnly))
         setStyleSheet(QString::fromUtf8(appearance.readAll()));
@@ -456,7 +512,7 @@ void Widget::buildUi()
 
     auto *formatPage = new QWidget(this);
     auto *formatLayout = new QVBoxLayout(formatPage);
-    auto *boundaryForm = new QFormLayout;
+    auto *boundaryForm = new QGridLayout;
     m_encoding = combo(this, {{QString::fromUtf8(u8"ASCII 文本"), QStringLiteral("ascii")},
                               {QString::fromUtf8(u8"HEX 字节"), QStringLiteral("hex")}});
     m_encoding->setToolTip(QString::fromUtf8(u8"ASCII 按原样读取，不解释转义；\\n 是两个字符，\\r\\n 是四个字符。HEX 按十六进制字节读取。"));
@@ -468,13 +524,19 @@ void Widget::buildUi()
     m_byteOrder = combo(this, {{QString::fromUtf8(u8"大端（高字节在前）"), QStringLiteral("big")},
                                {QString::fromUtf8(u8"小端（低字节在前）"), QStringLiteral("little")}});
     m_byteOrder->setToolTip(QString::fromUtf8(u8"仅 HEX 输入中的多字节整数使用；ASCII 数字不受影响。"));
-    boundaryForm->addRow(QString::fromUtf8(u8"编码方式"), m_encoding);
-    boundaryForm->addRow(QString::fromUtf8(u8"帧头"), m_header);
-    boundaryForm->addRow(QString::fromUtf8(u8"帧尾"), m_footer);
+    const QStringList boundaryNames{QString::fromUtf8(u8"编码方式"), QString::fromUtf8(u8"帧头"), QString::fromUtf8(u8"帧尾")};
+    const QList<QWidget *> boundaryControls{m_encoding, m_header, m_footer};
+    for (int column = 0; column < boundaryControls.size(); ++column) {
+        auto *label = new QLabel(boundaryNames.at(column), formatPage);
+        label->setBuddy(boundaryControls.at(column));
+        boundaryForm->addWidget(label, 0, column);
+        boundaryForm->addWidget(boundaryControls.at(column), 1, column);
+        boundaryForm->setColumnStretch(column, 1);
+    }
     formatLayout->addLayout(boundaryForm);
     m_formatRangesToggle = new QCheckBox(QString::fromUtf8(u8"数值范围"), this);
     m_formatRangesToggle->setObjectName("formatRangesToggle");
-    formatLayout->addWidget(m_formatRangesToggle);
+    boundaryForm->addWidget(m_formatRangesToggle, 1, 3);
     connect(m_formatRangesToggle, &QCheckBox::toggled, this, [this]() { updateTableControls(); });
 
     m_fieldTable = new QTableWidget(this);
@@ -501,7 +563,10 @@ void Widget::buildUi()
         QString::fromUtf8(u8"可选的输入上限")};
     for (int column = 0; column < fieldTips.size(); ++column)
         m_fieldTable->horizontalHeaderItem(column)->setToolTip(fieldTips.at(column));
-    formatLayout->addWidget(m_fieldTable);
+    auto *fieldsHeading = new QLabel(QString::fromUtf8(u8"顺序字段"), formatPage);
+    fieldsHeading->setProperty("uiRole", QStringLiteral("heading"));
+    formatLayout->addWidget(fieldsHeading);
+    formatLayout->addWidget(m_fieldTable, 1);
     auto *fieldButtons = new QHBoxLayout;
     auto *addField = new QPushButton(QString::fromUtf8(u8"添加字段"), this);
     addField->setObjectName("addField");
@@ -518,45 +583,62 @@ void Widget::buildUi()
     for (auto *button : {addField, removeField, fieldUp, fieldDown}) fieldButtons->addWidget(button);
     fieldButtons->addStretch();
     formatLayout->addLayout(fieldButtons);
+    m_fieldDelimiterHint = new QLabel(formatPage);
+    m_fieldDelimiterHint->setObjectName("fieldDelimiterHint");
+    m_fieldDelimiterHint->setProperty("uiRole", QStringLiteral("muted"));
+    m_fieldDelimiterHint->setTextFormat(Qt::PlainText);
+    m_fieldDelimiterHint->setWordWrap(true);
+    formatLayout->addWidget(m_fieldDelimiterHint);
+    connect(m_fieldTable, &QTableWidget::currentCellChanged, this, &Widget::updateFieldDelimiterHint);
+    updateFieldDelimiterHint();
     tabs->addTab(scrollPage(formatPage), QString::fromUtf8(u8"客户协议格式"));
 
     auto *mappingPage = new QWidget(this);
     auto *mappingLayout = new QVBoxLayout(mappingPage);
-    auto *mappingSplitter = new QSplitter(Qt::Vertical, mappingPage);
-    m_mappingSplitter = mappingSplitter;
+    auto *mappingSplitter = new QSplitter(Qt::Horizontal, mappingPage);
     mappingSplitter->setObjectName("mappingSplitter");
-    mappingSplitter->installEventFilter(this);
-    connect(mappingSplitter, &QSplitter::splitterMoved, this, [this](int, int) {
-        m_mappingSplitterAdjusted = true;
-    });
     mappingSplitter->setChildrenCollapsible(false);
     auto *savedMappings = new QWidget(mappingSplitter);
+    savedMappings->setMinimumWidth(205);
     auto *savedLayout = new QVBoxLayout(savedMappings);
     savedLayout->setContentsMargins(0, 0, 0, 0);
+    auto *savedHeading = new QLabel(QString::fromUtf8(u8"现有映射"), savedMappings);
+    savedHeading->setProperty("uiRole", QStringLiteral("heading"));
+    savedLayout->addWidget(savedHeading);
     m_mappingTable = new QTableWidget(this);
     m_mappingTable->setObjectName("mappingTable");
     m_mappingTable->setColumnCount(3);
     m_mappingTable->setHorizontalHeaderLabels({QString::fromUtf8(u8"客户命令"), QString::fromUtf8(u8"执行动作"),
         QString::fromUtf8(u8"参数说明")});
     m_mappingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_mappingTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_mappingTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_mappingTable->horizontalHeader()->resizeSection(0, 90);
+    m_mappingTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_mappingTable->setColumnHidden(2, true);
     m_mappingTable->verticalHeader()->hide();
     m_mappingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_mappingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mappingTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_mappingTable->setMinimumHeight(80);
-    m_mappingTable->setToolTip(QString::fromUtf8(u8"选择映射后可删除；新增请填写下方表单。"));
+    m_mappingTable->setToolTip(QString::fromUtf8(u8"选择映射查看参数或删除。在右侧添加新映射。"));
     const QStringList mappingTips = {QString::fromUtf8(u8"客户报文中的命令码，支持不同长度"),
         QString::fromUtf8(u8"选择趋盛命令模板"), QString::fromUtf8(u8"来源字段、换算倍数或固定值")};
     for (int c = 0; c < mappingTips.size(); ++c) m_mappingTable->horizontalHeaderItem(c)->setToolTip(mappingTips.at(c));
     savedLayout->addWidget(m_mappingTable, 1);
+    m_mappingDetails = new QPlainTextEdit(savedMappings);
+    m_mappingDetails->setObjectName("mappingDetails");
+    m_mappingDetails->setAccessibleName(QString::fromUtf8(u8"选中映射的参数说明"));
+    m_mappingDetails->setPlaceholderText(QString::fromUtf8(u8"选择映射查看参数说明"));
+    m_mappingDetails->setReadOnly(true);
+    m_mappingDetails->setMaximumHeight(88);
+    savedLayout->addWidget(m_mappingDetails);
+    connect(m_mappingTable, &QTableWidget::currentCellChanged, this, &Widget::updateMappingDetails);
 
     m_mappingEditor = new QGroupBox(QString::fromUtf8(u8"添加新映射"), this);
     m_mappingEditor->setObjectName("mappingEditor");
     auto *editorLayout = new QVBoxLayout(m_mappingEditor);
     m_mappingEditor->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-    m_mappingEditor->setToolTip(QString::fromUtf8(u8"仅添加新映射，不修改上方已有映射。多条指令须逐条添加或保存，再添加整组映射。"));
-    editorLayout->setAlignment(Qt::AlignTop);
+    m_mappingEditor->setToolTip(QString::fromUtf8(u8"新建映射不修改左侧已有映射。多条指令须逐条加入清单，再添加整组映射。"));
     auto *editorForm = new QFormLayout;
     m_mappingCode = new QLineEdit(this); m_mappingCode->setObjectName("mappingCode");
     m_mappingCode->setToolTip(QString::fromUtf8(u8"填写客户命令码本身；不要填写地址、帧头或帧尾。"));
@@ -617,18 +699,18 @@ void Widget::buildUi()
     m_mappingStepState = new QLabel(this);
     m_mappingStepState->setObjectName("mappingStepState");
     m_mappingStepState->setWordWrap(true);
-    editorLayout->addWidget(m_mappingStepState);
-    editorLayout->addWidget(m_mappingSteps, 1);
     auto *stepActions = new QHBoxLayout;
+    stepActions->addWidget(new QLabel(QString::fromUtf8(u8"① 配置本条指令"), this));
+    stepActions->addStretch();
     auto *saveStep = new QPushButton(QString::fromUtf8(u8"添加到清单"), this); saveStep->setObjectName("saveMappingStep");
     m_saveMappingStep = saveStep;
+    saveStep->setProperty("uiRole", QStringLiteral("primary"));
     auto *newStep = new QPushButton(QString::fromUtf8(u8"新增下一条"), this); newStep->setObjectName("newMappingStep");
     auto *deleteStep = new QPushButton(QString::fromUtf8(u8"删除本条"), this); deleteStep->setObjectName("deleteMappingStep");
     auto *stepUp = new QPushButton(QString::fromUtf8(u8"上移"), this); stepUp->setObjectName("mappingStepUp");
     auto *stepDown = new QPushButton(QString::fromUtf8(u8"下移"), this); stepDown->setObjectName("mappingStepDown");
     auto *discardStep = new QPushButton(QString::fromUtf8(u8"放弃本条修改"), this); discardStep->setObjectName("discardMappingStep");
-    for (auto *action : {saveStep, newStep, deleteStep, stepUp, stepDown, discardStep}) stepActions->addWidget(action);
-    editorLayout->addLayout(stepActions);
+    for (auto *action : {discardStep, saveStep}) stepActions->addWidget(action);
     connect(saveStep, &QPushButton::clicked, this, [this]() { commitMappingStep(); });
     connect(newStep, &QPushButton::clicked, this, [this]() {
         if (!requireSavedMappingStep() || m_selectedStep < 0) return;
@@ -660,7 +742,7 @@ void Widget::buildUi()
     editorForm->addRow(QString::fromUtf8(u8"取值来源"), m_mappingSource);
     editorForm->addRow(QString::fromUtf8(u8"固定数值"), m_mappingValue);
     editorForm->addRow(QString::fromUtf8(u8"换算倍数"), m_mappingMultiplier);
-    editorLayout->insertLayout(1, editorForm);
+    editorLayout->addLayout(editorForm);
     m_mappingCountsGroup = new QGroupBox(QString::fromUtf8(u8"新映射接收的参数项数"), this);
     auto *countsLayout = new QVBoxLayout(m_mappingCountsGroup);
     countsLayout->setContentsMargins(4, 4, 4, 4);
@@ -675,6 +757,7 @@ void Widget::buildUi()
     editorLayout->addWidget(m_mappingCountsGroup);
     m_valveEditor = new QGroupBox(QString::fromUtf8(u8"选择阀门与开关来源"), this);
     m_valveEditor->setObjectName("valveSelectionEditor");
+    m_valveEditor->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     auto *valveLayout = new QVBoxLayout(m_valveEditor);
     valveLayout->setContentsMargins(6, 6, 6, 6);
     valveLayout->setSpacing(4);
@@ -692,9 +775,9 @@ void Widget::buildUi()
     qobject_cast<QStandardItemModel *>(m_valveNumber->model())->item(0)->setEnabled(false);
     for (int number = 1; number <= 30; ++number)
         m_valveNumber->addItem(QString::fromUtf8(u8"%1号阀（0x%2）").arg(number).arg(QString::number(0x30 + number, 16).toUpper()), 0x30 + number);
-    valveForm->addRow(QString::fromUtf8(u8"动作"), m_valveMode);
+    valveForm->addRow(QString::fromUtf8(u8"开关方式"), m_valveMode);
     m_valveStateSource = new QComboBox(this); m_valveStateSource->setObjectName("valveStateSource");
-    valveForm->addRow(QString::fromUtf8(u8"开关参数"), m_valveStateSource);
+    valveForm->addRow(QString::fromUtf8(u8"开关值来源"), m_valveStateSource);
     valveForm->addRow(QString::fromUtf8(u8"仅开启的阀号"), m_valveNumber);
     valveLayout->addLayout(valveForm);
     m_valveActionHint = new QLabel(this); m_valveActionHint->setObjectName("valveActionHint"); m_valveActionHint->setWordWrap(true);
@@ -708,9 +791,11 @@ void Widget::buildUi()
         auto *grid = new QGridLayout(box); grid->setContentsMargins(5, 5, 5, 5); grid->setVerticalSpacing(2);
         for (int item = 0; item < 10; ++item) {
             const int number = group * 10 + item + 1;
-            auto *check = new QCheckBox(QString::fromUtf8(u8"%1号阀（0x%2）").arg(number).arg(QString::number(0x30 + number, 16).toUpper()), this);
+            auto *check = new QCheckBox(QString::number(number), this);
+            check->setAccessibleName(QString::fromUtf8(u8"%1号阀").arg(number));
+            check->setToolTip(QString::fromUtf8(u8"%1号阀（0x%2）").arg(number).arg(QString::number(0x30 + number, 16).toUpper()));
             check->setObjectName("valveCheck" + QString::number(number));
-            m_valveChecks.append(check); grid->addWidget(check, item % 5, item / 5);
+            m_valveChecks.append(check); grid->addWidget(check, item / 5, item % 5);
             connect(check, &QCheckBox::toggled, this, [this]() {
                 quint32 mask = 0;
                 for (int index = 0; index < m_valveChecks.size(); ++index)
@@ -745,22 +830,29 @@ void Widget::buildUi()
     connect(m_valveRawParametersToggle, &QCheckBox::toggled, this, [this]() { updateCatalogParameterVisibility(); });
     editorLayout->addWidget(m_valveEditor);
     editorLayout->addWidget(m_mappingParameters);
+    editorLayout->addLayout(stepActions);
+    m_mappingStepState->setProperty("uiRole", QStringLiteral("muted"));
+    editorLayout->addWidget(m_mappingStepState);
+    editorLayout->addWidget(m_mappingSteps, 1);
     auto *mappingButtons = new QHBoxLayout;
     auto *addMapping = new QPushButton(QString::fromUtf8(u8"添加命令映射"), this);
     addMapping->setObjectName("addMapping");
     auto *removeMapping = new QPushButton(QString::fromUtf8(u8"删除选中映射"), this);
     removeMapping->setObjectName("removeMapping");
-    addMapping->setToolTip(QString::fromUtf8(u8"将下方填写的新映射添加到表格末尾。"));
+    addMapping->setToolTip(QString::fromUtf8(u8"将清单中的指令作为一条映射加入左侧列表，再点击底部“保存配置”。"));
     removeMapping->setToolTip(QString::fromUtf8(u8"删除当前选中的映射；保存前仍可重新导入配置。"));
-    mappingButtons->addWidget(addMapping); mappingButtons->addWidget(removeMapping);
+    for (auto *action : {newStep, deleteStep, stepUp, stepDown}) mappingButtons->addWidget(action);
+    mappingButtons->addStretch();
+    mappingButtons->addWidget(addMapping);
+    editorLayout->addLayout(mappingButtons);
+    editorLayout->addStretch();
     removeMapping->setEnabled(false);
-    mappingButtons->addStretch(); savedLayout->addLayout(mappingButtons);
+    savedLayout->addWidget(removeMapping, 0, Qt::AlignLeft);
     auto *mappingScroll = scrollPage(m_mappingEditor);
     mappingScroll->setObjectName("mappingEditorScroll");
     mappingSplitter->addWidget(savedMappings);
     mappingSplitter->addWidget(mappingScroll);
-    mappingSplitter->setStretchFactor(0, 1);
-    mappingSplitter->setStretchFactor(1, 1);
+    mappingSplitter->setSizes({290, 730});
     mappingLayout->addWidget(mappingSplitter);
     tabs->addTab(mappingPage, QString::fromUtf8(u8"命令映射"));
 
@@ -795,16 +887,21 @@ void Widget::buildUi()
     motionForm->addRow(QString::fromUtf8(u8"默认运动速度"), m_speed);
     motionForm->addRow(QString::fromUtf8(u8"最小位置"), m_minPosition);
     motionForm->addRow(QString::fromUtf8(u8"最大位置"), m_maxPosition);
-    deviceLayout->addWidget(deviceGroup);
-    deviceLayout->addWidget(motionDefaults);
+    auto *deviceParameters = new QHBoxLayout;
+    deviceParameters->addWidget(deviceGroup, 2, Qt::AlignTop);
+    deviceParameters->addWidget(motionDefaults, 3, Qt::AlignTop);
+    deviceLayout->addLayout(deviceParameters);
     auto *presetGroup = new QGroupBox(QString::fromUtf8(u8"位置与校准参数"), this);
     presetGroup->setObjectName("parameterPresetsGroup");
     auto *presetLayout = new QVBoxLayout(presetGroup);
-    presetLayout->addWidget(new QLabel(QString::fromUtf8(u8"原始整数，不自动换算；每组1～64项。"), this));
+    auto *presetHint = new QLabel(QString::fromUtf8(u8"每组 1～64 项。保存后可在命令映射中引用。"), this);
+    presetHint->setProperty("uiRole", QStringLiteral("muted"));
     m_parameterPresets = new QTableWidget(this); m_parameterPresets->setObjectName("parameterPresetsTable");
     m_parameterPresets->setColumnCount(2);
-    m_parameterPresets->setHorizontalHeaderLabels({QString::fromUtf8(u8"名称"), QString::fromUtf8(u8"参数值（逗号分隔）")});
-    m_parameterPresets->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_parameterPresets->setHorizontalHeaderLabels({QString::fromUtf8(u8"名称"), QString::fromUtf8(u8"参数值（协议原始整数，以逗号分隔）")});
+    m_parameterPresets->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_parameterPresets->horizontalHeader()->resizeSection(0, 230);
+    m_parameterPresets->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     m_parameterPresets->verticalHeader()->hide();
     m_parameterPresets->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_parameterPresets->setMinimumHeight(110); m_parameterPresets->setMaximumHeight(180);
@@ -813,6 +910,7 @@ void Widget::buildUi()
     auto *addPreset = new QPushButton(QString::fromUtf8(u8"添加参数组"), this); addPreset->setObjectName("addParameterPreset");
     auto *removePreset = new QPushButton(QString::fromUtf8(u8"删除选中参数组"), this); removePreset->setObjectName("removeParameterPreset");
     presetActions->addWidget(addPreset); presetActions->addWidget(removePreset); presetActions->addStretch();
+    presetActions->addWidget(presetHint);
     presetLayout->addLayout(presetActions); presetGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     deviceLayout->addWidget(presetGroup);
     connect(addPreset, &QPushButton::clicked, this, [this]() {
@@ -825,9 +923,11 @@ void Widget::buildUi()
     });
     connect(m_parameterPresets, &QTableWidget::cellChanged, this, [this]() { parameterPresetsChanged(); });
 
-    auto *serialGroup = new QGroupBox(QString::fromUtf8(u8"下游串口连接"), this);
+    auto *serialGroup = new QGroupBox(QString::fromUtf8(u8"串口连接"), this);
+    serialGroup->setObjectName("serialConnectionGroup");
     serialGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-    auto *serialLayout = new QHBoxLayout(serialGroup);
+    auto *serialLayout = new QVBoxLayout(serialGroup);
+    auto *downstreamRow = new QHBoxLayout;
     m_port = new QComboBox(this);
     m_port->setObjectName("downstreamPort");
     m_port->setToolTip(QString::fromUtf8(u8"选择连接趋盛控制板的串口。"));
@@ -842,16 +942,34 @@ void Widget::buildUi()
     m_connectButton->setObjectName("connectButton");
     m_connectButton->setToolTip(QString::fromUtf8(u8"只连接趋盛控制板使用的设备串口。"));
     m_connectionState = new QLabel(QString::fromUtf8(u8"未连接"), this);
-    serialLayout->addWidget(new QLabel(QString::fromUtf8(u8"串口"), this));
-    serialLayout->addWidget(m_port, 1);
-    serialLayout->addWidget(refreshPort);
-    serialLayout->addWidget(new QLabel(QString::fromUtf8(u8"波特率"), this));
-    serialLayout->addWidget(m_baud);
-    serialLayout->addWidget(m_connectButton);
-    serialLayout->addWidget(m_connectionState);
-    deviceLayout->addWidget(serialGroup);
+    m_connectionState->setProperty("uiRole", QStringLiteral("badge"));
+    auto *portLabel = new QLabel(QString::fromUtf8(u8"下游串口"), this);
+    portLabel->setBuddy(m_port);
+    auto *baudLabel = new QLabel(QString::fromUtf8(u8"波特率"), this);
+    baudLabel->setBuddy(m_baud);
+    downstreamRow->addWidget(portLabel);
+    downstreamRow->addWidget(m_port, 1);
+    downstreamRow->addWidget(refreshPort);
+    downstreamRow->addWidget(baudLabel);
+    downstreamRow->addWidget(m_baud);
+    downstreamRow->addWidget(m_connectButton);
+    downstreamRow->addWidget(m_connectionState);
+    serialLayout->addLayout(downstreamRow);
+    auto *upstreamSummary = new QHBoxLayout;
+    upstreamSummary->addWidget(new QLabel(QString::fromUtf8(u8"上游虚拟串口"), this));
+    m_deviceUpstreamState = new QLabel(QString::fromUtf8(u8"正在检查"), this);
+    m_deviceUpstreamState->setObjectName("deviceUpstreamState");
+    m_deviceUpstreamState->setProperty("uiRole", QStringLiteral("badge"));
+    upstreamSummary->addWidget(m_deviceUpstreamState);
+    upstreamSummary->addStretch();
+    auto *goToUpstream = new QPushButton(QString::fromUtf8(u8"查看上游接收"), this);
+    goToUpstream->setObjectName("goToUpstream");
+    upstreamSummary->addWidget(goToUpstream);
+    serialLayout->addLayout(upstreamSummary);
+    deviceLayout->insertWidget(0, serialGroup);
     deviceLayout->addStretch();
-    tabs->addTab(scrollPage(devicePage), QString::fromUtf8(u8"设备与连接"));
+    auto *deviceTab = scrollPage(devicePage);
+    tabs->addTab(deviceTab, QString::fromUtf8(u8"设备与连接"));
 
     auto *advancedPage = new QWidget(this);
     advancedPage->setObjectName("advancedPage");
@@ -885,99 +1003,222 @@ void Widget::buildUi()
     for (auto *button : {saveConfig, importButton, exportButton}) {
         button->setFixedWidth(configWidth); configButtons->addWidget(button);
     }
+    auto *mappingSaveStage = new QLabel(QString::fromUtf8(u8"③ 保存整份配置"), this);
+    mappingSaveStage->setProperty("uiRole", "muted");
+    mappingSaveStage->hide();
+    configButtons->addWidget(mappingSaveStage);
+    connect(tabs, &QTabWidget::currentChanged, this, [tabs, mappingPage, mappingSaveStage](int) {
+        mappingSaveStage->setVisible(tabs->currentWidget() == mappingPage);
+    });
     configButtons->addWidget(m_validationState, 1);
-    root->addLayout(configButtons);
+    auto *downstreamBadge = new QPushButton(QString::fromUtf8(u8"下游未连接"), this);
+    downstreamBadge->setObjectName("downstreamBadge");
+    downstreamBadge->setProperty("uiRole", "badge");
+    downstreamBadge->setProperty("uiState", "notice");
+    downstreamBadge->setToolTip(QString::fromUtf8(u8"打开“设备与连接”"));
+    configButtons->addWidget(downstreamBadge);
+    connect(downstreamBadge, &QPushButton::clicked, this, [tabs, deviceTab]() {
+        tabs->setCurrentWidget(deviceTab);
+    });
+    connect(m_transport, &SerialTransport::connectionChanged, downstreamBadge, [downstreamBadge](bool connected) {
+        downstreamBadge->setText(connected ? QString::fromUtf8(u8"下游已连接") : QString::fromUtf8(u8"下游未连接"));
+        downstreamBadge->setProperty("uiState", connected ? "ok" : "notice");
+        downstreamBadge->style()->unpolish(downstreamBadge);
+        downstreamBadge->style()->polish(downstreamBadge);
+    });
+    auto *configBar = new QWidget(this);
+    configBar->setObjectName("configBar");
+    configButtons->setContentsMargins(8, 5, 8, 5);
+    configBar->setLayout(configButtons);
+    root->addWidget(configBar);
 
-    auto *debugGroup = new QGroupBox(QString::fromUtf8(u8"调试与运行"), this);
-    auto *debugLayout = new QVBoxLayout(debugGroup);
-    auto *inputLayout = new QHBoxLayout;
+    auto *manualPage = new QWidget(this);
+    auto *debugLayout = new QVBoxLayout(manualPage);
+    auto *inputGroup = new QGroupBox(QString::fromUtf8(u8"客户报文"), this);
+    auto *inputLayout = new QVBoxLayout(inputGroup);
+    auto *inputStatus = new QHBoxLayout;
     m_inputEncoding = new QLabel(QString::fromUtf8(u8"配置编码：未确定"), this);
+    m_inputEncoding->setProperty("uiRole", QStringLiteral("badge"));
+    m_liveReason = new QLabel(this); m_liveReason->setObjectName("liveReason");
+    m_liveReason->setProperty("uiRole", QStringLiteral("badge"));
+    inputStatus->addWidget(m_inputEncoding);
+    inputStatus->addStretch();
+    inputStatus->addWidget(m_liveReason);
+    inputLayout->addLayout(inputStatus);
     m_input = new QLineEdit(this);
     m_input->setObjectName("customerInput");
+    m_input->setAccessibleName(QString::fromUtf8(u8"客户报文"));
+    m_input->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_input->setPlaceholderText(QString::fromUtf8(u8"客户报文"));
     m_input->setToolTip(QString::fromUtf8(u8"ASCII 报文按输入原样读取，不解释 \\n、\\r 等转义；与上游收到的同一段文本使用相同规则。"));
-    m_previewButton = new QPushButton(QString::fromUtf8(u8"预览"), this);
+    m_previewButton = new QPushButton(QString::fromUtf8(u8"预览目标帧"), this);
     m_previewButton->setObjectName("previewButton");
+    m_previewButton->setProperty("uiRole", QStringLiteral("primary"));
     m_sendButton = new QPushButton(QString::fromUtf8(u8"发送"), this);
     m_sendButton->setObjectName("sendButton");
     m_cancelButton = new QPushButton(QString::fromUtf8(u8"取消本组"), this);
     m_cancelButton->setObjectName("cancelButton");
     m_cancelButton->setToolTip(QString::fromUtf8(u8"取消最近组的本地等待和剩余发送，不向设备发送停止，也不回滚已发动作。"));
-    m_previewButton->setToolTip(QString::fromUtf8(u8"使用当前配置解析和组帧，不访问串口。"));
-    inputLayout->addWidget(m_inputEncoding);
-    inputLayout->addWidget(m_input, 1);
+    m_previewButton->setToolTip(QString::fromUtf8(u8"使用已保存配置解析和组帧，不访问串口。"));
+    inputLayout->addWidget(m_input);
+    auto *debugActions = new QHBoxLayout;
     auto *parseButton = new QPushButton(QString::fromUtf8(u8"解析格式"), this); parseButton->setObjectName("parseFormatButton");
     parseButton->setToolTip(QString::fromUtf8(u8"仅按当前顺序字段解析，不要求映射或设备参数，不生成目标帧。"));
-    inputLayout->addWidget(parseButton);
+    debugActions->addWidget(parseButton);
     connect(parseButton, &QPushButton::clicked, this, &Widget::parseFormatPreview);
-    inputLayout->addWidget(m_previewButton);
-    inputLayout->addWidget(m_sendButton);
-    inputLayout->addWidget(m_cancelButton);
+    debugActions->addWidget(m_previewButton);
+    debugActions->addWidget(m_sendButton);
+    auto *previewHint = new QLabel(QString::fromUtf8(u8"预览使用已保存配置。"), this);
+    previewHint->setProperty("uiRole", QStringLiteral("muted"));
+    debugActions->addWidget(previewHint);
+    debugActions->addStretch();
     m_queryButton = new QPushButton(QString::fromUtf8(u8"查询状态"), this);
     m_queryButton->setObjectName("queryButton");
     m_queryButton->setToolTip(QString::fromUtf8(u8"查询电机状态。"));
-    inputLayout->addWidget(m_queryButton);
-    debugLayout->addLayout(inputLayout);
-    auto *outputs = new QHBoxLayout;
+    debugActions->addWidget(m_queryButton);
+    debugActions->addWidget(m_cancelButton);
+    inputLayout->addLayout(debugActions);
+    debugLayout->addWidget(inputGroup);
+    auto *outputs = new QSplitter(Qt::Horizontal, manualPage);
+    outputs->setObjectName("manualDebugSplitter");
+    outputs->setChildrenCollapsible(false);
     m_previewOutput = new QTextEdit(this); m_previewOutput->setReadOnly(true);
     m_previewOutput->setObjectName("previewOutput");
     m_targetOutput = new QTextEdit(this); m_targetOutput->setReadOnly(true);
     m_targetOutput->setObjectName("targetOutput");
+    m_targetOutput->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_rawReply = new QTextEdit(this); m_rawReply->setReadOnly(true);
+    m_rawReply->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     m_replyResult = new QTextEdit(this); m_replyResult->setReadOnly(true); m_replyResult->setObjectName("replyResult");
     // 解析过程需要足够宽度显示字段与换算，右侧按页查看目标帧、原始回告和解析结果。
     // 控件均保留原始内容，切页不会改变请求状态，也不触发任何发送。
-    auto *previewColumn = new QVBoxLayout;
-    previewColumn->addWidget(new QLabel(QString::fromUtf8(u8"解析预览"), this));
-    m_previewOutput->setMinimumHeight(190);
+    auto *previewGroup = new QGroupBox(QString::fromUtf8(u8"解析字段与取值"), outputs);
+    auto *previewColumn = new QVBoxLayout(previewGroup);
+    m_previewOutput->setMinimumHeight(150);
     previewColumn->addWidget(m_previewOutput);
-    outputs->addLayout(previewColumn, 3);
+    outputs->addWidget(previewGroup);
     auto *deviceOutputs = new QTabWidget(this); deviceOutputs->setObjectName("deviceOutputs");
     deviceOutputs->addTab(m_targetOutput, QString::fromUtf8(u8"目标帧"));
     deviceOutputs->addTab(m_rawReply, QString::fromUtf8(u8"原始回告"));
     deviceOutputs->addTab(m_replyResult, QString::fromUtf8(u8"解析结果"));
-    deviceOutputs->setMinimumHeight(210);
-    outputs->addWidget(deviceOutputs, 2);
-    debugLayout->addLayout(outputs);
-    m_liveReason = new QLabel(this); m_liveReason->setObjectName("liveReason");
-    debugLayout->addWidget(m_liveReason);
+    connect(m_previewButton, &QPushButton::clicked, this, [this, deviceOutputs]() {
+        deviceOutputs->setCurrentWidget(m_targetOutput);
+    });
+    deviceOutputs->setMinimumHeight(170);
+    outputs->addWidget(deviceOutputs);
+    outputs->setStretchFactor(0, 1);
+    outputs->setStretchFactor(1, 1);
+    debugLayout->addWidget(outputs, 1);
     m_requestState = new QLabel(QString::fromUtf8(u8"执行状态：空闲"), this);
     m_requestState->setObjectName("requestState");
     debugLayout->addWidget(m_requestState);
     auto *communicationTabs = new QTabWidget(this); communicationTabs->setObjectName("communicationTabs");
-    communicationTabs->addTab(scrollPage(debugGroup), QString::fromUtf8(u8"手动调试"));
+    communicationTabs->addTab(scrollPage(manualPage), QString::fromUtf8(u8"手动调试"));
     auto *upstreamPage = new QWidget(this);
     auto *upstreamLayout = new QVBoxLayout(upstreamPage);
-    auto *upstreamPorts = new QHBoxLayout;
+    auto *stages = new QHBoxLayout;
+    auto *receiveStage = new QGroupBox(QString::fromUtf8(u8"01 · 上游接收"), this);
+    auto *receiveStageLayout = new QVBoxLayout(receiveStage);
     m_providedPort = new QLabel(QString::fromUtf8(u8"提供给上游的串口：尚未初始化"), this);
     m_providedPort->setObjectName("providedUpstreamPort"); m_providedPort->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_providedPort->setWordWrap(true);
     m_virtualComAction = new QPushButton(QString::fromUtf8(u8"重试"), this); m_virtualComAction->setObjectName("virtualComAction");
     m_virtualComAction->setToolTip(QString::fromUtf8(u8"首次初始化需授权安装虚拟串口驱动，并创建软件专用的一对端口。"));
     m_upstreamState = new QLabel(QString::fromUtf8(u8"正在检查虚拟串口"), this); m_upstreamState->setObjectName("upstreamState"); m_upstreamState->setWordWrap(true);
-    upstreamPorts->addWidget(m_providedPort, 1); upstreamPorts->addWidget(m_virtualComAction);
-    upstreamLayout->addLayout(upstreamPorts);
-    upstreamLayout->addWidget(m_upstreamState);
+    m_upstreamState->setProperty("uiRole", QStringLiteral("badge"));
+    receiveStageLayout->addWidget(m_providedPort);
+    receiveStageLayout->addWidget(m_upstreamState);
+    receiveStageLayout->addWidget(m_virtualComAction, 0, Qt::AlignLeft);
+    receiveStageLayout->addStretch();
+    stages->addWidget(receiveStage, 1);
+    auto *forwardStage = new QGroupBox(QString::fromUtf8(u8"02 · 转换与转发"), this);
+    auto *forwardStageLayout = new QVBoxLayout(forwardStage);
     m_upstreamForwardState = new QLabel(this); m_upstreamForwardState->setObjectName("upstreamForwardState"); m_upstreamForwardState->setWordWrap(true);
-    upstreamLayout->addWidget(m_upstreamForwardState);
-    auto *upstreamHint = new QLabel(QString::fromUtf8(u8"上游软件选择上面提供的串口。115200 · 8 数据位 · 无校验 · 1 停止位 · 无流控\n完整报文按已保存的格式和映射自动转换下发；不向上游回告。"), this);
-    upstreamHint->setWordWrap(true); upstreamLayout->addWidget(upstreamHint);
+    m_upstreamForwardState->setProperty("uiRole", QStringLiteral("badge"));
+    forwardStageLayout->addWidget(m_upstreamForwardState);
+    auto *goToDevice = new QPushButton(QString::fromUtf8(u8"设备与连接"), this);
+    goToDevice->setObjectName("goToDeviceFromUpstream");
+    forwardStageLayout->addWidget(goToDevice, 0, Qt::AlignLeft);
+    forwardStageLayout->addStretch();
+    stages->addWidget(forwardStage, 1);
+    auto *replyStage = new QGroupBox(QString::fromUtf8(u8"03 · 下游应答"), this);
+    auto *replyStageLayout = new QVBoxLayout(replyStage);
+    m_upstreamAckState = new QLabel(QString::fromUtf8(u8"暂无应答记录"), this);
+    m_upstreamAckState->setObjectName("upstreamAckState");
+    m_upstreamAckState->setProperty("uiRole", QStringLiteral("badge"));
+    m_upstreamAckState->setWordWrap(true);
+    replyStageLayout->addWidget(m_upstreamAckState);
+    replyStageLayout->addStretch();
+    stages->addWidget(replyStage, 1);
+    upstreamLayout->addLayout(stages);
+
+    auto *receiveSplit = new QSplitter(Qt::Horizontal, upstreamPage);
+    receiveSplit->setObjectName("upstreamDebugSplitter");
+    receiveSplit->setChildrenCollapsible(false);
+    auto *recordGroup = new QGroupBox(QString::fromUtf8(u8"接收记录"), receiveSplit);
+    auto *recordLayout = new QVBoxLayout(recordGroup);
     auto *upstreamStats = new QHBoxLayout;
     m_upstreamCounters = new QLabel(this); m_upstreamCounters->setObjectName("upstreamCounters"); upstreamStats->addWidget(m_upstreamCounters, 1);
+    m_upstreamCounters->setWordWrap(true);
     auto *upstreamClear = new QPushButton(QString::fromUtf8(u8"清空接收"), this); upstreamClear->setObjectName("upstreamClear"); upstreamStats->addWidget(upstreamClear);
-    upstreamLayout->addLayout(upstreamStats);
+    recordLayout->addLayout(upstreamStats);
+    m_upstreamRecords = new QTableWidget(recordGroup);
+    m_upstreamRecords->setObjectName("upstreamRecords");
+    m_upstreamRecords->setColumnCount(3);
+    m_upstreamRecords->setHorizontalHeaderLabels({QString::fromUtf8(u8"序号"), QString::fromUtf8(u8"命令码"), QString::fromUtf8(u8"转发结果")});
+    m_upstreamRecords->verticalHeader()->hide();
+    m_upstreamRecords->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_upstreamRecords->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Interactive);
+    m_upstreamRecords->horizontalHeader()->resizeSection(1, 74);
+    m_upstreamRecords->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_upstreamRecords->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_upstreamRecords->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_upstreamRecords->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_upstreamRecords->setToolTip(QString::fromUtf8(u8"保留最近 %1 条有效帧。选择一行查看该帧的字段和转发结果。").arg(MaximumUpstreamRecords));
+    recordLayout->addWidget(m_upstreamRecords);
+    receiveSplit->addWidget(recordGroup);
     auto *receiveResults = new QTabWidget(this); receiveResults->setObjectName("upstreamResults");
     m_upstreamRaw = new QPlainTextEdit(this); m_upstreamRaw->setObjectName("upstreamRaw"); m_upstreamRaw->setReadOnly(true); m_upstreamRaw->setMaximumBlockCount(500);
     m_upstreamRaw->setToolTip(QString::fromUtf8(u8"文字 \\n 保持原样；实际控制字符显示为 [LF]、[CR]、[TAB]，可结合 HEX 核对。"));
     m_upstreamFrames = new QPlainTextEdit(this); m_upstreamFrames->setObjectName("upstreamFrames"); m_upstreamFrames->setReadOnly(true); m_upstreamFrames->setMaximumBlockCount(500);
-    receiveResults->addTab(m_upstreamRaw, QString::fromUtf8(u8"原始数据 · ASCII / HEX"));
-    receiveResults->addTab(m_upstreamFrames, QString::fromUtf8(u8"完整报文与字段"));
-    upstreamLayout->addWidget(receiveResults, 1);
+    m_upstreamFrameRaw = new QPlainTextEdit(this); m_upstreamFrameRaw->setReadOnly(true);
+    m_upstreamFrameRaw->setObjectName("upstreamFrameRaw");
+    m_upstreamEvents = new QPlainTextEdit(this); m_upstreamEvents->setReadOnly(true); m_upstreamEvents->setMaximumBlockCount(500);
+    m_upstreamEvents->setObjectName("upstreamEvents");
+    for (auto *raw : {m_upstreamRaw, m_upstreamFrameRaw})
+        raw->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    receiveResults->addTab(m_upstreamRaw, QString::fromUtf8(u8"原始接收 · ASCII / HEX"));
+    receiveResults->addTab(m_upstreamFrames, QString::fromUtf8(u8"选中帧与字段"));
+    receiveResults->addTab(m_upstreamFrameRaw, QString::fromUtf8(u8"选中帧字节"));
+    receiveResults->addTab(m_upstreamEvents, QString::fromUtf8(u8"接收与转发日志"));
+    receiveSplit->addWidget(receiveResults);
+    receiveSplit->setStretchFactor(0, 0);
+    receiveSplit->setStretchFactor(1, 1);
+    receiveSplit->setSizes({310, 650});
+    upstreamLayout->addWidget(receiveSplit, 1);
+    auto *upstreamHint = new QLabel(QString::fromUtf8(u8"115200 · 8N1 · 无流控。按已保存的配置自动转发，不向上游回告。"), this);
+    upstreamHint->setProperty("uiRole", QStringLiteral("muted"));
+    upstreamHint->setWordWrap(true); upstreamLayout->addWidget(upstreamHint);
     communicationTabs->addTab(upstreamPage, QString::fromUtf8(u8"上游虚拟串口"));
     tabs->insertTab(2, communicationTabs, QString::fromUtf8(u8"报文调试"));
+    connect(goToUpstream, &QPushButton::clicked, this, [tabs, communicationTabs, upstreamPage]() {
+        tabs->setCurrentWidget(communicationTabs);
+        communicationTabs->setCurrentWidget(upstreamPage);
+    });
+    connect(goToDevice, &QPushButton::clicked, this, [tabs, deviceTab]() { tabs->setCurrentWidget(deviceTab); });
+    connect(m_upstreamRecords, &QTableWidget::currentCellChanged, this, &Widget::showUpstreamRecord);
+    connect(m_upstreamRecords, &QTableWidget::cellClicked, this, [this, receiveResults]() {
+        receiveResults->setCurrentWidget(m_upstreamFrames);
+    });
     updateUpstreamCounters();
     connect(upstreamClear, &QPushButton::clicked, this, [this]() {
         m_upstream->clear(); m_upstreamBytes = m_upstreamFramesCount = m_upstreamErrors = 0;
-        m_upstreamRaw->clear(); m_upstreamFrames->clear(); updateUpstreamCounters();
+        m_upstreamRecords->setRowCount(0);
+        m_upstreamRaw->clear(); m_upstreamEvents->clear();
+        showUpstreamRecord();
+        updateUpstreamCounters();
+        updateUpstreamForwardState();
+        setIoState(m_upstreamAckState, QString::fromUtf8(u8"暂无应答记录"), QStringLiteral("neutral"));
     });
     connect(m_virtualComAction, &QPushButton::clicked, this, [this]() {
         if (m_virtualCom->isBusy()) return;
@@ -990,7 +1231,8 @@ void Widget::buildUi()
             m_upstream->close();
             m_providedPublicPort.clear(); m_providedInternalPort.clear();
             m_providedPort->setText(QString::fromUtf8(u8"提供给上游的串口：尚未初始化"));
-            m_upstreamState->setText(QString::fromUtf8(u8"请初始化虚拟串口"));
+            setIoState(m_upstreamState, QString::fromUtf8(u8"请初始化虚拟串口"), QStringLiteral("notice"));
+            updateDeviceUpstreamStatus(false);
             refreshPorts();
         }
         m_virtualComAction->setText(needed ? QString::fromUtf8(u8"初始化虚拟串口") : QString::fromUtf8(u8"重试"));
@@ -1000,7 +1242,7 @@ void Widget::buildUi()
         m_virtualComAction->setEnabled(!busy);
     });
     connect(m_virtualCom, &VirtualComProvider::statusChanged, this, [this](const QString &message) {
-        m_upstreamState->setText(message);
+        setIoState(m_upstreamState, message, QStringLiteral("neutral"));
     });
     connect(m_virtualCom, &VirtualComProvider::ready, this, [this](const QString &publicPort, const QString &internalPort) {
         m_providedPublicPort = publicPort; m_providedInternalPort = internalPort;
@@ -1008,19 +1250,22 @@ void Widget::buildUi()
         refreshPorts();
         const QString downstream = normalizedPortName(m_port->currentData().toString());
         if (m_transport->isConnected() && (downstream == normalizedPortName(publicPort) || downstream == normalizedPortName(internalPort))) {
-            m_upstreamState->setText(QString::fromUtf8(u8"虚拟串口正用于下游连接，请先断开该下游连接后重试"));
+            setIoState(m_upstreamState, QString::fromUtf8(u8"虚拟串口正用于下游连接，请先断开该下游连接后重试"), QStringLiteral("notice"));
+            updateDeviceUpstreamStatus(false);
             m_virtualComAction->show(); return;
         }
         if (!m_upstream->isConnected() || normalizedPortName(m_upstream->portName()) != normalizedPortName(internalPort))
             m_upstream->open(internalPort, 115200);
+        else updateDeviceUpstreamStatus(true);
     });
     connect(m_upstream, &UpstreamSerialReceiver::connectionChanged, this, [this](bool connected, const QString &reason) {
         m_virtualComAction->setVisible(!connected);
-        m_upstreamState->setText(connected ? QString::fromUtf8(u8"等待上游报文") : reason);
+        setIoState(m_upstreamState, connected ? QString::fromUtf8(u8"等待上游报文") : reason,
+                   connected ? QStringLiteral("ok") : QStringLiteral("notice"));
+        updateDeviceUpstreamStatus(connected);
     });
     connect(m_upstream, &UpstreamSerialReceiver::rawReceived, this, [this](const QByteArray &bytes) {
-        m_upstreamState->setText(m_transport->isConnected() ? QString::fromUtf8(u8"接收中")
-                                : QString::fromUtf8(u8"接收中；下游串口未连接"));
+        setIoState(m_upstreamState, QString::fromUtf8(u8"已接收数据"), QStringLiteral("ok"));
         m_upstreamBytes += quint64(bytes.size()); updateUpstreamCounters();
         const QByteArray shown = bytes.left(2048);
         m_upstreamRaw->appendPlainText(QString::fromUtf8(u8"收到 %1 字节\nASCII  %2\nHEX    %3")
@@ -1031,11 +1276,13 @@ void Widget::buildUi()
         ConversionPreview parsed; TranslationError error;
         if (!ConversionEngine(m_upstreamConfig).parsePreview(frame, &parsed, &error)) {
             ++m_upstreamErrors; updateUpstreamCounters();
-            m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"解析失败：%1").arg(error.message)); return;
+            m_upstreamEvents->appendPlainText(QString::fromUtf8(u8"解析失败：%1").arg(error.message));
+            return;
         }
         ++m_upstreamFramesCount; updateUpstreamCounters();
+        const QByteArray shown = frame.left(2048);
         QStringList lines{QString::fromUtf8(u8"完整有效帧 %1 · %2 字节").arg(m_upstreamFramesCount).arg(frame.size()),
-                          visibleBytes(frame.left(2048))};
+                          visibleBytes(shown)};
         for (const QString &name : parsed.fieldOrder) {
             const QVariant value = parsed.fields.value(name);
             lines += fieldPreview(name, value);
@@ -1043,36 +1290,70 @@ void Widget::buildUi()
                 lines += QString::fromUtf8(u8"  实际项数：%1").arg(value.toList().size());
         }
         lines += parsed.notices;
-        const QString text = lines.join('\n');
-        m_upstreamFrames->appendPlainText(text.left(8192));
-        if (text.size() > 8192) m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"本帧显示已截断"));
+        const QString fields = lines.join('\n');
+        const bool follow = m_upstreamRecords->currentRow() < 0
+                || m_upstreamRecords->currentRow() == m_upstreamRecords->rowCount() - 1;
+        if (m_upstreamRecords->rowCount() >= MaximumUpstreamRecords) m_upstreamRecords->removeRow(0);
+        const int row = m_upstreamRecords->rowCount();
+        m_upstreamRecords->insertRow(row);
+        auto *number = new QTableWidgetItem(QString::number(m_upstreamFramesCount));
+        const quint64 frameId = ++m_upstreamNextFrameId;
+        number->setData(UpstreamFrameIdRole, frameId);
+        number->setData(UpstreamFieldsRole, fields.size() > 8192
+                        ? fields.left(8192) + QString::fromUtf8(u8"\n本帧字段显示已截断") : fields);
+        QString raw = QString::fromUtf8(u8"ASCII  %1\nHEX    %2")
+                .arg(visibleBytes(shown), QString::fromLatin1(shown.toHex(' ').toUpper()));
+        if (shown.size() < frame.size()) raw += QString::fromUtf8(u8"\n本帧仅显示前 %1 字节").arg(shown.size());
+        number->setData(UpstreamRawRole, raw);
+        m_upstreamRecords->setItem(row, 0, number);
+        auto *command = new QTableWidgetItem(parsed.matchedCommandCode);
+        command->setToolTip(parsed.matchedCommandCode);
+        m_upstreamRecords->setItem(row, 1, command);
+        m_upstreamRecords->setItem(row, 2, new QTableWidgetItem(QString::fromUtf8(u8"已解析")));
+        if (follow) m_upstreamRecords->setCurrentCell(row, 0);
+        const QScopedValueRollback<quint64> submittingFrame(m_upstreamSubmittingFrame, frameId);
         m_upstreamForwarder->forwardFrame(frame);
     });
     connect(m_upstream, &UpstreamSerialReceiver::errorOccurred, this, [this](const QString &reason) {
-        ++m_upstreamErrors; updateUpstreamCounters(); m_upstreamState->setText(reason);
-        m_upstreamFrames->appendPlainText(QString::fromUtf8(u8"接收提示：%1").arg(reason.left(2048)));
+        ++m_upstreamErrors; updateUpstreamCounters();
+        setIoState(m_upstreamState, reason, QStringLiteral("error"));
+        m_upstreamEvents->appendPlainText(QString::fromUtf8(u8"接收提示：%1").arg(reason.left(2048)));
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::queued, this,
             [this](quint64 group, const QString &command, int total) {
         m_lastRequestId = group;
-        const QString text = QString::fromUtf8(u8"自动转发：%1 已入队（组%2，共%3条），等待下发与应答")
+        const QString text = QString::fromUtf8(u8"自动转发：%1 已入队（组%2，共%3条）")
                 .arg(command).arg(group).arg(total);
-        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+        const int row = findUpstreamRecord(m_upstreamSubmittingFrame, UpstreamFrameIdRole);
+        if (row >= 0) m_upstreamRecords->item(row, 0)->setData(UpstreamGroupIdRole, group);
+        setUpstreamRecordStatus(row, QString::fromUtf8(u8"已入队"), text);
+        setIoState(m_upstreamForwardState, text, QStringLiteral("neutral"));
+        setIoState(m_upstreamAckState, QString::fromUtf8(u8"组%1 · 等待下发与应答").arg(group), QStringLiteral("neutral"));
+        m_upstreamEvents->appendPlainText(text); appendLog(text);
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::rejected, this,
             [this](const QString &code, const QString &reason) {
         QString text = reason;
-        if (code != QStringLiteral("DISCONNECTED")) {
+        const bool disconnected = code == QStringLiteral("DISCONNECTED");
+        if (!disconnected) {
             ++m_upstreamErrors;
             updateUpstreamCounters();
             text = QString::fromUtf8(u8"未转发：%1（%2）").arg(reason, code);
         }
-        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+        setUpstreamRecordStatus(findUpstreamRecord(m_upstreamSubmittingFrame, UpstreamFrameIdRole),
+                                QString::fromUtf8(u8"未转发"), text);
+        setIoState(m_upstreamForwardState, text, disconnected ? QStringLiteral("notice") : QStringLiteral("error"));
+        setIoState(m_upstreamAckState, QString::fromUtf8(u8"本帧未等待应答"), QStringLiteral("neutral"));
+        m_upstreamEvents->appendPlainText(text); appendLog(text);
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::progress, this,
             [this](quint64 group, int step, int total, const QString &detail) {
         const QString text = QString::fromUtf8(u8"自动转发：组%1，第%2/%3条；%4").arg(group).arg(step).arg(total).arg(detail);
-        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+        setUpstreamRecordStatus(findUpstreamRecord(group, UpstreamGroupIdRole),
+                                QString::fromUtf8(u8"处理中"), text);
+        setIoState(m_upstreamForwardState, text, QStringLiteral("neutral"));
+        setIoState(m_upstreamAckState, QString::fromUtf8(u8"组%1 · 结果待定").arg(group), QStringLiteral("neutral"));
+        m_upstreamEvents->appendPlainText(text); appendLog(text);
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::finished, this, [this](const UnifiedGroupResult &result) {
         const QString text = result.success
@@ -1081,7 +1362,13 @@ void Widget::buildUi()
                 : QString::fromUtf8(u8"自动转发失败：组%1，%2（%3）；剩余%4条未发送")
                   .arg(result.groupId).arg(result.error.message, result.error.code).arg(result.remainingSteps);
         if (!result.success) { ++m_upstreamErrors; updateUpstreamCounters(); }
-        m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
+        const QString status = result.success ? QString::fromUtf8(u8"应答成功") : QString::fromUtf8(u8"转发失败");
+        const QString color = result.success ? QStringLiteral("ok") : QStringLiteral("error");
+        setUpstreamRecordStatus(findUpstreamRecord(result.groupId, UpstreamGroupIdRole), status, text);
+        setIoState(m_upstreamForwardState, QString::fromUtf8(u8"组%1 · %2").arg(result.groupId)
+                   .arg(result.success ? QString::fromUtf8(u8"转发结束") : status), color);
+        setIoState(m_upstreamAckState, text, color);
+        m_upstreamEvents->appendPlainText(text); appendLog(text);
     });
 
     m_log = new QTextEdit(this); m_log->setObjectName("runLog"); m_log->setReadOnly(true);
@@ -1378,16 +1665,16 @@ void Widget::addFieldRow(const QJsonObject &field)
                               {QString::fromUtf8(u8"固定字段"), QStringLiteral("fixed")},
                               {QString::fromUtf8(u8"普通字段"), QStringLiteral("metadata")},
                               {QString::fromUtf8(u8"执行控制（仅解析）"), QStringLiteral("execution")},
-                              {QString::fromUtf8(u8"校验值（未校验）"), QStringLiteral("checksum")}});
+                              {QString::fromUtf8(u8"校验值（未校验）"), QStringLiteral("checksum")}}, true);
     auto *type = combo(this, {{QStringLiteral("ASCII"), QStringLiteral("ascii")},
                               {QString::fromUtf8(u8"无符号整数"), QStringLiteral("uint")},
                               {QString::fromUtf8(u8"有符号整数"), QStringLiteral("int")},
-                              {QString::fromUtf8(u8"整数列表"), QStringLiteral("integerList")}});
+                              {QString::fromUtf8(u8"整数列表"), QStringLiteral("integerList")}}, true);
     type->setToolTip(QString::fromUtf8(u8"整数列表仅用于ASCII参数：英文逗号分隔有符号整数，单项合法；不接受空项、空白或小数，上下限逐项检查。"));
     auto *lengthMode = combo(this, {{QString::fromUtf8(u8"固定长度"), QStringLiteral("fixed")},
                                     {QString::fromUtf8(u8"读取到帧尾"), QStringLiteral("toFooter")},
                                     {QString::fromUtf8(u8"按命令码识别"), QStringLiteral("mappedCommand")},
-                                    {QString::fromUtf8(u8"读到分隔符"), QStringLiteral("delimited")}});
+                                    {QString::fromUtf8(u8"读到分隔符"), QStringLiteral("delimited")}}, true);
     selectData(role, field.value("role").toString("parameter"));
     selectData(type, field.value("type").toString("ascii"));
     selectData(lengthMode, field.value("lengthMode").toString("fixed"));
@@ -1433,6 +1720,9 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
         m_mappingTable->item(row, 1)->setText(QString::fromUtf8(u8"共%1条指令").arg(steps.size()));
         const QString issue = mappingFieldIssue(mapping);
         m_mappingTable->item(row, 2)->setText(labels.join(QString::fromUtf8(u8" → ")) + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"；失效：") + issue));
+        m_mappingTable->item(row, 2)->setToolTip(QString());
+        for (int c = 0; c < 2; ++c)
+            m_mappingTable->item(row, c)->setToolTip(m_mappingTable->item(row, 2)->text());
         return;
     }
     const QString operation = mapping.value("operation").toString();
@@ -1531,7 +1821,8 @@ void Widget::updateMappingSummary(int row, const QJsonObject &mapping)
     const QString issue = mappingFieldIssue(mapping);
     m_mappingTable->item(row, 2)->setText(summary + (issue.isEmpty() ? QString() : QString::fromUtf8(u8"（待修正）")));
     m_mappingTable->item(row, 2)->setToolTip(issue);
-    for (int c = 0; c < 2; ++c) m_mappingTable->item(row, c)->setToolTip(m_mappingTable->horizontalHeaderItem(c)->toolTip());
+    for (int c = 0; c < 2; ++c)
+        m_mappingTable->item(row, c)->setToolTip(issue.isEmpty() ? summary : summary + QLatin1Char('\n') + issue);
 }
 
 void Widget::filterMappingCommands()
@@ -1638,20 +1929,36 @@ bool Widget::editAxisFormula(int row)
     auto *label = m_mappingParameters->item(row, 0);
     if (!label || !formulaAxis(m_mappingOperation->currentData().toString(), label->data(Qt::UserRole).toJsonObject().value("key").toString())) return false;
     const auto original = label->data(Qt::UserRole + 1).toJsonObject();
-    QDialog dialog(this); dialog.setObjectName("axisFormulaDialog"); dialog.setWindowTitle(QString::fromUtf8(u8"轴位置公式")); dialog.resize(620,500);
+    QDialog dialog(this); dialog.setObjectName("axisFormulaDialog");
+    dialog.setWindowTitle(QString::fromUtf8(u8"编辑公式 · %1").arg(label->text())); dialog.resize(620, 500);
     auto *layout = new QVBoxLayout(&dialog);
     auto *formula = new QLineEdit(&dialog); formula->setObjectName("formulaText"); formula->setPlaceholderText("p1_1+(a-1)*90");
+    QFont formulaFont = formula->font();
+    formulaFont.setFamily(QStringLiteral("Consolas"));
+    formula->setFont(formulaFont);
     if (original.value("kind").toString() == "formula") formula->setText(original.value("formula").toString());
-    layout->addWidget(new QLabel(QString::fromUtf8(u8"公式（支持 + - * / 和括号）"), &dialog)); layout->addWidget(formula);
+    auto *formulaLabel = new QLabel(QString::fromUtf8(u8"公式（支持 + - * / 和括号）"), &dialog);
+    formulaLabel->setBuddy(formula);
+    layout->addWidget(formulaLabel); layout->addWidget(formula);
     auto *round = new QComboBox(&dialog); round->setObjectName("formulaRounding");
     for (const auto &entry : QList<QPair<QString,QString>>{{QString::fromUtf8(u8"四舍五入成整数"),"nearest"},{QString::fromUtf8(u8"要求整数（小数报错）"),"exact"},{QString::fromUtf8(u8"向下取整"),"floor"},{QString::fromUtf8(u8"向上取整"),"ceil"}}) round->addItem(entry.first,entry.second);
     selectData(round, original.value("kind").toString() == "formula" ? original.value("round").toString("nearest") : QStringLiteral("nearest"));
-    auto *form = new QFormLayout; form->addRow(QString::fromUtf8(u8"结果处理"),round); layout->addLayout(form);
+    auto *form = new QFormLayout;
+    form->addRow(QString::fromUtf8(u8"结果取整"), round);
     auto *variables = new QTableWidget(&dialog); variables->setObjectName("formulaVariables"); variables->setColumnCount(2);
-    variables->setHorizontalHeaderLabels({QString::fromUtf8(u8"变量"),QString::fromUtf8(u8"取值来源（双击插入）")});
+    variables->setHorizontalHeaderLabels({QString::fromUtf8(u8"变量"), QString::fromUtf8(u8"取值来源")});
     variables->verticalHeader()->hide(); variables->horizontalHeader()->setSectionResizeMode(0,QHeaderView::ResizeToContents); variables->horizontalHeader()->setSectionResizeMode(1,QHeaderView::Stretch);
     variables->setSelectionBehavior(QAbstractItemView::SelectRows); variables->setSelectionMode(QAbstractItemView::SingleSelection); variables->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(variables,1);
+    auto *variableActions = new QHBoxLayout;
+    variableActions->addWidget(new QLabel(QString::fromUtf8(u8"可用变量"), &dialog));
+    variableActions->addStretch();
+    auto *insert = new QPushButton(QString::fromUtf8(u8"插入选中变量"), &dialog);
+    insert->setObjectName("formulaInsert");
+    insert->setAutoDefault(false);
+    variableActions->addWidget(insert);
+    layout->addLayout(variableActions);
+    layout->addWidget(variables, 1);
+    layout->addLayout(form);
     QJsonObject input, counts;
     for (int i=0;i<m_mappingCounts->rowCount();++i) counts.insert(m_mappingCounts->item(i,0)->text(),qobject_cast<QSpinBox *>(m_mappingCounts->cellWidget(i,1))->value());
     if (!counts.isEmpty()) input.insert("parameterCounts",counts);
@@ -1688,11 +1995,10 @@ bool Widget::editAxisFormula(int row)
         addVariable(alias,binding);
     }
     auto insertVariable = [&]() { const int i=variables->currentRow(); if(i>=0){formula->insert(variables->item(i,0)->text());formula->setFocus();} };
-    auto *insert = new QPushButton(QString::fromUtf8(u8"插入选中变量"),&dialog); insert->setObjectName("formulaInsert"); layout->addWidget(insert);
     connect(insert,&QPushButton::clicked,&dialog,insertVariable); connect(variables,&QTableWidget::cellDoubleClicked,&dialog,[&](int,int){insertVariable();});
     auto *error = new QLabel(&dialog); error->setObjectName("formulaError"); error->setWordWrap(true); error->setStyleSheet("color:#a32020;"); layout->addWidget(error);
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok|QDialogButtonBox::Cancel,&dialog); buttons->button(QDialogButtonBox::Ok)->setObjectName("formulaAccept"); buttons->button(QDialogButtonBox::Cancel)->setObjectName("formulaCancel");
-    buttons->button(QDialogButtonBox::Ok)->setText(QString::fromUtf8(u8"确定")); buttons->button(QDialogButtonBox::Cancel)->setText(QString::fromUtf8(u8"取消")); layout->addWidget(buttons);
+    buttons->button(QDialogButtonBox::Ok)->setText(QString::fromUtf8(u8"确认公式")); buttons->button(QDialogButtonBox::Cancel)->setText(QString::fromUtf8(u8"取消")); layout->addWidget(buttons);
     QJsonObject accepted;
     connect(buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     connect(buttons,&QDialogButtonBox::accepted,&dialog,[&]() {
@@ -1864,11 +2170,12 @@ void Widget::updateValveEditor()
         if (maskKnown && mask == 0)
             effect += modeKnown && mode == 2 ? QString::fromUtf8(u8" 当前未选阀，将关闭全部阀。")
                                             : QString::fromUtf8(u8" 当前未选阀；开/关选中模式不会操作任何阀。");
-        m_valveActionHint->setText(effect + QString::fromUtf8(u8" 开启时间0使用设备超时设置。"));
         m_valveActionHint->setStyleSheet(modeKnown && mode == 2 ? "color:#9b4300;font-weight:bold;" : QString());
         const QString selection = maskKnown ? (selected.isEmpty() ? QString::fromUtf8(u8"未选阀")
+            : selected.size() > 6 ? QString::fromUtf8(u8"已选 %1 个阀").arg(selected.size())
             : QString::fromUtf8(u8"已选%1号阀").arg(selected.join(QString::fromUtf8(u8"、"))))
             : QString::fromUtf8(u8"尚不能显示固定阀号，请查看来源；勾选将改为固定阀号");
+        m_valveActionHint->setText(selection + QString::fromUtf8(u8"。%1 开启时间0使用设备超时设置。").arg(effect));
         m_valveEditor->setToolTip(QString::fromUtf8(u8"动作来源：%1；阀号来源：%2。%3。勾选阀号只更新阀位图，开关参数和开启时间来源保持独立。")
             .arg(modeOrigin, maskOrigin, selection));
     } else {
@@ -1902,7 +2209,6 @@ void Widget::updateCatalogParameterVisibility()
         if (!hidden) ++visible;
     }
     m_mappingParameters->setFixedHeight(qMin(190, 30 + visible * 30));
-    scheduleMappingLayout();
 }
 
 QString Widget::parameterDefaultText(const QJsonObject &definition, const QString &operation) const
@@ -1990,7 +2296,9 @@ void Widget::refreshMappingSteps()
         }
         m_mappingSteps->setItem(i, 2, new QTableWidgetItem(parameters.join(QString::fromUtf8(u8"；"))));
     }
-    m_mappingSteps->setMinimumHeight(qMin(240, qMax(96, 26 + 26 * m_stepDrafts.size())));
+    const int stepListHeight = 32 + m_mappingSteps->verticalHeader()->defaultSectionSize() * m_stepDrafts.size();
+    m_mappingSteps->setMinimumHeight(qMin(240, stepListHeight));
+    m_mappingSteps->setMaximumHeight(m_stepDrafts.size() <= 3 ? stepListHeight : QWIDGETSIZE_MAX);
     m_mappingSteps->setVisible(!m_stepDrafts.isEmpty());
     if (m_selectedStep >= 0 && m_selectedStep < m_stepDrafts.size()) m_mappingSteps->setCurrentCell(m_selectedStep, 0);
     updateMappingControls();
@@ -2033,14 +2341,11 @@ void Widget::updateMappingStepState()
     findChild<QPushButton *>("mappingStepUp")->setVisible(m_stepDrafts.size() > 1);
     findChild<QPushButton *>("mappingStepDown")->setVisible(m_stepDrafts.size() > 1);
     findChild<QPushButton *>("discardMappingStep")->setVisible(m_stepDirty);
-    m_mappingStepState->setVisible(editing || m_stepDirty || !m_stepDrafts.isEmpty());
     m_saveMappingStep->setText(editing ? QString::fromUtf8(u8"保存本条修改") : QString::fromUtf8(u8"添加到清单"));
     m_mappingStepState->setText(editing
-        ? QString::fromUtf8(u8"正在编辑第%1条%2；清单共%3条").arg(m_selectedStep + 1)
-            .arg(m_stepDirty ? QString::fromUtf8(u8"（未保存修改）") : QString::fromUtf8(u8"（已保存）")).arg(m_stepDrafts.size())
-        : QString::fromUtf8(u8"正在新增指令（尚未入清单）；清单共%1条%2").arg(m_stepDrafts.size())
-            .arg(m_stepDirty ? QString::fromUtf8(u8"；请添加到清单或放弃修改") : QString()));
-    scheduleMappingLayout();
+        ? QString::fromUtf8(u8"② 指令清单 · %1 条 · 正在编辑第 %2 条%3").arg(m_stepDrafts.size()).arg(m_selectedStep + 1)
+            .arg(m_stepDirty ? QString::fromUtf8(u8"（未保存修改）") : QString::fromUtf8(u8"（已保存）"))
+        : QString::fromUtf8(u8"② 指令清单 · %1 条 · 当前指令尚未入清单").arg(m_stepDrafts.size()));
 }
 
 void Widget::loadMappingStep(int row)
@@ -2155,6 +2460,7 @@ QJsonArray Widget::mappingOmittedFields() const
 void Widget::fieldFormatChanged()
 {
     if (m_loadingUi || m_syncingFields) return;
+    updateFieldDelimiterHint();
     markDraftDirty();
     if (!synchronizeFieldNames()) { refreshMappingSummaries(); return; }
     updateMappingSources(); refreshMappingSummaries();
@@ -2310,8 +2616,19 @@ void Widget::refreshMappingSummaries()
 {
     for (int row = 0; row < m_mappingTable->rowCount(); ++row)
         updateMappingSummary(row, m_mappingTable->item(row, 0)->data(Qt::UserRole).toJsonObject());
+    updateMappingDetails();
 }
 
+void Widget::updateMappingDetails()
+{
+    const auto *summary = m_mappingTable->item(m_mappingTable->currentRow(), 2);
+    QString details;
+    if (summary) {
+        details = summary->text();
+        if (!summary->toolTip().isEmpty()) details += QLatin1Char('\n') + summary->toolTip();
+    }
+    if (details != m_mappingDetails->toPlainText()) m_mappingDetails->setPlainText(details);
+}
 
 void Widget::updateMappingCounts()
 {
@@ -2493,39 +2810,8 @@ void Widget::updateMappingSources(bool rebuildCounts)
     }
     updateMappingControls();
 }
-bool Widget::eventFilter(QObject *watched, QEvent *event)
-{
-    if (watched == m_mappingSplitter && (event->type() == QEvent::Show || event->type() == QEvent::Resize))
-        scheduleMappingLayout();
-    return QWidget::eventFilter(watched, event);
-}
-
-void Widget::scheduleMappingLayout()
-{
-    if (!m_mappingSplitter || m_mappingSplitterAdjusted || m_mappingLayoutPending) return;
-    m_mappingLayoutPending = true;
-    // Wait for visibility and the form's layout requests to settle, including
-    // switching from a short motor form to the valve or multi-step editor.
-    QTimer::singleShot(0, this, [this]() {
-        m_mappingLayoutPending = false;
-        if (m_mappingSplitterAdjusted || !m_mappingSplitter->isVisible()) return;
-        m_mappingEditor->layout()->activate();
-        const int available = m_mappingSplitter->height() - m_mappingSplitter->handleWidth();
-        if (available <= 0) return;
-        const int listMinimum = qMax(120, available / 4);
-        const int needed = m_mappingEditor->sizeHint().height() + 4;
-        // A multi-step editor uses the spare height for its step list. A plain
-        // single-command form needs only its content height, leaving the rest
-        // to the saved mappings above.
-        const int desired = m_stepDrafts.size() > 1 ? available - listMinimum : needed;
-        const int editorHeight = qMax(100, qMin(desired, available - listMinimum));
-        m_mappingSplitter->setSizes({available - editorHeight, editorHeight});
-    });
-}
-
 void Widget::updateMappingControls()
 {
-    scheduleMappingLayout();
     updateMappingStepState();
     updateValveEditor();
     const bool legacyInput = legacyMappedInput();
@@ -2540,7 +2826,6 @@ void Widget::updateMappingControls()
     const QString operation = m_mappingOperation->currentData().toString();
     const bool motion = isMotionEditor(operation);
     const bool grouped = !m_stepDrafts.isEmpty();
-    m_mappingEditor->layout()->setAlignment(m_stepDrafts.size() > 1 ? Qt::Alignment() : Qt::Alignment(Qt::AlignTop));
     m_groupInputMode->setVisible(grouped);
     m_mappingEditor->layout()->setSpacing(grouped ? 3 : 6);
     for (int i = 0; i < m_mappingEditor->layout()->count(); ++i)
@@ -2949,8 +3234,34 @@ void Widget::updateTableControls()
                 && comboData(m_fieldTable, row, 2) == "command" && comboData(m_fieldTable, row, 3) == "ascii");
         }
     }
+    updateFieldDelimiterHint();
     updateMappingSources();
+}
 
+void Widget::updateFieldDelimiterHint()
+{
+    const int row = m_fieldTable->currentRow();
+    if (row < 0 || comboData(m_fieldTable, row, 4) != "delimited") {
+        m_fieldDelimiterHint->setText(QString::fromUtf8(u8"点击字段选项，或双击文字单元格进行编辑。"));
+        return;
+    }
+    const QString field = QString::fromUtf8(u8"第 %1 行 · %2").arg(row + 1).arg(itemText(m_fieldTable, row, 1));
+    const QString delimiter = itemText(m_fieldTable, row, 5);
+    const QString encoding = m_encoding->currentData().toString();
+    QByteArray bytes;
+    TranslationError error;
+    if (delimiter.isEmpty()) {
+        m_fieldDelimiterHint->setText(QString::fromUtf8(u8"%1 · 请填写分隔符。").arg(field));
+    } else if (!ProtocolConfig::decodeBytes(delimiter, encoding, &bytes, &error)) {
+        m_fieldDelimiterHint->setText(QString::fromUtf8(u8"%1 · %2").arg(field, error.message));
+    } else {
+        const QByteArray displayed = bytes.left(24);
+        const QString mode = encoding == "ascii" ? QString::fromUtf8(u8"ASCII 字面量 %1").arg(visibleBytes(displayed))
+                                                 : QStringLiteral("HEX");
+        m_fieldDelimiterHint->setText(QString::fromUtf8(u8"%1 · %2 · %3 字节（%4%5）。读取后会消费分隔符。")
+            .arg(field, mode).arg(bytes.size()).arg(QString::fromLatin1(displayed.toHex(' ').toUpper()),
+                 displayed.size() < bytes.size() ? QString::fromUtf8(u8" …") : QString()));
+    }
 }
 
 void Widget::activateSavedConfiguration()
@@ -3118,6 +3429,51 @@ void Widget::refreshPorts()
     if (index >= 0) m_port->setCurrentIndex(index);
 }
 
+void Widget::updateDeviceUpstreamStatus(bool listening)
+{
+    const QString status = m_providedPublicPort.isEmpty() ? QString::fromUtf8(u8"尚未初始化")
+                         : listening ? QString::fromUtf8(u8"%1 · 接收已启用").arg(m_providedPublicPort)
+                                     : QString::fromUtf8(u8"%1 · 尚未开始接收").arg(m_providedPublicPort);
+    setIoState(m_deviceUpstreamState, status, listening ? QStringLiteral("ok") : QStringLiteral("notice"));
+}
+
+void Widget::showUpstreamRecord()
+{
+    const int row = m_upstreamRecords->currentRow();
+    const auto *record = m_upstreamRecords->item(row, 0);
+    if (!record) {
+        m_upstreamFrames->clear();
+        m_upstreamFrameRaw->clear();
+        return;
+    }
+    QString fields = record->data(UpstreamFieldsRole).toString();
+    const auto *status = m_upstreamRecords->item(row, 2);
+    if (status && !status->toolTip().isEmpty())
+        fields += QString::fromUtf8(u8"\n\n转发结果\n%1").arg(status->toolTip());
+    m_upstreamFrames->setPlainText(fields);
+    m_upstreamFrameRaw->setPlainText(record->data(UpstreamRawRole).toString());
+}
+
+int Widget::findUpstreamRecord(quint64 id, int role) const
+{
+    if (!id) return -1;
+    for (int row = m_upstreamRecords->rowCount() - 1; row >= 0; --row) {
+        const auto *record = m_upstreamRecords->item(row, 0);
+        if (record && record->data(role).toULongLong() == id) return row;
+    }
+    return -1;
+}
+
+void Widget::setUpstreamRecordStatus(int row, const QString &status, const QString &detail)
+{
+    if (row < 0) return;
+    auto *item = m_upstreamRecords->item(row, 2);
+    if (!item) return;
+    item->setText(status);
+    item->setToolTip(detail);
+    if (row == m_upstreamRecords->currentRow()) showUpstreamRecord();
+}
+
 void Widget::updateUpstreamCounters()
 {
     m_upstreamCounters->setText(QString::fromUtf8(u8"总字节 %1 · 完整有效帧 %2 · 错误 %3")
@@ -3132,15 +3488,17 @@ void Widget::refreshUpstreamConfig()
     m_upstreamForwarder->setConfig(m_upstreamConfig);
     if (!changed) return;
     const bool valid = m_upstream->setConfig(m_upstreamConfig);
-    m_upstreamFrames->appendPlainText(valid ? QString::fromUtf8(u8"已更新为保存的客户格式，接收缓冲已清空")
+    m_upstreamEvents->appendPlainText(valid ? QString::fromUtf8(u8"已更新为保存的客户格式，接收缓冲已清空")
                                           : QString::fromUtf8(u8"保存的客户格式不可用，请检查配置"));
 }
 
 void Widget::updateUpstreamForwardState()
 {
-    m_upstreamForwardState->setText(m_transport->isConnected()
-        ? QString::fromUtf8(u8"自动转发：下游已连接，收到完整报文后按已保存映射下发")
-        : QString::fromUtf8(u8"自动转发：下游串口未连接，收到报文不会下发"));
+    const bool connected = m_transport->isConnected();
+    setIoState(m_upstreamForwardState,
+               connected ? QString::fromUtf8(u8"下游已连接 · 等待有效帧")
+                         : QString::fromUtf8(u8"下游串口未连接"),
+               connected ? QStringLiteral("neutral") : QStringLiteral("notice"));
 }
 
 void Widget::updateConnectionUi(bool connected, const QString &reason)
@@ -3148,7 +3506,14 @@ void Widget::updateConnectionUi(bool connected, const QString &reason)
     m_port->setEnabled(!connected);
     m_baud->setEnabled(!connected);
     m_connectButton->setText(connected ? QString::fromUtf8(u8"断开") : QString::fromUtf8(u8"连接"));
-    m_connectionState->setText(connected ? QString::fromUtf8(u8"已连接") : QString::fromUtf8(u8"未连接"));
+    const QString buttonRole = connected ? QString() : QStringLiteral("primary");
+    if (m_connectButton->property("uiRole").toString() != buttonRole) {
+        m_connectButton->setProperty("uiRole", buttonRole);
+        m_connectButton->style()->unpolish(m_connectButton);
+        m_connectButton->style()->polish(m_connectButton);
+    }
+    setIoState(m_connectionState, connected ? QString::fromUtf8(u8"已连接") : QString::fromUtf8(u8"未连接"),
+               connected ? QStringLiteral("ok") : QStringLiteral("notice"));
     if (!reason.isEmpty()) appendLog(reason);
     // 日志不再常驻，串口驱动的失败原因必须立即可见；系统详情仍完整保留在日志。
     if (!connected && reason.contains(QString::fromUtf8(u8"；系统详情：")))
@@ -3167,8 +3532,7 @@ void Widget::updateLiveState()
     m_sendButton->setEnabled(true);
     m_queryButton->setEnabled(true);
     m_sendButton->setToolTip(reason);
-    m_liveReason->setText(reason);
-    m_liveReason->setStyleSheet(m_transport->isConnected() ? QStringLiteral("color:#087a32") : QStringLiteral("color:#a04400"));
+    setIoState(m_liveReason, reason, m_transport->isConnected() ? QStringLiteral("ok") : QStringLiteral("notice"));
     m_cancelButton->setEnabled(m_requestActive);
 }
 

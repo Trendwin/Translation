@@ -22,6 +22,7 @@
 #include <QListView>
 #include <QStandardItemModel>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSpinBox>
 #include <QSplitter>
 #include "qusheng/qushengcommandcatalog.h"
@@ -111,7 +112,7 @@ private slots:
     void noParameterSdkSourceRejectsOmittedReferences();
     void oldResetDraftRestoresMissingOmissions();
     void explicitStopInputIsPreserved();
-    void mappingButtonsStayTogether();
+    void mappingActionsFollowTheirPane();
     void sharedSaveKeepsAllPages();
     void sharedSaveHandlesJsonAndConflict();
     void configButtonsImportAndExport();
@@ -611,10 +612,21 @@ void WidgetTest::providedVirtualPortLifecycle()
     QCOMPARE(widget.findChildren<SerialTransport *>().size(), 1);
     QVERIFY(!widget.findChild<QComboBox *>("upstreamPort"));
     QVERIFY(!widget.findChild<QComboBox *>("upstreamBaud"));
-    QCOMPARE(widget.findChild<QTabWidget *>("mainTabs")->count(), 4);
+    auto *mainTabs = widget.findChild<QTabWidget *>("mainTabs");
+    auto *communication = widget.findChild<QTabWidget *>("communicationTabs");
+    auto *deviceUpstream = widget.findChild<QLabel *>("deviceUpstreamState");
+    auto *toUpstream = button(widget, "goToUpstream");
+    auto *toDevice = button(widget, "goToDeviceFromUpstream");
+    QVERIFY(mainTabs && communication && deviceUpstream && toUpstream && toDevice);
+    QCOMPARE(mainTabs->count(), 4);
     widget.resize(1100, 740); widget.show();
-    widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(2);
-    widget.findChild<QTabWidget *>("communicationTabs")->setCurrentIndex(1);
+    mainTabs->setCurrentIndex(3);
+    toUpstream->click();
+    QCOMPARE(mainTabs->currentWidget(), communication);
+    QCOMPARE(communication->currentIndex(), 1);
+    toDevice->click();
+    QCOMPARE(mainTabs->currentIndex(), 3);
+    toUpstream->click();
     QCoreApplication::processEvents(); QVERIFY(raw->isVisible());
     QCOMPARE(action->text(), QString::fromUtf8(u8"初始化虚拟串口"));
     QVERIFY(action->isEnabled());
@@ -631,6 +643,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"等待上游报文"));
     QVERIFY(action->isHidden());
     QVERIFY(widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    QCOMPARE(deviceUpstream->text(), QString::fromUtf8(u8"COM87 · 接收已启用"));
     provider->busyChanged(true);
     QVERIFY(widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
     provider->busyChanged(false);
@@ -639,7 +652,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     const QByteArray frame("@&5A&01&SCT&1&0;RST=0;10\\nEND&?&\\r\\n");
     const int split = 12;
     receiver->feedBytes(frame.left(split));
-    QVERIFY(widget.findChild<QLabel *>("upstreamState")->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"已接收数据"));
     QVERIFY(raw->toPlainText().contains(QString::fromLatin1(frame.left(split))));
     QVERIFY(frames->toPlainText().isEmpty());
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 0 · 错误 0").arg(split));
@@ -674,6 +687,7 @@ void WidgetTest::providedVirtualPortLifecycle()
     receiver->feedBytes(frame.left(split));
     provider->needsInitialization(true);
     QVERIFY(!widget.findChild<QLabel *>("providedUpstreamPort")->text().contains("COM87"));
+    QCOMPARE(deviceUpstream->text(), QString::fromUtf8(u8"尚未初始化"));
     QCOMPARE(action->text(), QString::fromUtf8(u8"初始化虚拟串口"));
     QVERIFY(action->isVisible());
     receiver->feedBytes(frame.mid(split));
@@ -736,10 +750,13 @@ void WidgetTest::upstreamAutomaticForwardingStatusAndDisconnectedInput()
     auto *forwarder = widget.findChild<UpstreamForwarder *>();
     auto *transport = widget.findChild<SerialTransport *>();
     auto *state = widget.findChild<QLabel *>("upstreamForwardState");
+    auto *ack = widget.findChild<QLabel *>("upstreamAckState");
     auto *counters = widget.findChild<QLabel *>("upstreamCounters");
     auto *frames = widget.findChild<QPlainTextEdit *>("upstreamFrames");
+    auto *frameBytes = widget.findChild<QPlainTextEdit *>("upstreamFrameRaw");
+    auto *records = widget.findChild<QTableWidget *>("upstreamRecords");
     auto *input = widget.findChild<QLineEdit *>("customerInput");
-    QVERIFY(receiver && forwarder && transport && state && counters && frames && input);
+    QVERIFY(receiver && forwarder && transport && state && ack && counters && frames && frameBytes && records && input);
     QSignalSpy rejected(forwarder, &UpstreamForwarder::rejected);
     QSignalSpy queued(forwarder, &UpstreamForwarder::queued);
     QSignalSpy sent(transport, &ITransport::sendFinished);
@@ -752,7 +769,12 @@ void WidgetTest::upstreamAutomaticForwardingStatusAndDisconnectedInput()
     QCOMPARE(rejected.size(), 1); QCOMPARE(queued.size(), 0); QCOMPARE(sent.size(), 0);
     QCOMPARE(rejected.first().first().toString(), QString("DISCONNECTED"));
     QCOMPARE(state->text(), QString::fromUtf8(u8"下游串口未连接，本帧未转发"));
+    QCOMPARE(ack->text(), QString::fromUtf8(u8"本帧未等待应答"));
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 0").arg(frame.size()));
+    QCOMPARE(records->rowCount(), 1);
+    QCOMPARE(records->item(0, 1)->text(), QStringLiteral("RST"));
+    QCOMPARE(records->item(0, 2)->text(), QString::fromUtf8(u8"未转发"));
+    QVERIFY(frameBytes->toPlainText().contains("5C 6E"));
     QCOMPARE(input->text(), QString("manual text remains unchanged"));
     QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
 
@@ -765,23 +787,37 @@ void WidgetTest::upstreamAutomaticForwardingStatusAndDisconnectedInput()
     QVERIFY(state->text().contains(QString::fromUtf8(u8"第2/3条")));
     UnifiedGroupResult result; result.groupId = 42; result.totalSteps = 3; result.acceptedSteps = 3; result.success = true;
     forwarder->finished(result);
-    QVERIFY(state->text().contains(QString::fromUtf8(u8"成功应答3/3条")));
-    QVERIFY(state->text().contains(QString::fromUtf8(u8"机械动作完成未确认")));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"转发结束")));
+    QVERIFY(ack->text().contains(QString::fromUtf8(u8"成功应答3/3条")));
+    QVERIFY(ack->text().contains(QString::fromUtf8(u8"机械动作完成未确认")));
     result.groupId = 43; result.success = false; result.acceptedSteps = 1; result.failedStep = 2;
     result.remainingSteps = 1; result.error = {"ACK_TIMEOUT", QString::fromUtf8(u8"等待应答超时")};
     forwarder->finished(result);
-    QVERIFY(state->text().contains(QString::fromUtf8(u8"自动转发失败")));
-    QVERIFY(state->text().contains("ACK_TIMEOUT"));
-    QVERIFY(state->text().contains(QString::fromUtf8(u8"剩余1条未发送")));
+    QVERIFY(state->text().contains(QString::fromUtf8(u8"转发失败")));
+    QVERIFY(ack->text().contains("ACK_TIMEOUT"));
+    QVERIFY(ack->text().contains(QString::fromUtf8(u8"剩余1条未发送")));
     QCOMPARE(counters->text(), QString::fromUtf8(u8"总字节 %1 · 完整有效帧 1 · 错误 1").arg(frame.size()));
     transport->connectionChanged(false, QString::fromUtf8(u8"下游串口未连接"));
     QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
     receiver->feedBytes(frame.left(8));
     QVERIFY(state->text().contains(QString::fromUtf8(u8"下游串口未连接")));
-    QVERIFY(widget.findChild<QLabel *>("upstreamState")->text().contains(QString::fromUtf8(u8"下游串口未连接")));
+    QCOMPARE(widget.findChild<QLabel *>("upstreamState")->text(), QString::fromUtf8(u8"已接收数据"));
     QCOMPARE(input->text(), QString("manual text remains unchanged"));
     QCOMPARE(sent.size(), 0);
     QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    QVERIFY(!frames->toPlainText().contains("ACK_TIMEOUT"));
+    // An unrelated async result does not overwrite a disconnected frame's status.
+    QCOMPARE(records->item(0, 2)->text(), QString::fromUtf8(u8"未转发"));
+    QByteArray second = frame;
+    second.replace("SCT&1", "SCT&2");
+    receiver->feedBytes(second.mid(8));
+    QCOMPARE(records->rowCount(), 2);
+    QCOMPARE(records->currentRow(), 1);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 2")));
+    QVERIFY(frameBytes->toPlainText().contains("SCT&2"));
+    records->setCurrentCell(0, 0);
+    QVERIFY(frames->toPlainText().contains(QString::fromUtf8(u8"完整有效帧 1")));
+    QVERIFY(frameBytes->toPlainText().contains("SCT&1"));
 }
 
 void WidgetTest::asciiLiteralInputAndReceiveRoundTrip()
@@ -1128,7 +1164,7 @@ void WidgetTest::simplifiedExpertInterface()
     auto *log = widget.findChild<QTextEdit *>("runLog"); auto *outputs = widget.findChild<QTabWidget *>("deviceOutputs");
     QVERIFY(log && outputs); QCOMPARE(outputs->tabText(outputs->indexOf(log)), QString::fromUtf8(u8"日志"));
     QVERIFY(!log->isVisible()); QVERIFY(!widget.findChild<QLabel *>("liveReason")->isVisible());
-    QCOMPARE(button(widget, "previewButton")->text(), QString::fromUtf8(u8"预览"));
+    QCOMPARE(button(widget, "previewButton")->text(), QString::fromUtf8(u8"预览目标帧"));
     QCOMPARE(button(widget, "sendButton")->text(), QString::fromUtf8(u8"发送"));
     QVERIFY(!widget.findChild<QWidget *>("deviceConfirmed"));
     tabs->setCurrentIndex(1); QCoreApplication::processEvents();
@@ -1314,14 +1350,16 @@ void WidgetTest::explicitStopInputIsPreserved()
     QVERIFY(restored.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
 }
 
-void WidgetTest::mappingButtonsStayTogether()
+void WidgetTest::mappingActionsFollowTheirPane()
 {
     Widget widget(nullptr,freshDraftPath());widget.findChild<QTabWidget *>("mainTabs")->setCurrentIndex(1);
     widget.show();QCoreApplication::processEvents();
     auto *add=button(widget,"addMapping");auto *remove=button(widget,"removeMapping");auto *save=button(widget,"saveConfig");
     const QPoint a=add->mapTo(&widget,QPoint()),b=remove->mapTo(&widget,QPoint()),c=save->mapTo(&widget,QPoint());
-    QCOMPARE(a.y(),b.y());QVERIFY(a.x()<b.x());QVERIFY(c.y()>b.y());
-    QVERIFY(!widget.findChild<QGroupBox *>("mappingEditor")->isAncestorOf(add));
+    QVERIFY(a.x()>b.x()); QVERIFY(c.y()>b.y()); QVERIFY(c.y()>a.y());
+    auto *editor = widget.findChild<QGroupBox *>("mappingEditor");
+    QVERIFY(editor->isAncestorOf(add));
+    QVERIFY(!editor->isAncestorOf(remove));
 }
 
 void WidgetTest::sharedSaveKeepsAllPages()
@@ -1661,7 +1699,7 @@ void WidgetTest::newMappingListGuidance()
     QCOMPARE(source->currentData().toString(), QString());
     for (int item = 1; item <= 3; ++item) QVERIFY(parameterChoice(source, "values", item) >= 0);
     QVERIFY(!widget.findChild<QLabel *>("newMappingHint"));
-    QVERIFY(widget.findChild<QGroupBox *>("mappingEditor")->toolTip().contains(QString::fromUtf8(u8"不修改上方")));
+    QVERIFY(widget.findChild<QGroupBox *>("mappingEditor")->toolTip().contains(QString::fromUtf8(u8"不修改左侧")));
     auto *motors = widget.findChild<QComboBox *>("mappingMotor"); QCOMPARE(motors->count(), 7);
     QCOMPARE(motors->findData(0x17), -1); QCOMPARE(motors->findData(0x1c), -1); QVERIFY(motors->findData(0x16) >= 0);
     const auto existing = mappingRows(widget);
@@ -2020,6 +2058,10 @@ void WidgetTest::sequentialDelimiterEditorLifecycle()
     const QString path=freshDraftPath(),exportPath=freshDraftPath();Widget widget(nullptr,path);widget.show();auto root=sequentialExample();QVERIFY(!root.isEmpty());auto ext=root.value("external").toObject();ext.insert("extension","keep");auto rows=ext.value("fields").toArray();auto first=rows.at(0).toObject();first.insert("note","preserve");rows.replace(0,first);ext.insert("fields",rows);root.insert("external",ext);applyRoot(widget,root);
     QVERIFY(!widget.findChild<QComboBox *>("formatMode"));QVERIFY(!widget.findChild<QWidget *>("textFormatEditor"));QVERIFY(!widget.findChild<QLineEdit *>("formatSampleInput"));
     auto *table=widget.findChild<QTableWidget *>("fieldTable");QCOMPARE(table->columnCount(),9);QCOMPARE(table->rowCount(),10);QVERIFY(table->horizontalHeaderItem(5)->text().contains(QString::fromUtf8(u8"分隔符")));QCOMPARE(table->item(5,5)->text(),QString("="));
+    table->setCurrentCell(7, 5);
+    const auto *delimiterHint = widget.findChild<QLabel *>("fieldDelimiterHint");
+    QVERIFY(delimiterHint->text().contains("5C 6E"));
+    QVERIFY(delimiterHint->text().contains(QString::fromUtf8(u8"读取后会消费分隔符")));
     auto *input=widget.findChild<QLineEdit *>("customerInput");input->setText("[AA|BB|CTL|255|0;SET=234;10\\nDONE|?|]\\r");button(widget,"parseFormatButton")->click();auto *output=widget.findChild<QTextEdit *>("previewOutput");QVERIFY2(output->toPlainText().contains(QString::fromUtf8(u8"数值 = 234")),qPrintable(output->toPlainText()));QVERIFY(output->toPlainText().contains(QString::fromUtf8(u8"未校验")));QVERIFY(widget.findChild<QTextEdit *>("targetOutput")->toPlainText().isEmpty());
     table->item(6,8)->setText("500");button(widget,"saveConfig")->click();const auto saved=draftRoot(widget);QCOMPARE(saved.value("external").toObject().value("extension").toString(),QString("keep"));QCOMPARE(saved.value("external").toObject().value("fields").toArray().at(0).toObject().value("note").toString(),QString("preserve"));
     Widget restored(nullptr,path);QCOMPARE(draftRoot(restored),saved);QCOMPARE(restored.findChild<QTableWidget *>("fieldTable")->item(7,5)->text(),QString("\\n"));
@@ -2053,6 +2095,10 @@ void WidgetTest::renderChinesePages()
     const QStringList names = {QString::fromUtf8(u8"客户协议格式"), QString::fromUtf8(u8"命令映射"),
                               QString::fromUtf8(u8"报文调试"), QString::fromUtf8(u8"设备与连接")};
     QCOMPARE(tabs->count(), names.size());
+    auto *downstreamBadge = button(widget, "downstreamBadge");
+    QCOMPARE(downstreamBadge->text(), QString::fromUtf8(u8"下游未连接"));
+    downstreamBadge->click();
+    QCOMPARE(tabs->currentIndex(), 3);
     const QString renderDir = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
     if (!renderDir.isEmpty()) QVERIFY(QDir().mkpath(renderDir));
     for (int i = 0; i < tabs->count(); ++i) {
@@ -2180,20 +2226,31 @@ void WidgetTest::mappingLayoutFitsContentAndRespectsManualSplit()
     auto pump = []() { for (int i = 0; i < 5; ++i) QCoreApplication::processEvents(); };
     auto *operation = widget.findChild<QComboBox *>("mappingOperation");
     auto *splitter = widget.findChild<QSplitter *>("mappingSplitter");
+    auto *mappingTable = widget.findChild<QTableWidget *>("mappingTable");
+    auto *scroll = widget.findChild<QScrollArea *>("mappingEditorScroll");
+    QCOMPARE(splitter->orientation(), Qt::Horizontal);
     operation->setCurrentIndex(operation->findData("MOTOR_FORWARD")); pump();
     const auto shortSizes = splitter->sizes();
-    QVERIFY(shortSizes[1] <= widget.findChild<QGroupBox *>("mappingEditor")->sizeHint().height() + 16);
-    QVERIFY(widget.findChild<QTableWidget *>("mappingTable")->height() > 200);
+    QVERIFY(shortSizes[1] > shortSizes[0]);
+    QVERIFY(mappingTable->height() > 200);
+    QVERIFY(mappingTable->isColumnHidden(2));
+    mappingTable->setCurrentCell(0, 0);
+    QVERIFY(widget.findChild<QPlainTextEdit *>("mappingDetails")->toPlainText().contains(mappingTable->item(0, 2)->text()));
     operation->setCurrentIndex(operation->findData("QUSHENG_21")); pump();
-    QVERIFY(splitter->sizes()[1] > shortSizes[1] + 80);
-    QVERIFY(splitter->sizes()[0] >= 120);
+    QCOMPARE(splitter->sizes(), shortSizes);
+    QCOMPARE(scroll->horizontalScrollBar()->maximum(), 0);
+    const auto *valves = widget.findChild<QGroupBox *>("valveSelectionEditor");
+    QVERIFY(valves->width() <= scroll->viewport()->width());
+    const auto *addMapping = button(widget, "addMapping");
+    QVERIFY(scroll->viewport()->rect().contains(QRect(addMapping->mapTo(scroll->viewport(), QPoint()), addMapping->size())));
+    const auto *stepState = widget.findChild<QLabel *>("mappingStepState");
+    QVERIFY(qAbs(addMapping->mapTo(&widget, QPoint()).y() - stepState->mapTo(&widget, QPoint()).y()) < 65);
     const auto valveSizes = splitter->sizes();
     widget.resize(1400, 1000); pump();
     QVERIFY(splitter->sizes()[0] > valveSizes[0]);
     const QString render = qEnvironmentVariable("TRANSLATION_RENDER_DIR");
     if (!render.isEmpty()) { QDir().mkpath(render); QVERIFY(widget.grab().save(QDir(render).filePath("content-fit-valves.png"))); }
     splitter->setSizes({400, 400});
-    QMetaObject::invokeMethod(splitter, "splitterMoved", Qt::DirectConnection, Q_ARG(int, 400), Q_ARG(int, 1));
     pump(); const auto manualSizes = splitter->sizes();
     operation->setCurrentIndex(operation->findData("MOTOR_FORWARD"));
     widget.findChild<QLineEdit *>("mappingMultiplier")->setText("2"); pump();
@@ -2901,8 +2958,8 @@ void WidgetTest::explicitMappingStepOperationsAndResponsiveLayout()
     if (!render.isEmpty()) QVERIFY(widget.grab().save(QDir(render).filePath("explicit-reset-large.png")));
     widget.resize(1100, 740); QCoreApplication::processEvents();
     auto *splitter = widget.findChild<QSplitter *>("mappingSplitter"); QVERIFY(splitter);
-    const int upperHeight = splitter->sizes().first(); splitter->setSizes({upperHeight + 40, splitter->sizes().last() - 40});
-    QCoreApplication::processEvents(); QVERIFY(splitter->sizes().first() > upperHeight);
+    const int leftWidth = splitter->sizes().first(); splitter->setSizes({leftWidth + 40, splitter->sizes().last() - 40});
+    QCoreApplication::processEvents(); QVERIFY(splitter->sizes().first() > leftWidth);
 
     // 干净的新草稿不属于清单；最终映射条数必须等于眼前的8条。
     button(widget, "newMappingStep")->click(); button(widget, "newMappingStep")->click();
