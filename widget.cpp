@@ -1061,8 +1061,12 @@ void Widget::buildUi()
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::rejected, this,
             [this](const QString &code, const QString &reason) {
-        ++m_upstreamErrors; updateUpstreamCounters();
-        const QString text = QString::fromUtf8(u8"未转发：%1（%2）").arg(reason, code);
+        QString text = reason;
+        if (code != QStringLiteral("DISCONNECTED")) {
+            ++m_upstreamErrors;
+            updateUpstreamCounters();
+            text = QString::fromUtf8(u8"未转发：%1（%2）").arg(reason, code);
+        }
         m_upstreamForwardState->setText(text); m_upstreamFrames->appendPlainText(text); appendLog(text);
     });
     connect(m_upstreamForwarder, &UpstreamForwarder::progress, this,

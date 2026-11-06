@@ -134,6 +134,10 @@ QPushButton:focus {
     outline: 1px solid #2767b4;
 }
 
+QPushButton#connectButton:focus {
+    outline: none;
+}
+
 QPushButton#saveConfig, QPushButton#formulaAccept {
     background-color: #205da6;
     color: #ffffff;
