@@ -19,7 +19,6 @@ class QGroupBox;
 class QPushButton;
 class QSpinBox;
 class QTableWidget;
-class QSplitter;
 class QTextEdit;
 class QPlainTextEdit;
 class QushengProtocol;
@@ -40,7 +39,6 @@ public:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
-    bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
     void buildUi();
@@ -55,15 +53,20 @@ private:
     bool debugConfig(ProtocolConfig *config);
     bool draftSaved();
     void updateTableControls();
+    void updateFieldDelimiterHint();
     void markDraftDirty();
     void activateSavedConfiguration();
     void importDraft();
     void exportDraft();
     bool applyAdvancedJson();
     void refreshPorts();
+    void updateDeviceUpstreamStatus(bool listening);
     void updateUpstreamCounters();
     void refreshUpstreamConfig();
     void updateUpstreamForwardState();
+    void showUpstreamRecord();
+    int findUpstreamRecord(quint64 id, int role) const;
+    void setUpstreamRecordStatus(int row, const QString &status, const QString &detail);
     void updateConnectionUi(bool connected, const QString &reason);
     void updateLiveState();
     void preview(bool live);
@@ -84,6 +87,7 @@ private:
     void refreshMappingSteps();
     void selectMappingStep(int row);
     void updateMappingSummary(int row, const QJsonObject &mapping);
+    void updateMappingDetails();
     void updateMappingSources(bool rebuildCounts = true);
     void updateMappingCounts();
     void addNumericSources(QComboBox *box, const QJsonArray &omitted, bool includeInput = true);
@@ -99,7 +103,6 @@ private:
     QString mappingFieldIssue(const QJsonObject &mapping) const;
     void refreshMappingSummaries();
     void updateMappingControls();
-    void scheduleMappingLayout();
     void filterMappingCommands();
     void loadCatalogParameters(const QJsonObject &parameters);
     bool editAxisFormula(int row);
@@ -121,6 +124,7 @@ private:
     bool m_virtualNeedsInitialization = false;
     ProtocolConfig m_upstreamConfig;
     quint64 m_upstreamBytes = 0, m_upstreamFramesCount = 0, m_upstreamErrors = 0;
+    quint64 m_upstreamNextFrameId = 0, m_upstreamSubmittingFrame = 0;
     RequestManager *m_requests = nullptr;
     TranslationService *m_service = nullptr;
     UpstreamForwarder *m_upstreamForwarder = nullptr;
@@ -147,11 +151,10 @@ private:
     QComboBox *m_byteOrder = nullptr;
     QTableWidget *m_parameterPresets = nullptr;
     QTableWidget *m_fieldTable = nullptr;
+    QLabel *m_fieldDelimiterHint = nullptr;
     QTableWidget *m_mappingTable = nullptr;
+    QPlainTextEdit *m_mappingDetails = nullptr;
     QGroupBox *m_mappingEditor = nullptr;
-    QSplitter *m_mappingSplitter = nullptr;
-    bool m_mappingSplitterAdjusted = false;
-    bool m_mappingLayoutPending = false;
     QTableWidget *m_mappingSteps = nullptr;
     QPushButton *m_saveMappingStep = nullptr;
     QLabel *m_mappingStepState = nullptr;
@@ -199,14 +202,19 @@ private:
     QComboBox *m_baud = nullptr;
     QPushButton *m_connectButton = nullptr;
     QLabel *m_connectionState = nullptr;
+    QLabel *m_deviceUpstreamState = nullptr;
     QLabel *m_liveReason = nullptr;
     QLabel *m_providedPort = nullptr;
     QPushButton *m_virtualComAction = nullptr;
     QLabel *m_upstreamState = nullptr;
     QLabel *m_upstreamForwardState = nullptr;
+    QLabel *m_upstreamAckState = nullptr;
     QLabel *m_upstreamCounters = nullptr;
+    QTableWidget *m_upstreamRecords = nullptr;
     QPlainTextEdit *m_upstreamRaw = nullptr;
     QPlainTextEdit *m_upstreamFrames = nullptr;
+    QPlainTextEdit *m_upstreamFrameRaw = nullptr;
+    QPlainTextEdit *m_upstreamEvents = nullptr;
 
     QLabel *m_inputEncoding = nullptr;
     QLineEdit *m_input = nullptr;
